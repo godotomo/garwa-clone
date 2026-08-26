@@ -32,7 +32,8 @@ natural atau mode otomatis (auto / overnight) tanpa pengawasan.
 12. [Struktur Proyek](#struktur-proyek)
 13. [Pengembangan & Testing](#pengembangan--testing)
 14. [Keamanan & Sandbox](#keamanan--sandbox)
-15. [FAQ](#faq)
+15. [Dibuat oleh AI](#dibuat-oleh-ai)
+16. [FAQ](#faq)
 
 ---
 
@@ -509,6 +510,20 @@ python -m garwa --help              # cek CLI berjalan
 - **Jangan commit kredensial** — `GITHUB_TOKEN` / `LLAMA_API_KEY` dibaca
   dari env, bukan hardcoded (file `.gitignore` mengabaikan `*.db`, `.venv/`,
   `__pycache__/`).
+
+---
+
+## Dibuat oleh AI
+
+Seluruh kode, dokumentasi, dan aset yang ada di dalam proyek ini
+**dibuat/ditulis oleh AI** (large language model / coding agent). Tidak ada
+kode yang ditulis manual oleh manusia.
+
+- Semua file `garwa/*.py`, `garwa_cli.py`, `install.sh`, `uninstall.sh`,
+  `requirements.txt`, dan `tests/` dihasilkan oleh AI.
+- Dokumentasi (`README.md`, `README_REFACTOR.md`) juga ditulis oleh AI.
+- Proses refactor dari CLI monolitik menjadi package `garwa/` dilakukan
+  secara mekanis berbasis AST oleh AI.
 
 ---
 
