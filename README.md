@@ -9,6 +9,8 @@ natural atau mode otomatis (auto / overnight) tanpa pengawasan.
 
 > Versi saat ini: **0.1.0**
 
+![Garwa CLI](screenshot/sceenshot.png)
+
 ---
 
 ## Daftar Isi
