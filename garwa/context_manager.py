@@ -17,12 +17,16 @@ Strategi ringkas ala "summary + tail":
 
 import json
 import logging
+import sys
 import time
 
 import requests
 
 from . import db as dbmod
 from . import token_utils
+from .cli.colors import C
+from .cli.colors import c
+from .cli.progress import Spinner
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +146,8 @@ def _is_retryable_error(exc: Exception) -> bool:
     return False
 
 
-def _summarize_text(url: str, model: str, text_to_summarize: str, api_key: str = "") -> str:
+def _summarize_text(url: str, model: str, text_to_summarize: str, api_key: str = "",
+                    progress=None) -> str:
     payload = {
         "model": model,
         "messages": [
@@ -154,6 +159,11 @@ def _summarize_text(url: str, model: str, text_to_summarize: str, api_key: str =
     }
     last_exc: Exception | None = None
     for attempt in range(SUMMARIZE_MAX_RETRIES + 1):
+        if progress is not None:
+            try:
+                progress(attempt, SUMMARIZE_MAX_RETRIES + 1)
+            except Exception:
+                pass
         try:
             resp = requests.post(
                 url, json=payload, headers=_auth_headers(api_key),
@@ -179,6 +189,19 @@ def _summarize_text(url: str, model: str, text_to_summarize: str, api_key: str =
             )
             time.sleep(delay)
     raise last_exc
+
+
+def _print_summary_result(summary_text: str, max_chars: int = 400) -> None:
+    """Cetak hasil ringkasan yang baru dibuat ke console, dipotong supaya
+    tidak membanjiri layar. Hanya aktif kalau stdout adalah terminal."""
+    if not sys.stdout.isatty():
+        return
+    preview = summary_text.strip().replace("\n", " ")
+    if len(preview) > max_chars:
+        preview = preview[:max_chars].rstrip() + "…"
+    print(c("  └─ ringkasan dibuat:", C.BOLD_GREEN))
+    print(c(f"     {preview}", C.DIM))
+    print()
 
 
 def maybe_summarize(db_path: str, session_id: str, url: str, model: str,
@@ -240,9 +263,22 @@ def maybe_summarize(db_path: str, session_id: str, url: str, model: str,
         chunk_text = f"[RINGKASAN SEBELUMNYA]\n{prior_summary_text}\n\n{chunk_text}"
 
     try:
-        new_summary_text = _summarize_text(url, model, chunk_text, api_key=api_key)
+        n_attempts = SUMMARIZE_MAX_RETRIES + 1
+        with Spinner("Meringkas riwayat percakapan...") as spinner:
+            def _progress(attempt: int, total: int) -> None:
+                fraction = (attempt + 1) / total
+                spinner.set_progress(fraction)
+                spinner.set_status(
+                    f"mengirim ke model {model} (percobaan {attempt + 1}/{total})"
+                )
+
+            new_summary_text = _summarize_text(
+                url, model, chunk_text,
+                api_key=api_key, progress=_progress,
+            )
         upto_id = to_summarize[-1]["id"]
         dbmod.save_summary(db_path, session_id, upto_id, new_summary_text)
+        _print_summary_result(new_summary_text)
     except Exception:
 
         logger.warning(

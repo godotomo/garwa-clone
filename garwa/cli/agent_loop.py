@@ -39,6 +39,7 @@ from .llm_errors import ContextExceededError
 from .llm_errors import RepetitionLoopError
 from .llm_errors import TruncatedGenerationError
 from .markdown_render import _render_markdown_once
+from .spinner import Spinner
 from .text_utils import _similarity
 from .tool_exec import execute_tool
 from .tool_schema import _convert_alt_tool_call_syntax
@@ -69,6 +70,29 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
 
     _truncation_count = 0
     _MAX_TRUNCATION_RETRIES = 2
+
+    _t_start = time.monotonic()          # awal giliran (untuk durasi total)
+    _iteration_count = 0                 # jumlah iterasi loop (putaran model)
+    _error_count = 0                     # jumlah tool_call yang menghasilkan error
+
+    def _emit_summary():
+        """Cetak ringkasan akhir giliran: jumlah tool call, sukses/error,
+        durasi total, dan jumlah iterasi. Dipanggil di setiap titik return
+        (termasuk jalur berhenti paksa karena loop/truncation/error-loop)
+        supaya pengguna selalu mendapat gambaran singkat aktivitas giliran.
+        """
+        _t_total = time.monotonic() - _t_start
+        _success = _tool_call_seq - _error_count
+        print(c("─" * 60, C.DIM))
+        print(c("  Ringkasan giliran", C.BOLD))
+        print(c(
+            f"  tool calls : {_tool_call_seq}  (✓{_success} ✗{_error_count})",
+            C.BOLD_GREEN if _error_count == 0 else C.YELLOW,
+        ))
+        print(c(f"  durasi     : {_t_total:.1f}s", C.DIM))
+        print(c(f"  iterasi    : {_iteration_count}", C.DIM))
+        if _truncation_count:
+            print(c(f"  truncasi   : {_truncation_count}x", C.YELLOW))
 
     def _build_context_messages(context_window_tokens: int):
         """Rakit `messages` dari histori DB via context_manager, memakai
@@ -178,7 +202,8 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
             )
 
     for _ in range(args.max_tool_iters):
-
+        _iteration_count += 1
+        print(c("─" * 60, C.DIM))
         attempt_budget = args.context_window
         messages = _build_context_messages(attempt_budget)
 
@@ -281,6 +306,7 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                     "batas token (max_tokens/n_predict) yang lebih besar.",
                     C.RED,
                 ))
+                _emit_summary()
                 return last_visible
 
             print(c(
@@ -393,6 +419,7 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                     C.DIM,
                 ))
                 time.sleep(state.LOOP_BREAK_COOLDOWN_SECONDS)
+                _emit_summary()
                 return last_visible
 
         dbmod.add_message(
@@ -412,6 +439,7 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
         name, arguments = extract_tool_call(assistant_text)
 
         if name is None:
+            _emit_summary()
             return last_visible
 
         if name == "PARSE_ERROR":
@@ -444,13 +472,32 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
 
         _tool_call_seq += 1
         state._tool_call_index.set(_tool_call_seq)
-        result = execute_tool(name, arguments, args.auto_approve)
+        _t0 = time.monotonic()
+        if args.auto_approve:
+            # Mode non-interaktif: tidak ada prompt konfirmasi stdin, jadi
+            # aman menampilkan spinner selama tool berjalan.
+            with Spinner(f"menjalankan {name}"):
+                result = execute_tool(name, arguments, args.auto_approve)
+        else:
+            # Mode interaktif: tool yang destruktif/force bisa memunculkan
+            # prompt konfirmasi lewat stdin. Spinner ditiadakan agar prompt
+            # tidak bertabrakan dengan karakter spinner di terminal.
+            result = execute_tool(name, arguments, args.auto_approve)
+        _elapsed = time.monotonic() - _t0
+        _is_error = result.strip().startswith("[ERROR]") or result.strip().startswith("[DITOLAK]")
+        _icon = "✗" if _is_error else "✓"
+        _status_color = C.BOLD_RED if _is_error else C.BOLD_GREEN
+        print(c(
+            f"  {_icon} {name} ({_elapsed:.2f}s)",
+            _status_color,
+        ))
         print(c("  ← hasil:", C.MAGENTA))
         preview = result if len(result) < 1500 else result[:1500] + "\n...(dipotong)"
         print(c(preview, C.DIM))
 
         _is_error = result.strip().startswith("[ERROR]") or result.strip().startswith("[DITOLAK]")
         if _is_error:
+            _error_count += 1
 
             try:
                 _arg_fp = json.dumps(arguments, sort_keys=True, ensure_ascii=False)
@@ -535,6 +582,7 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                         C.DIM,
                     ))
                     time.sleep(state.LOOP_BREAK_COOLDOWN_SECONDS)
+                    _emit_summary()
                     return last_visible
 
         tool_result_msg = f"<tool_result>\n{result}\n</tool_result>"
@@ -551,4 +599,5 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
             "untuk giliran ini.",
             C.YELLOW,
         ))
+    _emit_summary()
     return last_visible

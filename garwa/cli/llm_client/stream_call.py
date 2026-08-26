@@ -94,7 +94,7 @@ def _call_llama_server_stream(url: str, model: str, messages: list,
         "pending": "",
         "ws_hold": "",
         "started": False,
-        "renderer": MarkdownTerminalRenderer(),
+        "renderer": MarkdownTerminalRenderer(model=model),
     }
 
     reasoning_preview = None if debug else ReasoningPreview()

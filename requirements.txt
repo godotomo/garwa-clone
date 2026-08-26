@@ -8,7 +8,10 @@ requests>=2.31
 #   (fallback: estimasi ~3.5 char/token)
 # - tree-sitter + tree-sitter-language-pack: outline simbol lebih akurat
 #   di repo_map.py (fallback: ekstraksi definisi berbasis regex per bahasa)
+# - prompt_toolkit: status bar menempel di dasar terminal + paste multi-baris
+#   native di CLI (fallback: baris status redup di atas prompt via input()/readline)
 beautifulsoup4>=4.12
 tiktoken>=0.7
 tree-sitter>=0.21
 tree-sitter-language-pack>=0.2
+prompt_toolkit>=3.0

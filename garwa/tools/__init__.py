@@ -220,10 +220,15 @@ TOOLS = {
         "destructive": False,
         "schema": {
             "name": "web_search",
-            "description": "Cari berita/informasi terkini melalui Google News RSS. Bukan general web search.",
+            "description": (
+                "Cari berita/informasi terkini melalui Google News RSS. Bukan general web search. "
+                "Gunakan param 'lang' untuk mengontrol bahasa: 'id' (Indonesia), 'en' (Inggris), "
+                "atau 'auto' (default) yang mencoba Indonesia lalu fallback ke Inggris."
+            ),
             "arguments": {
                 "query": "string (wajib) - topik/kata kunci pencarian",
                 "max_results": "integer (opsional, 1-10, default 5)",
+                "lang": "string (opsional, default 'auto') - bahasa hasil: 'id', 'en', atau 'auto'",
             },
         },
     },

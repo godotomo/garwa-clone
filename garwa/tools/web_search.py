@@ -180,14 +180,32 @@ def _decode_google_news_url(source_url: str) -> str:
     return source_url
 
 
-def _search_google_news_rss(query: str, max_results: int) -> list[dict]:
+_NEWS_LOCALES = {
+    "id": ("id", "ID", "ID:id"),
+    "en": ("en", "US", "US:en"),
+}
+
+
+def _resolve_news_locale(lang: str) -> tuple[str, str, str]:
+    """Peta bahasa -> (hl, gl, ceid) untuk Google News RSS.
+
+    `lang` yang tidak dikenal dianggap "auto" (default lokal Indonesia).
+    """
+    key = (str(lang or "").strip().lower() or "auto")
+    if key in _NEWS_LOCALES:
+        return _NEWS_LOCALES[key]
+    return (state.GOOGLE_NEWS_HL, state.GOOGLE_NEWS_GL, state.GOOGLE_NEWS_CEID)
+
+
+def _search_google_news_rss(query: str, max_results: int, lang: str = "auto") -> list[dict]:
+    hl, gl, ceid = _resolve_news_locale(lang)
     response = _remote_get(
         "https://news.google.com/rss/search",
         params={
             "q": query,
-            "hl": state.GOOGLE_NEWS_HL,
-            "gl": state.GOOGLE_NEWS_GL,
-            "ceid": state.GOOGLE_NEWS_CEID,
+            "hl": hl,
+            "gl": gl,
+            "ceid": ceid,
         },
         allow_redirects=True,
     )
@@ -213,11 +231,18 @@ def _search_google_news_rss(query: str, max_results: int) -> list[dict]:
     return results
 
 
-def tool_web_search(query: str, max_results: int = 5) -> str:
+def tool_web_search(query: str, max_results: int = 5, lang: str = "auto") -> str:
     """Cari berita/informasi terkini melalui Google News RSS.
 
     Bukan general web search. Gunakan untuk berita, event, pengumuman,
     dan perkembangan terkini.
+
+    Parameter `lang` (opsional):
+      - "id"  -> hasil berbahasa Indonesia (lokal Indonesia).
+      - "en"  -> hasil berbahasa Inggris (lokal AS).
+      - "auto" (default) -> coba bahasa Indonesia dulu; jika tidak ada hasil,
+        otomatis fallback ke bahasa Inggris. Berguna untuk query yang
+        relevan lintas bahasa (mis. berita internasional).
 
     PENTING: Untuk query relatif seperti "hari ini", "terbaru", "saat ini",
     "kemarin", atau "minggu ini", tool mengambil tanggal aktual WIB dari
@@ -231,15 +256,25 @@ def tool_web_search(query: str, max_results: int = 5) -> str:
         return "[ERROR] query wajib diisi."
 
     original_query, search_query = _prepare_news_query(query)
-    try:
-        results = _search_google_news_rss(search_query, max_results)
-    except ET.ParseError as e:
-        return f"[ERROR: web_search RSS tidak valid -- {e}]"
-    except requests.RequestException as e:
-        return f"[ERROR: web_search gagal -- {e}]"
-    except Exception as e:
-        return f"[ERROR: web_search gagal -- {e}]"
+    lang = (str(lang or "").strip().lower() or "auto")
 
+    def _run(locale: str):
+        try:
+            return _search_google_news_rss(search_query, max_results, locale)
+        except ET.ParseError as e:
+            return f"[ERROR: web_search RSS tidak valid -- {e}]"
+        except requests.RequestException as e:
+            return f"[ERROR: web_search gagal -- {e}]"
+        except Exception as e:
+            return f"[ERROR: web_search gagal -- {e}]"
+
+    results = _run(lang)
+    # Fallback otomatis: mode auto + hasil kosong -> coba bahasa Inggris.
+    if lang == "auto" and isinstance(results, list) and not results:
+        results = _run("en")
+
+    if isinstance(results, str):
+        return results
     if not results:
         return f"[web_search] Tidak ada hasil untuk query: {query!r}"
 

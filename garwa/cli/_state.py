@@ -38,6 +38,9 @@ from ..tools import TOOLS
 import contextvars
 
 _tool_call_index: contextvars.ContextVar[int] = contextvars.ContextVar("tool_call_index", default=0)
+# Akumulasi jumlah tool call yang benar-benar dieksekusi selama sesi interaktif
+# berjalan (di-increment di execute_tool, di-reset saat new_session/resume).
+TOOL_CALL_TOTAL = 0
 _WARNED_CONTEXT_MANAGER_NO_AUTH = [False]
 _WARNED_CONTEXT_MANAGER_NO_TOOLS_BUDGET = [False]
 LOOP_REPEAT_WINDOW = 4

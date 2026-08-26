@@ -32,11 +32,11 @@ from .. import config
 from .. import db as dbmod
 from .. import tools as tools_module
 from . import _state as state
+from .. import __version__
 from .agent_loop import run_agent_loop
 from .auto_mode import run_auto_mode
 from .colors import C
 from .colors import c
-from .colors import c_prompt
 from .file_drop import _extract_dropped_paths
 from .file_drop import handle_dropped_files
 from .llm_client import _apply_detected_n_ctx
@@ -44,10 +44,48 @@ from .llm_client import check_llama_server_connection
 from .overnight import run_overnight_mode
 from .paste_input import _describe_paste
 from .paste_input import _format_pasted_attachment
-from .paste_input import read_user_input
+from .prompt_ui import prompt_with_status
 from .skills import build_system_prompt
+from .slash_commands import handle_slash_command
 from .text_utils import confirm
 from .tool_schema import _init_tool_registry
+
+
+# Lokasi file history readline (persisten antar sesi CLI).
+HISTORY_DIR = os.path.join(os.path.expanduser("~"), ".garwa")
+HISTORY_FILE = os.path.join(HISTORY_DIR, "history.txt")
+HISTORY_MAX = 1000
+
+
+def _init_readline_history() -> None:
+    """Load history readline dari disk (persisten antar sesi).
+
+    History disimpan per mesin di ~/.garwa/history.txt agar perintah yang
+    pernah diketik (prompt, slash-command) bisa dinavigasi ulang dengan
+    panah atas/bawah meski CLI sudah ditutup lalu dibuka lagi.
+    """
+    if readline is None:
+        return  # platform tanpa modul readline (mis. Windows murni)
+    try:
+        os.makedirs(HISTORY_DIR, exist_ok=True)
+        if os.path.exists(HISTORY_FILE):
+            readline.read_history_file(HISTORY_FILE)
+        readline.set_history_length(HISTORY_MAX)
+    except Exception:
+        # History bersifat best-effort; kegagalan tidak boleh menghentikan CLI.
+        pass
+
+
+def _save_readline_history() -> None:
+    """Simpan history readline ke disk saat CLI berhenti."""
+    if readline is None:
+        return
+    try:
+        os.makedirs(HISTORY_DIR, exist_ok=True)
+        readline.write_history_file(HISTORY_FILE)
+    except Exception:
+        pass
+
 
 
 
@@ -176,8 +214,9 @@ def main():
         " ██╔════╝ ██╔══██╗██╔══██╗██║    ██║██╔══██╗\n"
         " ██║  ███╗███████║██████╔╝██║ █╗ ██║███████║\n"
         " ╚██████╔╝██║  ██║██║  ██║╚███╔███╔╝██║  ██║\n",
-        C.BOLD,
+        C.BOLD_CYAN,
     ))
+    print(c(f"Garwa CLI v{__version__} — coding agent lokal", C.BOLD))
     print(c("Email: info@garwa.id", C.DIM))
     print(c("Website: www.garwa.id", C.DIM))
     print()
@@ -280,21 +319,25 @@ def main():
 
     tools_module.state.DB_PATH = args.db_path
     tools_module.state.SESSION_ID = session_id
+    state.TOOL_CALL_TOTAL = 0
     os.environ["GARWA_DB_PATH"] = args.db_path
     os.environ["GARWA_SESSION_ID"] = session_id
 
-    print(c(f"{state.AGENT_NAME} CLI — coding agent lokal (Ctrl+C untuk keluar)", C.BOLD))
+    print(c(f"{state.AGENT_NAME} CLI — coding agent lokal (Ctrl+C untuk keluar)", C.BOLD_CYAN))
     print(c(f"server model: {args.url}", C.DIM))
-    print(c(f"model       : {model_id or args.model}", C.DIM))
+    print(c(f"model       : {model_id or args.model}", C.BOLD_BLUE))
     print(c(
         f"auth        : {'aktif (API key di-set)' if args.api_key else 'TIDAK aktif (tanpa API key)'}",
-        C.DIM,
+        C.GREEN if args.api_key else C.RED,
     ))
     print(c(f"workdir     : {args.workdir}", C.DIM))
-    print(c(f"mode        : {'auto' if args.auto else 'interaktif'}", C.DIM))
+    print(c(f"mode        : {'auto' if args.auto else 'interaktif'}", C.BOLD_MAGENTA))
     print(c(f"auto-approve: {args.auto_approve}", C.DIM))
     print(c(f"debug       : {args.debug}{' (lihat STDERR)' if args.debug else ''}", C.DIM))
-    print(c(f"session     : {session_id} ({'dilanjutkan' if resumed else 'baru'})", C.DIM))
+    print(c(
+        f"session     : {session_id} ({'dilanjutkan' if resumed else 'baru'})",
+        C.BOLD_GREEN if resumed else C.BOLD_YELLOW,
+    ))
     print()
 
     system_content = build_system_prompt(args.workdir, args.skills_dir,
@@ -318,74 +361,148 @@ def main():
         run_auto_mode(args, session_id, system_content)
         return
 
-    while True:
-        try:
-            user_input = read_user_input(c_prompt("You> ", C.GREEN))
-        except (EOFError, KeyboardInterrupt):
-            dbmod.touch_session(args.db_path, session_id)
-            print(f"\nSampai jumpa. Lanjutkan sesi ini dengan: --resume {session_id}")
-            break
+    workdir_label = os.path.basename(os.path.normpath(args.workdir)) or args.workdir
+    prompt_label = _build_prompt_label(args, session_id, workdir_label)
+    _init_readline_history()
+    try:
+        while True:
+            try:
+                user_input = prompt_with_status(
+                    f"{prompt_label} ❯ ",
+                    _build_status_info(args, session_id),
+                )
+            except (EOFError, KeyboardInterrupt):
+                dbmod.touch_session(args.db_path, session_id)
+                print(f"\nSampai jumpa. Lanjutkan sesi ini dengan: --resume {session_id}")
+                break
 
-        if not user_input.strip():
-            continue
-        if user_input.strip() in ("/exit", "/quit"):
-            dbmod.end_session(args.db_path, session_id)
-            break
+            if not user_input.strip():
+                continue
 
-        dropped_paths = _extract_dropped_paths(user_input)
-        if dropped_paths:
+            # --- Slash-command (diproses sebelum drop file / paste / ke model) ---
+            if user_input.strip().startswith("/"):
+                result = handle_slash_command(user_input, args, session_id, system_content)
+                action = result.get("action", "continue")
+
+                if action == "exit":
+                    dbmod.end_session(args.db_path, session_id)
+                    break
+
+                if action in ("new_session", "resume"):
+                    # Ganti sesi aktif: simpan env/state baru, lanjut loop.
+                    session_id = result["session_id"]
+                    system_content = result["system_content"]
+                    tools_module.state.SESSION_ID = session_id
+                    state.TOOL_CALL_TOTAL = 0
+                    os.environ["GARWA_SESSION_ID"] = session_id
+                    prompt_label = _build_prompt_label(args, session_id, workdir_label)
+                    continue
+
+                if action == "skip":
+                    # Beberapa slash-command (/approve, /model, /ctx) mengubah
+                    # args -- rebuild label status bar supaya prompt ikut update.
+                    prompt_label = _build_prompt_label(args, session_id, workdir_label)
+                    continue
+
+                # action == "continue" -> command tak dikenal, jatuh ke bawah
+                # sebagai pesan biasa ke model.
+
+            if user_input.strip() in ("/exit", "/quit"):
+                dbmod.end_session(args.db_path, session_id)
+                break
+
+            dropped_paths = _extract_dropped_paths(user_input)
+            if dropped_paths:
+
+                try:
+                    message_to_store = handle_dropped_files(dropped_paths, args.workdir)
+                except (EOFError, KeyboardInterrupt):
+
+                    print(c(
+                        "\n[DIBATALKAN] Konfirmasi lampiran file dibatalkan. "
+                        "Kembali ke prompt.",
+                        C.YELLOW,
+                    ))
+                    continue
+                if not message_to_store:
+
+                    continue
+            elif "\n" in user_input:
+
+                print(c(_describe_paste(user_input), C.DIM))
+                message_to_store = _format_pasted_attachment(user_input)
+            else:
+                message_to_store = user_input
+
+            dbmod.add_message(args.db_path, session_id, "user", message_to_store, kind="chat")
 
             try:
-                message_to_store = handle_dropped_files(dropped_paths, args.workdir)
-            except (EOFError, KeyboardInterrupt):
+                run_agent_loop(args, session_id, system_content)
+            except KeyboardInterrupt:
 
                 print(c(
-                    "\n[DIBATALKAN] Konfirmasi lampiran file dibatalkan. "
-                    "Kembali ke prompt.",
+                    "\n[INTERRUPTED] Giliran dibatalkan (Ctrl+C). Kembali ke prompt.",
                     C.YELLOW,
                 ))
-                continue
-            if not message_to_store:
+                dbmod.touch_session(args.db_path, session_id)
+            except requests.exceptions.RequestException as e:
 
-                continue
-        elif "\n" in user_input:
+                print(c(
+                    f"\n[ERROR] Giliran ini gagal karena masalah koneksi/streaming "
+                    f"ke server model ({type(e).__name__}: {e}). Sesi tetap "
+                    f"jalan -- coba kirim pesan lagi, atau periksa apakah "
+                    f"server model masih hidup.",
+                    C.RED,
+                ))
+                dbmod.touch_session(args.db_path, session_id)
+            except Exception as e:
 
-            print(c(_describe_paste(user_input), C.DIM))
-            message_to_store = _format_pasted_attachment(user_input)
-        else:
-            message_to_store = user_input
+                print(c(
+                    f"\n[ERROR] Giliran ini berhenti karena error tak terduga: "
+                    f"{type(e).__name__}: {e}. Kembali ke prompt.",
+                    C.RED,
+                ))
+                dbmod.touch_session(args.db_path, session_id)
 
-        dbmod.add_message(args.db_path, session_id, "user", message_to_store, kind="chat")
+            print()
+    finally:
+        _save_readline_history()
 
-        try:
-            run_agent_loop(args, session_id, system_content)
-        except KeyboardInterrupt:
 
-            print(c(
-                "\n[INTERRUPTED] Giliran dibatalkan (Ctrl+C). Kembali ke prompt.",
-                C.YELLOW,
-            ))
-            dbmod.touch_session(args.db_path, session_id)
-        except requests.exceptions.RequestException as e:
+def _build_prompt_label(args, session_id, workdir_label):
+    """Buat label prompt ringkas: `garwa@workdir`.
 
-            print(c(
-                f"\n[ERROR] Giliran ini gagal karena masalah koneksi/streaming "
-                f"ke server model ({type(e).__name__}: {e}). Sesi tetap "
-                f"jalan -- coba kirim pesan lagi, atau periksa apakah "
-                f"server model masih hidup.",
-                C.RED,
-            ))
-            dbmod.touch_session(args.db_path, session_id)
-        except Exception as e:
+    Info detail (model, context window, session id, status auto-approve)
+    dipindah ke status bar terpisah lewat _build_status_info() supaya
+    prompt tetap pendek dan tidak memenuhi baris.
+    """
+    return f"garwa@{workdir_label}"
 
-            print(c(
-                f"\n[ERROR] Giliran ini berhenti karena error tak terduga: "
-                f"{type(e).__name__}: {e}. Kembali ke prompt.",
-                C.RED,
-            ))
-            dbmod.touch_session(args.db_path, session_id)
 
-        print()
+def _build_status_info(args, session_id):
+    """Buat string info status bar (model, ctx, ses, tools, sandbox, auto)
+    secara real-time dari args (yang bisa berubah via slash-command).
+
+    Didesain untuk dicetak sebagai baris status redup tepat di atas prompt,
+    sehingga prompt utama tetap ringkas (`garwa@workdir ❯`).
+    """
+    model = getattr(args, "model", "?")
+    ctx = getattr(args, "context_window", None)
+    auto = getattr(args, "auto_approve", False)
+    sandbox = getattr(tools_module.state, "SANDBOX_ENABLED", True)
+    tools_count = getattr(state, "TOOL_CALL_TOTAL", 0)
+
+    parts = [f"[{model}]"]
+    if ctx:
+        parts.append(f"ctx:{ctx}")
+    parts.append(f"ses:{session_id[:8]}")
+    parts.append(f"tools:{tools_count}")
+    # Sandbox & auto-approve selalu ditampilkan eksplisit (ON/OFF) supaya
+    # user sadar mode keamanan & persetujuan yang sedang aktif -- tidak
+    # hanya muncul saat ON seperti sebelumnya.
+    parts.append(f"sandbox:{'ON' if sandbox else 'OFF'}")
+    parts.append(f"auto:{'ON' if auto else 'OFF'}")
+    return " ".join(parts)
 
 
 if __name__ == "__main__":

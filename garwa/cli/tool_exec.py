@@ -47,6 +47,10 @@ def execute_tool(name: str, arguments: dict, auto_approve: bool) -> str:
     name = resolved_name
     spec = TOOLS[name]
 
+    # Hitung tool call yang benar-benar dieksekusi (bukan yang gagal parse)
+    # untuk ditampilkan di status bar (tools:N).
+    state.TOOL_CALL_TOTAL += 1
+
     if isinstance(arguments, dict) and "_raw" in arguments:
         print(c(f"  → memanggil tool: {name}({json.dumps(arguments, ensure_ascii=False)})", C.CYAN))
         raw_preview = arguments.get("_raw")

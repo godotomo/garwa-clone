@@ -60,9 +60,14 @@ class MarkdownTerminalRenderer:
       (feed), termasuk untuk konten di dalam fenced code block.
     """
 
-    def __init__(self):
+    def __init__(self, model: str | None = None):
 
-        self.PREFIX_TEXT = f"{state.AGENT_NAME}> "
+        # Prefix balasan model: pakai nama model bila tersedia (mis. "deepseek>"),
+        # fallback ke nama agent (AGENT_NAME) bila model tidak diketahui.
+        if model and model.strip():
+            self.PREFIX_TEXT = f"{model.strip()}> "
+        else:
+            self.PREFIX_TEXT = f"{state.AGENT_NAME}> "
 
         self.buffer = ""            # raw text baris yang belum final
         self.table_lines = []

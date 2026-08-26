@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+#
+# install.sh -- instalasi Garwa CLI
+#
+# Membuat perintah `garwa` yang bisa dipanggil dari folder mana pun (workdir =
+# folder tempat Anda menjalankannya), dengan cara:
+#
+#   1. Membuat virtualenv terisolasi di dalam repo (garwa/.venv) supaya
+#      dependency tidak mengotori Python sistem.
+#   2. Menginstal dependency dari requirements.txt ke venv tersebut.
+#   3. Membuat launcher `garwa` di ~/.local/bin (atau folder yang Anda pilih
+#      lewat --prefix) yang memanggil venv python + garwa_cli.py.
+#
+# Pemakaian:
+#   ./install.sh                 # instal default (venv + launcher di ~/.local/bin)
+#   ./install.sh --prefix DIR    # taruh launcher di DIR (harus ada di PATH)
+#   ./install.sh --no-venv       # pakai python3 sistem, tanpa venv
+#   ./install.sh --uninstall     # hapus launcher (dan venv dengan --purge)
+#   ./install.sh --purge         # hapus launcher + venv
+#
+# Setelah instal, pastikan folder launcher ada di PATH, lalu jalankan:
+#   garwa --help
+#   garwa --workdir "$PWD"   # (opsional; sebenarnya sudah default ke folder saat ini)
+
+set -euo pipefail
+
+# --- Lokasi repo (folder tempat install.sh berada) ---------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$SCRIPT_DIR"
+PYTHON_BIN="${PYTHON:-python3}"
+
+# --- Konfigurasi default ------------------------------------------------------
+PREFIX="${HOME}/.local/bin"
+USE_VENV=1
+UNINSTALL=0
+PURGE=0
+
+usage() {
+    # Tampilkan blok komentar header (baris yang diawali '#') dari file ini,
+    # melewati shebang (baris 1) dan baris kosong.
+    awk 'NR>1 && NR<=40 && /^#/ { sub(/^# ?/, ""); print } NR>1 && NR<=40 && !/^#/ && $0!="" { exit }' "$0"
+    echo ""
+    echo "Opsi:"
+    echo "  --prefix DIR    folder tempat launcher 'garwa' dibuat (default: ~/.local/bin)"
+    echo "  --no-venv       jangan buat venv; pakai python3 sistem"
+    echo "  --uninstall     hapus launcher 'garwa' saja"
+    echo "  --purge         hapus launcher 'garwa' + folder venv"
+    echo "  -h, --help      tampilkan bantuan ini"
+}
+
+# --- Parse argumen ------------------------------------------------------------
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --prefix)
+            PREFIX="$2"; shift 2;;
+        --no-venv)
+            USE_VENV=0; shift;;
+        --uninstall)
+            UNINSTALL=1; shift;;
+        --purge)
+            UNINSTALL=1; PURGE=1; shift;;
+        -h|--help)
+            usage; exit 0;;
+        *)
+            echo "Opsi tidak dikenal: $1" >&2
+            usage >&2; exit 1;;
+    esac
+done
+
+VENV_DIR="$REPO_ROOT/.venv"
+LAUNCHER_PATH="$PREFIX/garwa"
+
+# --- Uninstall ----------------------------------------------------------------
+if [[ "$UNINSTALL" == "1" ]]; then
+    if [[ -e "$LAUNCHER_PATH" ]]; then
+        rm -f "$LAUNCHER_PATH"
+        echo "  [ok] Launcher dihapus: $LAUNCHER_PATH"
+    else
+        echo "  [..] Launcher tidak ditemukan: $LAUNCHER_PATH"
+    fi
+    if [[ "$PURGE" == "1" && -d "$VENV_DIR" ]]; then
+        rm -rf "$VENV_DIR"
+        echo "  [ok] Venv dihapus: $VENV_DIR"
+    fi
+    echo "Selesai."
+    exit 0
+fi
+
+# --- Validasi awal ------------------------------------------------------------
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+    echo "ERROR: '$PYTHON_BIN' tidak ditemukan di PATH." >&2
+    exit 1
+fi
+if [[ ! -f "$REPO_ROOT/garwa_cli.py" ]]; then
+    echo "ERROR: garwa_cli.py tidak ditemukan di $REPO_ROOT." >&2
+    echo "       Pastikan install.sh dijalankan dari root repo Garwa." >&2
+    exit 1
+fi
+if [[ ! -f "$REPO_ROOT/requirements.txt" ]]; then
+    echo "ERROR: requirements.txt tidak ditemukan di $REPO_ROOT." >&2
+    exit 1
+fi
+
+# --- Siapkan folder launcher --------------------------------------------------
+if [[ ! -d "$PREFIX" ]]; then
+    mkdir -p "$PREFIX"
+    echo "  [ok] Membuat folder launcher: $PREFIX"
+fi
+
+# --- Siapkan Python yang dipakai ---------------------------------------------
+if [[ "$USE_VENV" == "1" ]]; then
+    echo "==> Menyiapkan virtualenv di $VENV_DIR"
+    "$PYTHON_BIN" -m venv "$VENV_DIR"
+    VENV_PYTHON="$VENV_DIR/bin/python"
+    VENV_PIP="$VENV_DIR/bin/pip"
+    if [[ ! -x "$VENV_PYTHON" ]]; then
+        echo "ERROR: gagal membuat venv (python -m venv)." >&2
+        echo "       Coba install dengan --no-venv, atau install 'python3-venv'." >&2
+        exit 1
+    fi
+    echo "==> Menginstal dependency ke venv"
+    "$VENV_PIP" install --upgrade pip >/dev/null
+    "$VENV_PIP" install -r "$REPO_ROOT/requirements.txt"
+    RUNNER="$VENV_PYTHON"
+else
+    echo "==> Mode --no-venv: memakai $PYTHON_BIN sistem"
+    RUNNER="$PYTHON_BIN"
+fi
+
+# --- Tulis launcher -----------------------------------------------------------
+cat > "$LAUNCHER_PATH" <<EOF
+#!/usr/bin/env bash
+# Launcher Garwa -- dibuat otomatis oleh install.sh. Jangan edit manual.
+# Menjalankan garwa dengan workdir = folder tempat perintah ini dipanggil.
+REPO_ROOT="$REPO_ROOT"
+RUNNER="$RUNNER"
+exec "\$RUNNER" "\$REPO_ROOT/garwa_cli.py" --workdir "\$PWD" "\$@"
+EOF
+chmod +x "$LAUNCHER_PATH"
+echo "  [ok] Launcher dibuat: $LAUNCHER_PATH"
+
+# --- Verifikasi ---------------------------------------------------------------
+echo ""
+echo "==> Verifikasi instalasi"
+if "$RUNNER" -c "import sys; sys.path.insert(0, '$REPO_ROOT'); import garwa; print('  garwa version:', garwa.__version__)" 2>/dev/null; then
+    :
+else
+    echo "  (impor garwa gagal -- mungkin dependency belum lengkap, tapi launcher tetap dibuat.)"
+fi
+
+if [[ ":$PATH:" == *":$PREFIX:"* ]]; then
+    echo ""
+    echo "Instalasi selesai. Coba jalankan dari folder mana pun:"
+    echo "    garwa --help"
+    echo "    garwa --workdir \"\$PWD\""
+else
+    echo ""
+    echo "Instalasi selesai, tapi '$PREFIX' belum ada di PATH."
+    echo "Tambahkan ke shell profile Anda, misalnya di ~/.zshrc:"
+    echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
+    echo "lalu buka terminal baru dan jalankan: garwa --help"
+fi
