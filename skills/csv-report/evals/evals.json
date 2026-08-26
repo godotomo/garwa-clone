@@ -1,0 +1,48 @@
+{
+  "skill_name": "csv-report",
+  "evals": [
+    {
+      "id": 1,
+      "name": "numeric-summary",
+      "prompt": "I have a sales export at data/sales.csv with columns date, product, qty, price, revenue. Make me a summary report of it.",
+      "expected_output": "A Markdown report with overview, data quality, summary statistics (mean/median/min/max/std for numeric columns), and sample data.",
+      "files": ["data/sales.csv"],
+      "assertions": [
+        {
+          "name": "report_contains_overview",
+          "text": "Report contains an '## Overview' section",
+          "passed": false
+        },
+        {
+          "name": "numeric_stats_computed",
+          "text": "Numeric columns (qty, price, revenue) have mean/median/min/max/std",
+          "passed": false
+        },
+        {
+          "name": "data_quality_reported",
+          "text": "Report explicitly states missing values and duplicate rows",
+          "passed": false
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "data-quality-check",
+      "prompt": "Check this customer CSV for data quality issues and summarize what you find: data/customers.csv",
+      "expected_output": "A report highlighting missing values, duplicates, and malformed entries per column.",
+      "files": ["data/customers.csv"],
+      "assertions": [
+        {
+          "name": "missing_reported",
+          "text": "Missing values are reported per column",
+          "passed": false
+        },
+        {
+          "name": "duplicates_reported",
+          "text": "Duplicate rows are reported",
+          "passed": false
+        }
+      ]
+    }
+  ]
+}

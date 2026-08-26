@@ -1,0 +1,14 @@
+# Wajib
+requests>=2.31
+
+# Opsional -- dipakai kalau terinstall, ada fallback otomatis kalau tidak:
+# - beautifulsoup4: parsing HTML lebih akurat di tools/webfetch.py
+#   (fallback: strip tag pakai regex sederhana)
+# - tiktoken: estimasi jumlah token lebih presisi di token_utils.py
+#   (fallback: estimasi ~3.5 char/token)
+# - tree-sitter + tree-sitter-language-pack: outline simbol lebih akurat
+#   di repo_map.py (fallback: ekstraksi definisi berbasis regex per bahasa)
+beautifulsoup4>=4.12
+tiktoken>=0.7
+tree-sitter>=0.21
+tree-sitter-language-pack>=0.2

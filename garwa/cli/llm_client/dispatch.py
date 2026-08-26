@@ -1,0 +1,191 @@
+"""cli/llm_client/dispatch.py
+Dipecah lebih lanjut dari cli/llm_client.py.
+"""
+import argparse
+import base64
+import copy
+import difflib
+import json
+import mimetypes
+import os
+import re
+import select
+import shlex
+import shutil
+import sys
+import time
+import unicodedata
+from collections import OrderedDict
+from datetime import datetime
+from urllib.parse import unquote, urlparse
+
+try:
+
+    import readline  # noqa: F401
+except ImportError:
+    readline = None
+
+import requests
+
+from ...tools import TOOLS
+from .. import _state as state
+from ..colors import C
+from ..colors import c
+from ..llm_errors import LlamaServerStreamError
+from ..llm_errors import RepetitionLoopError
+from ..llm_errors import TruncatedGenerationError
+from ..llm_errors import _parse_context_exceeded
+from ..markdown_render import MarkdownTerminalRenderer
+from ..markdown_render import ReasoningPreview
+from ..stream_parse import _extract_stream_content
+from ..stream_parse import _extract_stream_finish_reason
+from ..stream_parse import _extract_stream_reasoning
+from ..stream_parse import _extract_stream_usage
+from ..stream_parse import _flush_visible_text
+from ..stream_parse import _print_stream_text
+from ..stream_parse import _stream_visible_text
+from ..text_utils import _detect_repetition
+from ..text_utils import _resp_text_utf8
+from ..tool_schema import _accumulate_stream_tool_calls
+from ..tool_schema import _native_tool_calls_to_blocks
+from ..tool_schema import build_openai_tools_payload
+from .nonstream_call import _call_llama_server_nonstream
+from .stream_call import _call_llama_server_stream
+
+
+
+def _is_rate_limit_error(e: Exception) -> bool:
+    """Deteksi error rate limit (HTTP 429) dari exception yang dilempar
+    _call_llama_server_stream()/_call_llama_server_nonstream().
+
+    Server proxy/tunnel (mis. 9inference.cloud) sering membalas 429 dengan
+    body JSON berisi type "rate_limit_error" / code "rate_limit_exceeded"
+    saat kita mengirim terlalu banyak request dalam waktu singkat. Deteksi
+    ini dipakai call_llama_server() untuk retry dengan sleep (backoff),
+    alih-alih langsung menyerah dan mematikan giliran.
+
+    Return True kalau exception adalah HTTPError dengan status 429, ATAU
+    body response-nya mengandung penanda rate_limit (untuk jaga-jaga kalau
+    status code-nya bukan 429 tapi body-nya bilang rate limit).
+    """
+    if isinstance(e, requests.exceptions.HTTPError):
+        resp = e.response
+        if resp is not None and resp.status_code == 429:
+            return True
+
+        if resp is not None:
+            try:
+                body = _resp_text_utf8(resp).lower()
+            except Exception:
+                body = ""
+            if "rate_limit" in body or "too many requests" in body:
+                return True
+    return False
+
+
+def _is_server_error(e: Exception) -> bool:
+    """Deteksi error server (HTTP 5xx) dari exception yang dilempar
+    _call_llama_server_stream()/_call_llama_server_nonstream().
+
+    HTTP 5xx (500 Internal Server Error, 502 Bad Gateway, 503 Service
+    Unavailable, 504 Gateway Timeout, dan sejenisnya) berarti server
+    model/proxy di depannya sedang bermasalah -- overload, restart,
+    upstream down, dsb. Sering kali ini bersifat sementara, jadi alih-alih
+    langsung mematikan seluruh giliran, call_llama_server() akan menunggu
+    SERVER_ERROR_BACKOFF_SECONDS (30 detik) lalu mencoba ulang beberapa
+    kali, persis seperti penanganan rate limit (HTTP 429).
+
+    Return True kalau exception adalah HTTPError dengan status code 500-599.
+    """
+    if isinstance(e, requests.exceptions.HTTPError):
+        resp = e.response
+        if resp is not None and resp.status_code is not None:
+            return 500 <= resp.status_code < 600
+    return False
+
+
+def call_llama_server(url: str, model: str, messages: list,
+                      temperature: float = 0.2, stream: bool = True,
+                      api_key: str = "", debug: bool = False) -> str:
+    """Call server model, streaming by default.
+
+    The returned value is ALWAYS the complete assistant text, so the existing
+    tool parser/context/DB pipeline remains unchanged.
+
+    api_key: kalau diisi, dikirim sebagai header "Authorization: Bearer
+    <api_key>" -- WAJIB kalau server model dijalankan dengan flag --api-key
+    (lihat notebook llama_server_cloudflare_tunnel_v2.ipynb). Sebelumnya CLI
+    ini tidak pernah mengirim header ini sama sekali, jadi semua request akan
+    gagal 401 kalau server mewajibkan API key.
+
+    debug: kalau True, cetak request (payload) dan seluruh respon mentah
+    server (tiap chunk SSE / body JSON) ke STDERR, termasuk baris yang
+    gagal di-parse dan diam-diam dilewati saat debug=False. Dipakai untuk
+    mendiagnosis kasus "ada bagian respon yang belum ter-parsing dengan
+    benar" tanpa harus menebak-nebak dari perilaku CLI.
+
+    Rate limit (HTTP 429): kalau server membalas 429 (terlalu banyak
+    request), fungsi ini menunggu 30 detik lalu mencoba ulang, maksimal
+    RATE_LIMIT_RETRY_ATTEMPTS percobaan total. Ini mencegah seluruh giliran
+    gagal hanya karena kita kebetulan kena rate limit sesaat -- yang umum
+    terjadi di proxy publik.
+
+    Error server (HTTP 5xx): kalau server membalas 500/502/503/504 (atau
+    status 5xx lain -- overload, restart, upstream down), fungsi ini juga
+    menunggu 30 detik lalu mencoba ulang, maksimal
+    SERVER_ERROR_RETRY_ATTEMPTS percobaan total, persis seperti penanganan
+    rate limit. Error 5xx sering bersifat sementara, jadi jangan langsung
+    mematikan seluruh giliran.
+    """
+    for attempt in range(1, state.RATE_LIMIT_RETRY_ATTEMPTS + 1):
+        try:
+            if stream:
+                result = _call_llama_server_stream(url, model, messages, temperature,
+                                                    api_key=api_key,
+                                                    debug=debug)
+            else:
+                result = _call_llama_server_nonstream(url, model, messages, temperature,
+                                                       api_key=api_key,
+                                                       debug=debug)
+            return result
+        except Exception as e:
+            is_rate_limit = _is_rate_limit_error(e)
+            is_server_error = _is_server_error(e)
+            if not (is_rate_limit or is_server_error):
+                raise
+            max_attempts = (state.RATE_LIMIT_RETRY_ATTEMPTS if is_rate_limit
+                            else state.SERVER_ERROR_RETRY_ATTEMPTS)
+            if attempt >= max_attempts:
+
+                if is_rate_limit:
+                    print(c(
+                        f"[ERROR] Rate limit (HTTP 429) masih berlanjut setelah "
+                        f"{max_attempts} percobaan. Coba lagi nanti.",
+                        C.RED,
+                    ))
+                else:
+                    print(c(
+                        f"[ERROR] Error server (HTTP {e.response.status_code if e.response is not None else '5xx'}) "
+                        f"masih berlanjut setelah {max_attempts} percobaan. Coba lagi nanti.",
+                        C.RED,
+                    ))
+                raise
+            backoff = (state.RATE_LIMIT_BACKOFF_SECONDS if is_rate_limit
+                       else state.SERVER_ERROR_BACKOFF_SECONDS)
+            sleep_sec = backoff[attempt - 1]
+            if is_rate_limit:
+                print(c(
+                    f"[RATE-LIMIT] Server membalas 429 (terlalu banyak request). "
+                    f"Menunggu {sleep_sec} detik lalu mencoba ulang "
+                    f"(percobaan {attempt + 1}/{max_attempts})...",
+                    C.YELLOW,
+                ))
+            else:
+                status = e.response.status_code if e.response is not None else "5xx"
+                print(c(
+                    f"[SERVER-ERROR] Server membalas HTTP {status} (server error). "
+                    f"Menunggu {sleep_sec} detik lalu mencoba ulang "
+                    f"(percobaan {attempt + 1}/{max_attempts})...",
+                    C.YELLOW,
+                ))
+            time.sleep(sleep_sec)

@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skill Evaluation Review</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel2: #1d212b;
+    --border: #262b36;
+    --text: #e6e8ec;
+    --muted: #9aa3b2;
+    --accent: #4f8cff;
+    --good: #34c77b;
+    --bad: #ff5c5c;
+    --warn: #ffb454;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+  }
+  header {
+    padding: 20px 32px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 20px; }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+  .tabs { display: flex; gap: 8px; }
+  .tab {
+    padding: 8px 18px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel2);
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  main { padding: 24px 32px; max-width: 1100px; margin: 0 auto; }
+  .view { display: none; }
+  .view.active { display: block; }
+  .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 28px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+  .card .label { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  .card .value { font-size: 26px; font-weight: 700; margin-top: 4px; }
+  .card .sub { font-size: 12px; color: var(--muted); }
+  .good { color: var(--good); }
+  .bad { color: var(--bad); }
+  .warn { color: var(--warn); }
+  section { margin-bottom: 32px; }
+  h2 { font-size: 18px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  h3 { font-size: 15px; margin: 18px 0 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  .bar { height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; min-width: 80px; }
+  .bar > span { display: block; height: 100%; background: var(--accent); }
+  .delta { font-weight: 600; }
+  .note { background: var(--panel); border-left: 3px solid var(--warn); padding: 12px 14px; border-radius: 6px; margin: 8px 0; }
+  code { background: var(--panel); border: 1px solid var(--border); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  .empty { color: var(--muted); font-style: italic; }
+
+  /* Outputs tab */
+  .eval-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+  .eval-nav .title { font-weight: 700; font-size: 16px; }
+  .eval-nav .count { color: var(--muted); font-size: 13px; }
+  .btn {
+    padding: 8px 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel2);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+  .block { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; }
+  .block h4 { margin: 0 0 8px; font-size: 14px; color: var(--muted); }
+  .prompt { white-space: pre-wrap; }
+  .output-file { border-top: 1px solid var(--border); padding: 10px 0; }
+  .output-file:first-of-type { border-top: none; }
+  .output-file .fname { font-weight: 600; font-size: 13px; color: var(--accent); margin-bottom: 6px; }
+  .output-file pre { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; padding: 10px; overflow: auto; max-height: 320px; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
+  .output-file img { max-width: 100%; border: 1px solid var(--border); border-radius: 6px; }
+  .output-file .dl { font-size: 12px; color: var(--muted); }
+  details { margin-top: 8px; }
+  summary { cursor: pointer; font-weight: 600; font-size: 14px; color: var(--accent); padding: 6px 0; }
+  .grade { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+  .grade:last-child { border-bottom: none; }
+  .grade .mark { font-weight: 700; }
+  .grade .ev { color: var(--muted); font-size: 13px; }
+  textarea {
+    width: 100%;
+    min-height: 80px;
+    background: var(--panel2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+    font-family: inherit;
+    font-size: 14px;
+    resize: vertical;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  .saved-hint { font-size: 12px; color: var(--muted); min-height: 16px; margin-top: 4px; }
+  .prev-feedback { background: var(--panel2); border-left: 3px solid var(--warn); padding: 10px 12px; border-radius: 6px; font-size: 14px; white-space: pre-wrap; }
+  .submit-row { display: flex; justify-content: flex-end; gap: 12px; align-items: center; margin-top: 16px; }
+  #toast { position: fixed; bottom: 24px; right: 24px; background: var(--good); color: #062; padding: 12px 18px; border-radius: 8px; font-weight: 600; opacity: 0; transition: opacity .25s; pointer-events: none; }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Skill Evaluation Review</h1>
+    <p id="meta">Loading…</p>
+  </div>
+  <div class="tabs">
+    <button class="tab active" id="tab-outputs" onclick="switchTab('outputs')">Outputs</button>
+    <button class="tab" id="tab-benchmark" onclick="switchTab('benchmark')">Benchmark</button>
+  </div>
+</header>
+<main>
+  <div class="view active" id="view-outputs">
+    <div class="eval-nav">
+      <div>
+        <div class="title" id="eval-title"></div>
+        <div class="count" id="eval-count"></div>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn" id="prev-btn" onclick="nav(-1)">← Prev</button>
+        <button class="btn" id="next-btn" onclick="nav(1)">Next →</button>
+      </div>
+    </div>
+    <div id="eval-body"></div>
+    <div class="submit-row">
+      <span id="save-status" class="saved-hint"></span>
+      <button class="btn primary" id="submit-btn" onclick="submitAll()">Submit All Reviews</button>
+    </div>
+  </div>
+
+  <div class="view" id="view-benchmark">
+    <div class="summary" id="summary"></div>
+    <section id="configs"></section>
+    <section id="deltas"></section>
+    <section id="notes"></section>
+  </div>
+</main>
+<div id="toast"></div>
+
+<script>
+const DATA = __VIEWER_DATA__;
+const FEEDBACK = {};  // run_id -> feedback text (auto-saved)
+let idx = 0;
+
+function el(tag, attrs, children) {
+  const node = document.createElement(tag);
+  if (attrs) {
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === "class") node.className = v;
+      else if (k === "text") node.textContent = v;
+      else node.setAttribute(k, v);
+    }
+  }
+  (children || []).forEach(c => {
+    if (typeof c === "string") node.appendChild(document.createTextNode(c));
+    else node.appendChild(c);
+  });
+  return node;
+}
+
+function pct(v) { return (v * 100).toFixed(1) + "%"; }
+function runId(evalName, config) { return evalName + "-" + config; }
+
+/* ---------- Tabs ---------- */
+function switchTab(name) {
+  document.getElementById("view-outputs").classList.toggle("active", name === "outputs");
+  document.getElementById("view-benchmark").classList.toggle("active", name === "benchmark");
+  document.getElementById("tab-outputs").classList.toggle("active", name === "outputs");
+  document.getElementById("tab-benchmark").classList.toggle("active", name === "benchmark");
+}
+
+/* ---------- Benchmark tab ---------- */
+function renderMeta() {
+  document.getElementById("meta").textContent =
+    `${DATA.skill_name} — iteration ${DATA.iteration}`;
+}
+
+function renderSummary() {
+  const wrap = document.getElementById("summary");
+  wrap.innerHTML = "";
+  (DATA.benchmark.configs || []).forEach(cfg => {
+    const color = cfg.pass_rate >= 0.8 ? "good" : cfg.pass_rate >= 0.5 ? "warn" : "bad";
+    wrap.appendChild(el("div", { class: "card" }, [
+      el("div", { class: "label", text: cfg.name }),
+      el("div", { class: "value " + color, text: pct(cfg.pass_rate) }),
+      el("div", { class: "sub", text: `time ${cfg.time_mean_seconds.toFixed(1)}s · ${cfg.tokens_mean.toLocaleString()} tokens` }),
+    ]));
+  });
+}
+
+function renderConfigs() {
+  const sec = document.getElementById("configs");
+  sec.innerHTML = "";
+  sec.appendChild(el("h2", { text: "Configurations" }));
+  (DATA.benchmark.configs || []).forEach(cfg => {
+    sec.appendChild(el("h3", { text: cfg.name }));
+    const table = el("table", null, [
+      el("tr", null, [
+        el("th", { text: "Eval" }),
+        el("th", { text: "Passed" }),
+        el("th", { text: "Rate" }),
+        el("th", { text: "Distribution" }),
+      ]),
+    ]);
+    (cfg.evals || []).forEach(ev => {
+      const rate = ev.total ? ev.passed / ev.total : 0;
+      table.appendChild(el("tr", null, [
+        el("td", { text: ev.eval_name }),
+        el("td", { text: `${ev.passed} / ${ev.total}` }),
+        el("td", { text: pct(rate) }),
+        el("td", null, [el("div", { class: "bar" }, [el("span", { style: `width:${rate * 100}%` })] )]),
+      ]));
+    });
+    sec.appendChild(table);
+  });
+}
+
+function renderDeltas() {
+  const sec = document.getElementById("deltas");
+  sec.innerHTML = "";
+  if (!DATA.benchmark.deltas || !DATA.benchmark.deltas.length) {
+    sec.appendChild(el("h2", { text: "Deltas" }));
+    sec.appendChild(el("p", { class: "empty", text: "No baseline comparison available." }));
+    return;
+  }
+  sec.appendChild(el("h2", { text: "Deltas (with_skill vs baseline)" }));
+  const table = el("table", null, [
+    el("tr", null, [
+      el("th", { text: "vs" }),
+      el("th", { text: "Pass rate" }),
+      el("th", { text: "Time" }),
+      el("th", { text: "Tokens" }),
+    ]),
+  ]);
+  DATA.benchmark.deltas.forEach(d => {
+    const cls = d.pass_rate_delta >= 0 ? "good" : "bad";
+    table.appendChild(el("tr", null, [
+      el("td", { text: d.vs }),
+      el("td", { class: "delta " + cls, text: (d.pass_rate_delta >= 0 ? "+" : "") + pct(d.pass_rate_delta) }),
+      el("td", { text: (d.time_delta_seconds >= 0 ? "+" : "") + d.time_delta_seconds.toFixed(1) + "s" }),
+      el("td", { text: (d.tokens_delta >= 0 ? "+" : "") + d.tokens_delta.toLocaleString() }),
+    ]));
+  });
+  sec.appendChild(table);
+}
+
+function renderNotes() {
+  const sec = document.getElementById("notes");
+  sec.innerHTML = "";
+  sec.appendChild(el("h2", { text: "Analyst notes" }));
+  const notes = DATA.benchmark.analyst_notes || [];
+  if (!notes.length) {
+    sec.appendChild(el("p", { class: "empty", text: "No analyst notes recorded." }));
+    return;
+  }
+  notes.forEach(n => sec.appendChild(el("div", { class: "note", text: n })));
+}
+
+/* ---------- Outputs tab ---------- */
+function renderOutputs(ev) {
+  const body = document.getElementById("eval-body");
+  body.innerHTML = "";
+
+  // Prompt
+  body.appendChild(el("div", { class: "block" }, [
+    el("h4", { text: "Prompt" }),
+    el("div", { class: "prompt", text: ev.prompt || "(no prompt)" }),
+  ]));
+
+  // Outputs per config
+  (ev.runs || []).forEach(run => {
+    const block = el("div", { class: "block" }, [el("h4", { text: "Output — " + run.name })]);
+    if (!run.outputs || !run.outputs.length) {
+      block.appendChild(el("p", { class: "empty", text: "No output files." }));
+    } else {
+      run.outputs.forEach(f => {
+        const file = el("div", { class: "output-file" }, [el("div", { class: "fname", text: f.name })]);
+        if (f.kind === "image") {
+          file.appendChild(el("img", { src: f.content }));
+        } else if (f.kind === "text") {
+          file.appendChild(el("pre", { text: f.content }));
+        } else {
+          file.appendChild(el("div", { class: "dl", text: "Binary file — download to inspect." }));
+        }
+        block.appendChild(file);
+      });
+    }
+    body.appendChild(block);
+  });
+
+  // Previous Output (iteration 2+)
+  if (ev.previous_outputs && ev.previous_outputs.length) {
+    const det = el("details", null, [el("summary", { text: "Previous Output" })]);
+    ev.previous_outputs.forEach(f => {
+      const file = el("div", { class: "output-file" }, [el("div", { class: "fname", text: f.name })]);
+      if (f.kind === "image") file.appendChild(el("img", { src: f.content }));
+      else if (f.kind === "text") file.appendChild(el("pre", { text: f.content }));
+      else file.appendChild(el("div", { class: "dl", text: "Binary file." }));
+      det.appendChild(file);
+    });
+    body.appendChild(el("div", { class: "block" }, [det]));
+  }
+
+  // Formal Grades
+  const hasGrades = (ev.runs || []).some(r => r.grades && r.grades.length);
+  if (hasGrades) {
+    const det = el("details", null, [el("summary", { text: "Formal Grades" })]);
+    (ev.runs || []).forEach(run => {
+      if (!run.grades || !run.grades.length) return;
+      det.appendChild(el("h4", { text: run.name }));
+      run.grades.forEach(g => {
+        const cls = g.passed ? "good" : "bad";
+        det.appendChild(el("div", { class: "grade" }, [
+          el("span", { class: "mark " + cls, text: g.passed ? "PASS" : "FAIL" }),
+          el("span", { class: "ev", text: g.text + (g.evidence ? " — " + g.evidence : "") }),
+        ]));
+      });
+    });
+    body.appendChild(el("div", { class: "block" }, [det]));
+  }
+
+  // Feedback textbox (auto-saves)
+  const fbBlock = el("div", { class: "block" }, [el("h4", { text: "Feedback" })]);
+  const ta = el("textarea", { placeholder: "What would you change about this output? (empty = looks good)" });
+  const rid = runId(ev.eval_name, "with_skill");
+  ta.value = FEEDBACK[rid] || "";
+  ta.addEventListener("input", () => {
+    FEEDBACK[rid] = ta.value;
+    localStorage.setItem("eval_feedback", JSON.stringify(FEEDBACK));
+    document.getElementById("save-status").textContent = "Saved ✓";
+    setTimeout(() => { document.getElementById("save-status").textContent = ""; }, 1500);
+  });
+  fbBlock.appendChild(ta);
+
+  // Previous Feedback (iteration 2+)
+  if (ev.previous_feedback) {
+    fbBlock.appendChild(el("h4", { text: "Previous Feedback" }));
+    fbBlock.appendChild(el("div", { class: "prev-feedback", text: ev.previous_feedback }));
+  }
+  body.appendChild(fbBlock);
+}
+
+function updateNav() {
+  const ev = DATA.evals[idx];
+  document.getElementById("eval-title").textContent = ev.eval_name;
+  document.getElementById("eval-count").textContent = `${idx + 1} / ${DATA.evals.length}`;
+  document.getElementById("prev-btn").disabled = idx === 0;
+  document.getElementById("next-btn").disabled = idx === DATA.evals.length - 1;
+  renderOutputs(ev);
+}
+
+function nav(delta) {
+  const n = idx + delta;
+  if (n < 0 || n >= DATA.evals.length) return;
+  idx = n;
+  updateNav();
+}
+
+function loadLocalFeedback() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("eval_feedback") || "{}");
+    Object.assign(FEEDBACK, saved);
+  } catch (e) { /* ignore */ }
+}
+
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 2500);
+}
+
+function submitAll() {
+  const reviews = DATA.evals.map(ev => ({
+    run_id: runId(ev.eval_name, "with_skill"),
+    feedback: FEEDBACK[runId(ev.eval_name, "with_skill")] || "",
+    timestamp: new Date().toISOString(),
+  }));
+  const payload = JSON.stringify({ reviews: reviews, status: "complete" }, null, 2);
+
+  // Try POST to server first; fall back to downloading a file.
+  fetch("/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: payload })
+    .then(r => { if (r.ok) { toast("Feedback saved ✓"); } else { downloadFeedback(payload); } })
+    .catch(() => downloadFeedback(payload));
+}
+
+function downloadFeedback(payload) {
+  const blob = new Blob([payload], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "feedback.json";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast("feedback.json downloaded");
+}
+
+/* ---------- Keyboard navigation ---------- */
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT") return;
+  if (e.key === "ArrowLeft") nav(-1);
+  else if (e.key === "ArrowRight") nav(1);
+});
+
+/* ---------- Init ---------- */
+loadLocalFeedback();
+renderMeta();
+renderSummary();
+renderConfigs();
+renderDeltas();
+renderNotes();
+updateNav();
+</script>
+</body>
+</html>

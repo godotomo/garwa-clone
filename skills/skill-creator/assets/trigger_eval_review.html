@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trigger Eval Review — <span id="skill-name"></span></title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #262b36;
+    --text: #e6e8ec;
+    --muted: #9aa3b2;
+    --accent: #4f8cff;
+    --good: #34c77b;
+    --bad: #ff5c5c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+  }
+  header {
+    padding: 20px 28px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 20px; }
+  header .sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  main { padding: 24px 28px; max-width: 900px; margin: 0 auto; }
+  .desc {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 24px;
+    font-size: 14px;
+    white-space: pre-wrap;
+  }
+  .desc .label { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 6px; }
+  .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  .controls button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 16px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .controls button:hover { opacity: .9; }
+  .controls button.secondary { background: var(--border); }
+  #addBtn { background: var(--border); }
+  .item {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 12px;
+    align-items: start;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+  }
+  .item .toggle {
+    margin-top: 4px;
+    font-size: 13px;
+    color: var(--muted);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: center;
+  }
+  .item .toggle input { width: 18px; height: 18px; }
+  .item textarea {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 8px;
+    font-size: 14px;
+    font-family: inherit;
+    resize: vertical;
+    min-height: 48px;
+  }
+  .item .remove {
+    background: none;
+    border: none;
+    color: var(--bad);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 4px;
+    line-height: 1;
+  }
+  .tag { font-size: 12px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+  .tag.should { background: rgba(52,199,123,.15); color: var(--good); }
+  .tag.not { background: rgba(255,92,92,.15); color: var(--bad); }
+  .empty { color: var(--muted); font-style: italic; }
+  .note { color: var(--muted); font-size: 13px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Trigger Eval Review</h1>
+    <div class="sub" id="skill-name"></div>
+  </div>
+  <div class="controls">
+    <button id="addBtn">+ Add query</button>
+    <button id="exportBtn">Export Eval Set</button>
+  </div>
+</header>
+<main>
+  <div class="desc"><div class="label">Current description</div><span id="skill-desc"></span></div>
+  <div id="list"></div>
+  <p class="note">Toggle <strong>should-trigger</strong> on each query, edit text freely, add or remove rows. When ready, click <strong>Export Eval Set</strong> to download <code>eval_set.json</code>.</p>
+</main>
+
+<script>
+// Data injected by the skill. __EVAL_DATA_PLACEHOLDER__ is a raw JS array
+// (no surrounding quotes), __SKILL_NAME_PLACEHOLDER__ and
+// __SKILL_DESCRIPTION_PLACEHOLDER__ are JSON strings.
+let EVAL_DATA = __EVAL_DATA_PLACEHOLDER__;
+const SKILL_NAME = __SKILL_NAME_PLACEHOLDER__;
+const SKILL_DESC = __SKILL_DESCRIPTION_PLACEHOLDER__;
+
+function render() {
+  document.getElementById("skill-name").textContent = SKILL_NAME;
+  document.getElementById("skill-desc").textContent = SKILL_DESC;
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+  if (!EVAL_DATA.length) {
+    list.appendChild(Object.assign(document.createElement("p"), { className: "empty", textContent: "No eval queries yet." }));
+    return;
+  }
+  EVAL_DATA.forEach((item, i) => {
+    const row = document.createElement("div");
+    row.className = "item";
+
+    const toggle = document.createElement("div");
+    toggle.className = "toggle";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = !!item.should_trigger;
+    checkbox.addEventListener("change", () => {
+      item.should_trigger = checkbox.checked;
+      tag.textContent = checkbox.checked ? "should trigger" : "should NOT trigger";
+      tag.className = "tag " + (checkbox.checked ? "should" : "not");
+    });
+    const tag = document.createElement("span");
+    tag.className = "tag " + (item.should_trigger ? "should" : "not");
+    tag.textContent = item.should_trigger ? "should trigger" : "should NOT trigger";
+    toggle.appendChild(checkbox);
+    toggle.appendChild(tag);
+
+    const textarea = document.createElement("textarea");
+    textarea.value = item.query;
+    textarea.addEventListener("input", () => { item.query = textarea.value; });
+
+    const remove = document.createElement("button");
+    remove.className = "remove";
+    remove.textContent = "✕";
+    remove.title = "Remove";
+    remove.addEventListener("click", () => {
+      EVAL_DATA.splice(i, 1);
+      render();
+    });
+
+    row.appendChild(toggle);
+    row.appendChild(textarea);
+    row.appendChild(remove);
+    list.appendChild(row);
+  });
+}
+
+document.getElementById("addBtn").addEventListener("click", () => {
+  EVAL_DATA.push({ query: "", should_trigger: true });
+  render();
+});
+
+document.getElementById("exportBtn").addEventListener("click", () => {
+  const blob = new Blob([JSON.stringify(EVAL_DATA, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "eval_set.json";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+
+render();
+</script>
+</body>
+</html>
