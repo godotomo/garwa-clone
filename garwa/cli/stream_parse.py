@@ -63,6 +63,11 @@ def _extract_stream_reasoning(obj: dict) -> str:
     kalau backend mengirimkannya sebagai field terpisah dari 'content'
     (mis. server model dengan model reasoning seperti Garwa/DeepSeek-R1).
 
+    Mendukung beberapa bentuk yang umum dipakai backend:
+      - delta.reasoning_content  (string, Garwa/llama.cpp style)
+      - delta.reasoning         (alias string, dipakai OpenRouter)
+      - delta.reasoning_details (array OpenAI-style, tiap item punya .content)
+
     Field ini TIDAK termasuk jawaban akhir -- tidak pernah ditambahkan ke
     full_parts/assistant_text, hanya dipakai untuk preview live sementara
     supaya user tahu model sedang berpikir, bukan macet.
@@ -72,11 +77,43 @@ def _extract_stream_reasoning(obj: dict) -> str:
         return ""
     choice = choices[0] or {}
     delta = choice.get("delta") or {}
-    reasoning = delta.get("reasoning_content")
+
+    reasoning = _coerce_reasoning(delta)
     if reasoning is None:
         message = choice.get("message") or {}
-        reasoning = message.get("reasoning_content")
+        reasoning = _coerce_reasoning(message)
     return reasoning if isinstance(reasoning, str) else ""
+
+
+def _coerce_reasoning(container: dict):
+    """Normalisasi field reasoning dari berbagai format backend.
+
+    Prioritas: reasoning_content (string) > reasoning (alias string) >
+    reasoning_details (array OpenAI-style) > reasoning (string). Mengembalikan
+    string bila ada, None bila container tidak membawa reasoning apa pun.
+    """
+    for key in ("reasoning_content", "reasoning"):
+        val = container.get(key)
+        if isinstance(val, str) and val:
+            return val
+
+    details = container.get("reasoning_details")
+    if isinstance(details, list) and details:
+        chunks = []
+        for item in details:
+            if isinstance(item, dict):
+                content = item.get("content")
+                if isinstance(content, str) and content:
+                    chunks.append(content)
+            elif isinstance(item, str) and item:
+                chunks.append(item)
+        if chunks:
+            return "".join(chunks)
+
+    val = container.get("reasoning")
+    if isinstance(val, str):
+        return val
+    return None
 
 
 def _extract_stream_finish_reason(obj: dict):

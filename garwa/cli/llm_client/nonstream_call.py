@@ -186,4 +186,6 @@ def _call_llama_server_nonstream(url: str, model: str, messages: list,
         )
     if state.TOOL_OPEN in content and state.TOOL_CLOSE not in content:
         content += "\n" + state.TOOL_CLOSE
+    if _nonstream_usage is not None:
+        state._accumulate_usage(_nonstream_usage)
     return content

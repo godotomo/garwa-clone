@@ -41,6 +41,53 @@ _tool_call_index: contextvars.ContextVar[int] = contextvars.ContextVar("tool_cal
 # Akumulasi jumlah tool call yang benar-benar dieksekusi selama sesi interaktif
 # berjalan (di-increment di execute_tool, di-reset saat new_session/resume).
 TOOL_CALL_TOTAL = 0
+# Akumulasi pemakaian token global selama sesi interaktif berjalan.
+# Dict berisi prompt_tokens / completion_tokens / reasoning_tokens / total.
+# Di-akumulasi di stream_call & nonstream_call tiap response selesai,
+# di-reset saat new_session/resume (sama seperti TOOL_CALL_TOTAL).
+TOKEN_USAGE_TOTAL = {"prompt_tokens": 0, "completion_tokens": 0,
+                     "reasoning_tokens": 0, "total": 0}
+
+
+def _accumulate_usage(usage):
+    """Akumulasi dict usage (dari respon model) ke TOKEN_USAGE_TOTAL.
+
+    Menerima None dengan aman (mis. backend tidak mengirim field usage).
+    Field yang tidak ada/tidak numerik diabaikan.
+    """
+    if not isinstance(usage, dict):
+        return
+    prompt = usage.get("prompt_tokens")
+    completion = usage.get("completion_tokens")
+    reasoning = (
+        usage.get("reasoning_tokens")
+        or (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
+        or (usage.get("output_tokens_details") or {}).get("reasoning_tokens")
+    )
+    state_ = TOKEN_USAGE_TOTAL
+    if isinstance(prompt, int):
+        state_["prompt_tokens"] += prompt
+    if isinstance(completion, int):
+        state_["completion_tokens"] += completion
+    if isinstance(reasoning, int):
+        state_["reasoning_tokens"] += reasoning
+    state_["total"] = state_["prompt_tokens"] + state_["completion_tokens"]
+
+# Waktu sesi interaktif mulai (epoch detik). Di-set di main.py saat sesi
+# baru dibuat atau di-resume, dipakai status bar untuk menampilkan durasi
+# (`dur:12m`). None = belum ada sesi aktif.
+SESSION_START_TIME = None
+# Akumulasi jumlah giliran yang gagal karena error (koneksi, retry, atau
+# error tak terduga) selama sesi berjalan. Di-increment di main.py,
+# di-reset saat new_session/resume (sama seperti TOOL_CALL_TOTAL).
+ERROR_TOTAL = 0
+
+
+def _accumulate_error():
+    """Increment penghitung error sesi (dipakai status bar `err:N`)."""
+    global ERROR_TOTAL
+    ERROR_TOTAL += 1
+
 _WARNED_CONTEXT_MANAGER_NO_AUTH = [False]
 _WARNED_CONTEXT_MANAGER_NO_TOOLS_BUDGET = [False]
 LOOP_REPEAT_WINDOW = 4

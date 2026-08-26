@@ -49,11 +49,17 @@ _TOOLBAR_STYLE = Style.from_dict(
         "bottom-toolbar.ctx": "fg:#8787af",
         "bottom-toolbar.ses": "fg:#87875f",
         "bottom-toolbar.tools": "fg:#5faf87",
+        "bottom-toolbar.tok": "fg:#d7af87",
         "bottom-toolbar.sandbox": "fg:#d7af5f",
-        # auto:ON berisiko (tool dijalankan tanpa konfirmasi) -> merah mencolok;
-        # auto:OFF -> hijau redup (aman).
-        "bottom-toolbar.auto": "fg:#af5f5f",
-        "bottom-toolbar.auto.off": "fg:#5faf87",
+        "bottom-toolbar.sandbox.on": "fg:#5faf87",
+        "bottom-toolbar.sandbox.off": "fg:#d75f5f",
+        # auto:ON -> hijau (mode approve aktif, tool berjalan terkendali);
+        # auto:OFF -> kuning (mode nonaktif, perlu perhatian).
+        "bottom-toolbar.auto": "fg:#5faf87",
+        "bottom-toolbar.auto.off": "fg:#d7af5f",
+        "bottom-toolbar.wd": "fg:#5fafd7",
+        "bottom-toolbar.dur": "fg:#af87d7",
+        "bottom-toolbar.err": "fg:#d75f5f",
     }
 )
 
@@ -61,7 +67,7 @@ _TOOLBAR_STYLE = Style.from_dict(
 def _format_toolbar(status_info: str):
     """Render string status_info jadi HTML berwarna untuk bottom_toolbar.
 
-    Format status_info: `[model] ctx:N ses:ABCDEF12 tools:N sandbox:ON auto:OFF`.
+    Format status_info: `[model] ctx:N ses:ABCDEF12 tools:N sandbox:ON auto:OFF wd:dir dur:1m err:0`.
     Setiap token diberi class warna terpisah supaya mudah dibedakan di toolbar.
     """
     if not status_info:
@@ -79,11 +85,22 @@ def _format_toolbar(status_info: str):
             cls = "ses"
         elif tok.startswith("tools:"):
             cls = "tools"
+        elif tok.startswith("tok:"):
+            cls = "tok"
         elif tok.startswith("sandbox:"):
-            cls = "sandbox"
+            # sandbox:ON -> hijau (terkunci di workdir); sandbox:OFF -> merah
+            # (akses terbuka ke seluruh sistem, perlu perhatian).
+            cls = "sandbox.off" if tok.endswith("OFF") else "sandbox.on"
         elif tok.startswith("auto:"):
-            # auto:ON -> merah (berisiko); auto:OFF -> hijau redup (aman).
+            # auto:ON -> hijau (aktif); auto:OFF -> kuning (nonaktif).
             cls = "auto.off" if tok.endswith("OFF") else "auto"
+        elif tok.startswith("wd:"):
+            cls = "wd"
+        elif tok.startswith("dur:"):
+            cls = "dur"
+        elif tok.startswith("err:"):
+            # err:N -> merah (ada giliran gagal), perhatian.
+            cls = "err"
         else:
             cls = ""
         if cls:

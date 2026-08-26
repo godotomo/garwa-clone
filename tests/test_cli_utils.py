@@ -579,8 +579,18 @@ class TestPromptToolbar:
         assert "<bottom-toolbar.ctx>ctx:131072</bottom-toolbar.ctx>" in html
         assert "<bottom-toolbar.ses>ses:01234567</bottom-toolbar.ses>" in html
         assert "<bottom-toolbar.tools>tools:3</bottom-toolbar.tools>" in html
-        assert "<bottom-toolbar.sandbox>sandbox:ON</bottom-toolbar.sandbox>" in html
+        assert "<bottom-toolbar.sandbox.on>sandbox:ON</bottom-toolbar.sandbox.on>" in html
         assert "<bottom-toolbar.auto.off>auto:OFF</bottom-toolbar.auto.off>" in html
+
+    def test_sandbox_off_uses_off_class(self):
+        html = _format_toolbar("[m] ctx:4096 ses:abc sandbox:OFF")
+        assert "<bottom-toolbar.sandbox.off>sandbox:OFF</bottom-toolbar.sandbox.off>" in html
+        assert "sandbox.on" not in html
+
+    def test_sandbox_on_uses_on_class(self):
+        html = _format_toolbar("[m] ctx:4096 ses:abc sandbox:ON")
+        assert "<bottom-toolbar.sandbox.on>sandbox:ON</bottom-toolbar.sandbox.on>" in html
+        assert "sandbox.off" not in html
 
     def test_auto_on_uses_red_class(self):
         html = _format_toolbar("[m] ctx:4096 ses:abc auto:ON")

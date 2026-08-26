@@ -320,6 +320,10 @@ def main():
     tools_module.state.DB_PATH = args.db_path
     tools_module.state.SESSION_ID = session_id
     state.TOOL_CALL_TOTAL = 0
+    state.TOKEN_USAGE_TOTAL = {"prompt_tokens": 0, "completion_tokens": 0,
+                               "reasoning_tokens": 0, "total": 0}
+    state.SESSION_START_TIME = time.time()
+    state.ERROR_TOTAL = 0
     os.environ["GARWA_DB_PATH"] = args.db_path
     os.environ["GARWA_SESSION_ID"] = session_id
 
@@ -394,6 +398,10 @@ def main():
                     system_content = result["system_content"]
                     tools_module.state.SESSION_ID = session_id
                     state.TOOL_CALL_TOTAL = 0
+                    state.TOKEN_USAGE_TOTAL = {"prompt_tokens": 0, "completion_tokens": 0,
+                                               "reasoning_tokens": 0, "total": 0}
+                    state.SESSION_START_TIME = time.time()
+                    state.ERROR_TOTAL = 0
                     os.environ["GARWA_SESSION_ID"] = session_id
                     prompt_label = _build_prompt_label(args, session_id, workdir_label)
                     continue
@@ -447,6 +455,7 @@ def main():
                 dbmod.touch_session(args.db_path, session_id)
             except requests.exceptions.RequestException as e:
 
+                state._accumulate_error()
                 print(c(
                     f"\n[ERROR] Giliran ini gagal karena masalah koneksi/streaming "
                     f"ke server model ({type(e).__name__}: {e}). Sesi tetap "
@@ -457,6 +466,7 @@ def main():
                 dbmod.touch_session(args.db_path, session_id)
             except Exception as e:
 
+                state._accumulate_error()
                 print(c(
                     f"\n[ERROR] Giliran ini berhenti karena error tak terduga: "
                     f"{type(e).__name__}: {e}. Kembali ke prompt.",
@@ -497,11 +507,34 @@ def _build_status_info(args, session_id):
         parts.append(f"ctx:{ctx}")
     parts.append(f"ses:{session_id[:8]}")
     parts.append(f"tools:{tools_count}")
+    # Pemakaian token global (akumulasi lintas giliran dalam sesi ini).
+    usage_total = getattr(state, "TOKEN_USAGE_TOTAL", None)
+    if usage_total:
+        parts.append(f"tok:{usage_total.get('total', 0)}")
     # Sandbox & auto-approve selalu ditampilkan eksplisit (ON/OFF) supaya
     # user sadar mode keamanan & persetujuan yang sedang aktif -- tidak
     # hanya muncul saat ON seperti sebelumnya.
     parts.append(f"sandbox:{'ON' if sandbox else 'OFF'}")
     parts.append(f"auto:{'ON' if auto else 'OFF'}")
+    # Workdir aktif -- penting saat user pindah direktori via slash-command.
+    workdir = getattr(tools_module.state, "WORKDIR", None)
+    if workdir:
+        parts.append(f"wd:{os.path.basename(os.path.normpath(workdir)) or workdir}")
+    # Durasi sesi berjalan (sejak SESSION_START_TIME di-set).
+    start = getattr(state, "SESSION_START_TIME", None)
+    if start:
+        elapsed = int(time.time() - start)
+        if elapsed >= 3600:
+            dur = f"{elapsed // 3600}h{elapsed % 3600 // 60}m"
+        elif elapsed >= 60:
+            dur = f"{elapsed // 60}m"
+        else:
+            dur = f"{elapsed}s"
+        parts.append(f"dur:{dur}")
+    # Jumlah giliran yang gagal karena error dalam sesi ini.
+    err = getattr(state, "ERROR_TOTAL", 0)
+    if err:
+        parts.append(f"err:{err}")
     return " ".join(parts)
 
 
