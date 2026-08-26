@@ -29,6 +29,7 @@ import requests
 
 from ..tools import TOOLS
 from . import _state as state
+from ._state import TOOL_CLOSE, TOOL_OPEN
 from .llm_errors import LlamaServerStreamError
 
 
@@ -142,19 +143,19 @@ def _stream_visible_text(state: dict, text: str) -> str:
         pending = state["pending"]
 
         if state["in_tool"]:
-            close_at = pending.find(state.TOOL_CLOSE)
+            close_at = pending.find(TOOL_CLOSE)
             if close_at >= 0:
 
-                state["pending"] = pending[close_at + len(state.TOOL_CLOSE):]
+                state["pending"] = pending[close_at + len(TOOL_CLOSE):]
                 state["in_tool"] = False
                 continue
 
-            keep = len(state.TOOL_CLOSE) - 1
+            keep = len(TOOL_CLOSE) - 1
             if len(pending) > keep:
                 state["pending"] = pending[-keep:]
             break
 
-        open_at = pending.find(state.TOOL_OPEN)
+        open_at = pending.find(TOOL_OPEN)
         if open_at >= 0:
             if open_at:
 
@@ -166,11 +167,11 @@ def _stream_visible_text(state: dict, text: str) -> str:
             else:
 
                 state["ws_hold"] = ""
-            state["pending"] = pending[open_at + len(state.TOOL_OPEN):]
+            state["pending"] = pending[open_at + len(TOOL_OPEN):]
             state["in_tool"] = True
             continue
 
-        keep = len(state.TOOL_OPEN) - 1
+        keep = len(TOOL_OPEN) - 1
         if len(pending) > keep:
             chunk = pending[:-keep]
             state["pending"] = pending[-keep:]
