@@ -63,7 +63,7 @@ natural atau mode otomatis (auto / overnight) tanpa pengawasan.
 
 ## Persyaratan
 
-- **Python 3.9+**
+- **Python 3.10+**
 - **Server model OpenAI-compatible** yang aktif dan terjangkau (default:
   `https://coder.garwa.id/v1/chat/completions`, bisa diganti dengan `--url`
   atau env `LLAMA_URL`).
