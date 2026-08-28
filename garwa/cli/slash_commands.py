@@ -21,10 +21,8 @@ from ..mcp import (
     set_global_registry,
 )
 from ..tools import TOOLS
-from . import _state as state
 from .colors import C
 from .colors import c
-from .colors import c_prompt
 from .skills import build_system_prompt
 
 
@@ -69,8 +67,8 @@ def _clear_screen() -> None:
     print("\x1b[2J\x1b[H", end="")
 
 
-def _print_todos(session_id: str) -> None:
-    todos = dbmod.get_todos(state.DB_PATH, session_id)
+def _print_todos(db_path: str, session_id: str) -> None:
+    todos = dbmod.get_todos(db_path, session_id)
     if not todos:
         print(c("(belum ada plan/todo tersimpan untuk sesi ini)", C.DIM))
         return
@@ -343,6 +341,10 @@ def handle_slash_command(cmd_line: str, args, session_id: str, system_content: s
         return {"action": "continue"}
 
     parts = raw[1:].split(None, 1)
+    if not parts:
+        # Input hanya "/" tanpa nama command -> perlakukan sebagai pesan
+        # biasa ke model (bukan crash).
+        return {"action": "continue"}
     name = parts[0].lower()
     arg = parts[1].strip() if len(parts) > 1 else ""
 
@@ -358,7 +360,7 @@ def handle_slash_command(cmd_line: str, args, session_id: str, system_content: s
         return {"action": "skip"}
 
     if name == "todos":
-        _print_todos(session_id)
+        _print_todos(args.db_path, session_id)
         return {"action": "skip"}
 
     if name == "tools":

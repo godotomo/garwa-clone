@@ -12,7 +12,6 @@ Fokus:
 - Robustness: DB path di direktori yang belum ada.
 """
 
-import os
 import sqlite3
 import time
 

@@ -2,23 +2,10 @@
 Dipecah otomatis dari cli.py (lihat cli/_state.py untuk state bersama).
 """
 import argparse
-import base64
-import copy
-import difflib
-import json
-import mimetypes
 import os
-import re
-import select
-import shlex
-import shutil
 import sys
 import time
-import unicodedata
-from collections import OrderedDict
-from datetime import datetime
 from typing import Optional
-from urllib.parse import unquote, urlparse
 
 try:
 
@@ -28,7 +15,6 @@ except ImportError:
 
 import requests
 
-from ..tools import TOOLS
 from .. import config
 from .. import db as dbmod
 from .. import tools as tools_module

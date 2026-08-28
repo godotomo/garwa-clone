@@ -1,23 +1,8 @@
 """cli/agent_loop.py
 Dipecah otomatis dari cli.py (lihat cli/_state.py untuk state bersama).
 """
-import argparse
-import base64
-import copy
-import difflib
 import json
-import mimetypes
-import os
-import re
-import select
-import shlex
-import shutil
-import sys
 import time
-import unicodedata
-from collections import OrderedDict
-from datetime import datetime
-from urllib.parse import unquote, urlparse
 
 try:
 
@@ -25,9 +10,7 @@ try:
 except ImportError:
     readline = None
 
-import requests
 
-from ..tools import TOOLS
 from .. import context_manager
 from .. import db as dbmod
 from . import _state as state
@@ -42,7 +25,6 @@ from .markdown_render import _render_markdown_once
 from .spinner import Spinner
 from .text_utils import _find_repeated_text
 from .text_utils import _loop_similarity
-from .text_utils import _similarity
 from .tool_exec import execute_tool
 from .tool_schema import _convert_alt_tool_call_syntax
 from .tool_schema import build_openai_tools_payload

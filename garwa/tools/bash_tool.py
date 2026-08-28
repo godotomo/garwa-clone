@@ -3,20 +3,8 @@ Dipecah otomatis dari tools.py (lihat tools/_state.py untuk state bersama).
 """
 import os
 import sys
-import glob
-import shlex
 import signal
 import subprocess
-import difflib
-import json
-import ast
-import base64
-import re
-import tempfile
-import threading
-import xml.etree.ElementTree as ET
-from urllib.parse import quote
-from datetime import datetime, timezone, timedelta
 
 # termios/tty dipakai untuk menyimpan & mengembalikan mode terminal di
 # sekitar pemanggilan tool_bash -- jaring pengaman kalau command yang
@@ -28,15 +16,6 @@ try:
 except ImportError:
     _HAS_TERMIOS = False
 
-import requests
-
-try:
-    from bs4 import BeautifulSoup
-    _HAS_BS4 = True
-except ImportError:
-    _HAS_BS4 = False
-
-from .. import db as dbmod
 
 try:
     from .. import repo_map as repo_map_mod

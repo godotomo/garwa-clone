@@ -3,20 +3,8 @@ Dipecah otomatis dari security.py (lihat security/_shared.py untuk konstanta ber
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict, field
 from pathlib import Path
-from urllib.parse import urlparse
-from ipaddress import ip_address
-from shutil import which
-import hashlib
-import json
-import os
-import re
-import signal
-import subprocess
-import tempfile
-import time
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 from . import _shared as shared
 from .scanners import scan_semgrep, scan_osv, scan_pip_audit, scan_dep_scan, scan_gitleaks, scan_trivy
 from .dast import scan_zap

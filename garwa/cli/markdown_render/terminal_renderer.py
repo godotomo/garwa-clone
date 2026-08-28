@@ -1,23 +1,10 @@
 """cli/markdown_render/terminal_renderer.py
 Dipecah lebih lanjut dari cli/markdown_render.py.
 """
-import argparse
-import base64
-import copy
-import difflib
-import json
-import mimetypes
 import os
 import re
-import select
-import shlex
 import shutil
 import sys
-import time
-import unicodedata
-from collections import OrderedDict
-from datetime import datetime
-from urllib.parse import unquote, urlparse
 
 try:
 
@@ -25,14 +12,11 @@ try:
 except ImportError:
     readline = None
 
-import requests
 
-from ...tools import TOOLS
 from .. import _state as state
 from ..colors import C
 from ..colors import c
 from ..text_utils import _terminal_width
-from ..text_utils import _truncate_display
 from .inline import _render_inline_markdown
 from .tables import _is_table_row
 from .tables import _is_table_separator

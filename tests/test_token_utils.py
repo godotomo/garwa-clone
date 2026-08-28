@@ -8,8 +8,6 @@ Fokus:
 - Perilaku fallback ketika tiktoken tidak tersedia.
 """
 
-import pytest
-
 from garwa import token_utils
 
 

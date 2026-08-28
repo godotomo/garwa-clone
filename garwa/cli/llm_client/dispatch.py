@@ -1,23 +1,9 @@
 """cli/llm_client/dispatch.py
 Dipecah lebih lanjut dari cli/llm_client.py.
 """
-import argparse
-import base64
-import copy
-import difflib
-import json
-import mimetypes
-import os
-import re
-import select
-import shlex
 import shutil
 import sys
 import time
-import unicodedata
-from collections import OrderedDict
-from datetime import datetime
-from urllib.parse import unquote, urlparse
 
 try:
 
@@ -27,28 +13,10 @@ except ImportError:
 
 import requests
 
-from ...tools import TOOLS
 from .. import _state as state
 from ..colors import C
 from ..colors import c
-from ..llm_errors import LlamaServerStreamError
-from ..llm_errors import RepetitionLoopError
-from ..llm_errors import TruncatedGenerationError
-from ..llm_errors import _parse_context_exceeded
-from ..markdown_render import MarkdownTerminalRenderer
-from ..markdown_render import ReasoningPreview
-from ..stream_parse import _extract_stream_content
-from ..stream_parse import _extract_stream_finish_reason
-from ..stream_parse import _extract_stream_reasoning
-from ..stream_parse import _extract_stream_usage
-from ..stream_parse import _flush_visible_text
-from ..stream_parse import _print_stream_text
-from ..stream_parse import _stream_visible_text
-from ..text_utils import _detect_repetition
 from ..text_utils import _resp_text_utf8
-from ..tool_schema import _accumulate_stream_tool_calls
-from ..tool_schema import _native_tool_calls_to_blocks
-from ..tool_schema import build_openai_tools_payload
 from .nonstream_call import _call_llama_server_nonstream
 from .stream_call import _call_llama_server_stream
 

@@ -1,23 +1,6 @@
 """cli/tool_schema/schema_text.py
 Dipecah lebih lanjut dari cli/tool_schema.py.
 """
-import argparse
-import base64
-import copy
-import difflib
-import json
-import mimetypes
-import os
-import re
-import select
-import shlex
-import shutil
-import sys
-import time
-import unicodedata
-from collections import OrderedDict
-from datetime import datetime
-from urllib.parse import unquote, urlparse
 
 try:
 
@@ -25,15 +8,10 @@ try:
 except ImportError:
     readline = None
 
-import requests
 
 from ...tools import TOOLS
 from ... import tool_runtime
 from .. import _state as state
-from ..json_repair import _repair_invalid_json_escapes
-from ..json_repair import _repair_single_quoted_json
-from ..json_repair import _repair_unquoted_json_keys
-from ..json_repair import _repair_unquoted_json_values
 
 
 

@@ -1,23 +1,13 @@
 """cli/text_utils.py
 Dipecah otomatis dari cli.py (lihat cli/_state.py untuk state bersama).
 """
-import argparse
-import base64
-import copy
 import difflib
 import json
-import mimetypes
 import os
 import re
-import select
-import shlex
-import shutil
 import sys
-import time
 import unicodedata
-from collections import OrderedDict
 from datetime import datetime
-from urllib.parse import unquote, urlparse
 
 try:
 
@@ -25,9 +15,7 @@ try:
 except ImportError:
     readline = None
 
-import requests
 
-from ..tools import TOOLS
 from . import _state as state
 from .colors import C
 from .colors import c_prompt
@@ -598,8 +586,6 @@ def _detect_repetition(text: str, strict: bool = True) -> bool:
                 continue  # teks terlalu pendek untuk skala ini
 
             # Normalisasi whitespace untuk perbandingan fuzzy
-            text_normalized = _normalize_ws(text)
-
             for i in range(0, len(text) - ngram_size + 1, ngram_size):
                 block = text[i:i + ngram_size]
                 block_norm = _normalize_ws(block)

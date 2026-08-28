@@ -10,39 +10,9 @@ supaya perubahan dari luar langsung terlihat di semua tempat -- persis
 seperti perilaku variabel module-level di tools.py sebelum dipecah.
 """
 import os
-import sys
-import glob
-import shlex
-import signal
-import subprocess
-import difflib
-import json
-import ast
-import base64
 import re
-import tempfile
 import threading
-import xml.etree.ElementTree as ET
-from urllib.parse import quote
-from datetime import datetime, timezone, timedelta
-
-# termios/tty dipakai untuk menyimpan & mengembalikan mode terminal di
-# sekitar pemanggilan tool_bash -- jaring pengaman kalau command yang
-# dijalankan mengubah mode terminal (mis. stty -echo / raw, program
-# interaktif) dan tidak mengembalikannya. Hanya tersedia di POSIX.
-try:
-    import termios
-    _HAS_TERMIOS = True
-except ImportError:
-    _HAS_TERMIOS = False
-
-import requests
-
-try:
-    from bs4 import BeautifulSoup
-    _HAS_BS4 = True
-except ImportError:
-    _HAS_BS4 = False
+from datetime import timezone, timedelta
 
 from .. import db as dbmod
 

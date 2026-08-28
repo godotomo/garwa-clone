@@ -26,8 +26,7 @@ from garwa import db as dbmod
 from garwa.cli import _state as state
 from garwa.cli import json_repair, llm_errors, slash_commands, spinner as spinner_mod, stream_parse, text_utils
 from garwa.cli.main import _build_prompt_label, _build_status_info
-from garwa.cli.main import HISTORY_DIR, HISTORY_FILE, HISTORY_MAX
-from garwa.cli.main import _init_readline_history, _save_readline_history
+from garwa.cli.main import HISTORY_FILE, HISTORY_MAX
 from garwa.cli.prompt_ui import _format_toolbar
 
 

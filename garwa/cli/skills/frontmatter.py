@@ -1,23 +1,8 @@
 """cli/skills/frontmatter.py
 Dipecah lebih lanjut dari cli/skills.py.
 """
-import argparse
-import base64
-import copy
-import difflib
-import json
-import mimetypes
 import os
 import re
-import select
-import shlex
-import shutil
-import sys
-import time
-import unicodedata
-from collections import OrderedDict
-from datetime import datetime
-from urllib.parse import unquote, urlparse
 
 try:
 
@@ -25,11 +10,8 @@ try:
 except ImportError:
     readline = None
 
-import requests
 
-from ...tools import TOOLS
 from .. import _state as state
-from ..tool_schema import build_tool_schema_text
 
 
 

@@ -1,23 +1,6 @@
 """cli/llm_errors.py
 Dipecah otomatis dari cli.py (lihat cli/_state.py untuk state bersama).
 """
-import argparse
-import base64
-import copy
-import difflib
-import json
-import mimetypes
-import os
-import re
-import select
-import shlex
-import shutil
-import sys
-import time
-import unicodedata
-from collections import OrderedDict
-from datetime import datetime
-from urllib.parse import unquote, urlparse
 
 try:
 
@@ -25,9 +8,7 @@ try:
 except ImportError:
     readline = None
 
-import requests
 
-from ..tools import TOOLS
 
 
 
@@ -39,7 +20,6 @@ class LlamaServerStreamError(Exception):
     membuatnya terlihat identik dengan 'tidak ada delta baru' padahal server
     sedang melaporkan kegagalan eksplisit.
     """
-    pass
 
 
 class ContextExceededError(Exception):
@@ -72,7 +52,6 @@ class RepetitionLoopError(Exception):
     (LOOP_BREAK_COOLDOWN_SECONDS), lalu lanjutkan proses terakhir -- alih-alih
     membiarkan loop membakar seluruh budget output.
     """
-    pass
 
 
 class TruncatedGenerationError(Exception):

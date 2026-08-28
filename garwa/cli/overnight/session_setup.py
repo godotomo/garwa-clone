@@ -1,23 +1,7 @@
 """cli/overnight/session_setup.py
 Dipecah lebih lanjut dari cli/overnight.py.
 """
-import argparse
-import base64
-import copy
-import difflib
-import json
-import mimetypes
 import os
-import re
-import select
-import shlex
-import shutil
-import sys
-import time
-import unicodedata
-from collections import OrderedDict
-from datetime import datetime
-from urllib.parse import unquote, urlparse
 
 try:
 
@@ -25,18 +9,10 @@ try:
 except ImportError:
     readline = None
 
-import requests
 
-from ...tools import TOOLS
 from ... import db as dbmod
 from ... import tools as tools_module
 from .. import _state as state
-from ..agent_loop import run_agent_loop
-from ..auto_mode import parse_tasks_file
-from ..colors import C
-from ..colors import c
-from ..llm_client import _apply_detected_n_ctx
-from ..llm_client import check_llama_server_connection
 from ..skills import build_system_prompt
 
 

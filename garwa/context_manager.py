@@ -263,7 +263,6 @@ def maybe_summarize(db_path: str, session_id: str, url: str, model: str,
         chunk_text = f"[RINGKASAN SEBELUMNYA]\n{prior_summary_text}\n\n{chunk_text}"
 
     try:
-        n_attempts = SUMMARIZE_MAX_RETRIES + 1
         with Spinner("Meringkas riwayat percakapan...") as spinner:
             def _progress(attempt: int, total: int) -> None:
                 fraction = (attempt + 1) / total

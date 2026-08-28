@@ -23,7 +23,6 @@ import re
 import shutil
 import sys
 import threading
-import time
 
 from .colors import C
 from .colors import c

@@ -11,7 +11,6 @@ config pengguna) atau environment `FIRECRAWL_API_KEY`. Nilai default
 endpoint: https://api.firecrawl.dev/v1 (bisa di-override lewat env
 `FIRECRAWL_API_URL`).
 """
-import json
 import time
 
 import requests
