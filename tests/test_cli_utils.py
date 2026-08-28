@@ -373,16 +373,23 @@ class TestLoopDetectionLogic:
         )
 
         # Alternating pattern detection (Bug 10: A/B/A/B)
+        # twin_count = JUMLAH KEMUNCULAN item yang berulang dalam window
+        # (item yang muncul >= 2x, dihitung setiap kemunculannya). Ini
+        # menangkap pola alternating berkelanjutan (Bug 16): window
+        # [A,B,A,B] → A(2)+B(2)=4 >= threshold 3.
         twin_count = 0
-        for i in range(len(history)):
-            for j in range(i):
-                if text_utils._similarity(history[j], history[i]) >= state.LOOP_SIMILARITY_THRESHOLD:
-                    twin_count += 1
-                    break  # setiap item dihitung maksimal 1x
+        for i, item in enumerate(history):
+            if any(
+                text_utils._similarity(item, history[j]) >= state.LOOP_SIMILARITY_THRESHOLD
+                for j in range(len(history))
+                if j != i
+            ):
+                twin_count += 1
 
-        # twin_count item[i] dihitung terhadap item j<i, jadi item[0] tidak
-        # pernah dihitung → max = LOOP_REPEAT_WINDOW - 1. Threshold harus
-        # window-1 agar branch alternating reachable (Bug 15).
+        # twin_count = jumlah item (termasuk posisi pertama) yang punya
+        # kembaran. Max = LOOP_REPEAT_WINDOW (window penuh identik).
+        # Threshold window-1 menangkap alternating berkelanjutan tanpa
+        # false-positive pada window dengan 1 duplikat ([A,B,C,A] → 2).
         is_loop = (
             repeat_count >= state.LOOP_REPEAT_THRESHOLD
             or twin_count >= state.LOOP_REPEAT_WINDOW - 1
@@ -416,14 +423,14 @@ class TestLoopDetectionLogic:
 
         # Pola [a, b, a] + new=b → window=[a,b,a,b]
         # repeat_count: b vs [a,b,a] → b vs b = 1 (< threshold 2)
-        # twin_count: a punya kembaran, b punya kembaran = 2 (< window 4)
-        # → alternating 2-item sederhana belum trigger (perlu 3 kemunculan)
+        # twin_count (FIXED Bug 16): item berulang = a(2) + b(2) = 4 >= 3
+        # → alternating 2-siklus A/B/A/B terdeteksi!
         history = [a, b, a]
         detected, kind = self._simulate_loop_check(history, b)
-        # Belum trigger karena masing-masing baru 2x
-        assert detected is False
+        assert detected is True  # FIXED: A/B/A/B alternating terdeteksi
+        assert kind == "alternating"
 
-        # Tapi dengan 3 kemunculan item yang sama dalam window → trigger
+        # 3 kemunculan item yang sama dalam window → tetap trigger
         # [a, b, a] + new=a → window=[a,b,a,a]
         # repeat_count: a vs [a,b,a] → a vs a, a vs a = 2 >= threshold 2
         history3 = ["Saya akan memproses file A sekarang",
@@ -443,39 +450,84 @@ class TestLoopDetectionLogic:
     # LOOP_REPEAT_WINDOW - 1 agar branch reachable.
     # ------------------------------------------------------------------
     def test_twin_count_threshold_reachable(self):
-        """FIXED: threshold twin_count = window-1, bukan window.
+        """FIXED (Bug 15 + Bug 16): threshold twin_count = window-1.
 
-        Dulu twin_count max = 3 (item[0] tidak pernah dihitung) tapi threshold
-        = 4 → branch alternating tidak pernah trigger (dead code). Sekarang
-        threshold = 3, sehingga pola yang hanya tertangkap twin_count (bukan
-        repeat_count) bisa terdeteksi.
+        twin_count = JUMLAH KEMUNCULAN item yang berulang dalam window
+        (termasuk posisi pertama). Max = LOOP_REPEAT_WINDOW (window penuh
+        identik). Threshold window-1 menangkap pola alternating berkelanjutan
+        (window [A,B,A,B] → 4) tanpa false-positive pada window yang hanya
+        punya 1 duplikat (window [A,B,C,A] → 2).
         """
-        # Window [A,B,B,A]: repeat_count rendah (A vs [B,B] → 0, karena A≠B),
-        # tapi twin_count=2 (A punya kembaran, B punya kembaran).
-        # Dengan threshold 3 belum trigger; perlu window yang lebih padat.
+        a = "Saya akan memproses file A sekarang"
+        b = "Baik, saya akan menjalankan perintah shell untuk testing"
+        c = "Sekarang saya akan menulis laporan ke file output"
+        assert text_utils._similarity(a, b) < state.LOOP_SIMILARITY_THRESHOLD
+        assert text_utils._similarity(a, c) < state.LOOP_SIMILARITY_THRESHOLD
+        assert text_utils._similarity(b, c) < state.LOOP_SIMILARITY_THRESHOLD
+
+        # Window [A,B,C,A] → hanya A yang berulang (2x). twin_count per posisi:
+        #   i=0(A): vs B,C,A → mirip → 1
+        #   i=1(B): vs A,C,A → beda → 0
+        #   i=2(C): vs A,B,A → beda → 0
+        #   i=3(A): vs A,B,C → mirip → 1
+        # twin_count=2 < 3 → TIDAK trigger (hanya 1 pasang duplikat)
+        history = [a, b, c]
+        detected, kind = self._simulate_loop_check(history, a)
+        assert detected is False
+
+        # Window [A,B,A,B] → A(2)+B(2)=4 >= 3 → trigger via branch
+        # alternating (repeat_count=1 < 2, jadi bukan similarity).
+        # Ini membuktikan branch alternating reachable (Bug 15) sekaligus
+        # menangkap pola alternating berkelanjutan (Bug 16).
+        history2 = [a, b, a]
+        detected2, kind2 = self._simulate_loop_check(history2, b)
+        assert detected2 is True
+        assert kind2 == "alternating"
+
+        # Window penuh semua identik [A,A,A,A] → twin_count=4 >= 3 → trigger
+        # (via repeat branch karena repeat_count=3 >= 2, jadi kind=similarity)
+        history4 = [a, a, a]
+        detected4, kind4 = self._simulate_loop_check(history4, a)
+        assert detected4 is True
+        assert kind4 == "similarity"
+
+    # ------------------------------------------------------------------
+    # BUG 16: loop alternating berkelanjutan A/B/A/B/A/B... tidak pernah
+    # terdeteksi. twin_count lama menghitung JUMLAH ITEM BERBEDA yang punya
+    # kembaran (selalu jenuh di 2 untuk pola 2-siklus), bukan jumlah
+    # kemunculan. FIXED: hitung JUMLAH KEMUNCULAN item yang berulang.
+    # ------------------------------------------------------------------
+    def test_continuous_alternating_pattern_detected(self):
+        """FIXED (Bug 16): pola A/B/A/B/A/B... terdeteksi.
+
+        twin_count = jumlah kemunculan item yang berulang dalam window.
+        Window [A,B,A,B] → A(2)+B(2)=4 >= threshold 3 → loop terdeteksi,
+        walau repeat_count = 1 (< threshold 2).
+        """
         a = "Saya akan memproses file A sekarang"
         b = "Baik, saya akan menjalankan perintah shell untuk testing"
         assert text_utils._similarity(a, b) < state.LOOP_SIMILARITY_THRESHOLD
 
-        # Window [A,A,B,B] + new=A → [A,A,B,B,A] dipotong ke [A,B,B,A]
-        # twin_count: A->A(1), B->B(1), A->A(2)... hitung ulang:
-        #   i=1(A) vs j=0(A): mirip → twin=1
-        #   i=2(B) vs j=0(A): beda; j=1(A): beda → 0
-        #   i=3(B) vs j=0,1(A,A): beda; j=2(B): mirip → twin=2
-        # twin_count=2 < 3 → belum trigger (2-item alternating butuh 3 kemunculan)
-        history = [a, a, b, b]
-        detected, kind = self._simulate_loop_check(history, a)
-        # repeat_count: a vs [a,b,b] → a vs a = 1 (< 2) → tidak via repeat
-        # twin_count=2 (< 3) → tidak trigger
-        assert detected is False
+        # Simulasi loop berkelanjutan: A,B,A,B,A,B...
+        # Untuk setiap langkah, window terakhir = [A,B,A,B] → harus terdeteksi
+        # sebagai alternating (bukan similarity).
+        history = [a, b, a]
+        detected, kind = self._simulate_loop_check(history, b)
+        assert detected is True
+        assert kind == "alternating"
 
-        # Window penuh semua identik [A,A,A,A] → twin_count=3 >= 3 → trigger
-        # (via twin branch, bukan repeat, untuk membuktikan branch reachable)
-        history4 = [a, a, a]
-        detected4, kind4 = self._simulate_loop_check(history4, a)
-        assert detected4 is True
-        # 3 duplikat dalam window juga memicu repeat_count (3>=2), jadi kind=similarity
-        assert kind4 == "similarity"
+        # Lanjutkan siklus: next = a → window [b,a,b,a] → tetap terdeteksi
+        history2 = [b, a, b]
+        detected2, kind2 = self._simulate_loop_check(history2, a)
+        assert detected2 is True
+        assert kind2 == "alternating"
+
+        # Lanjutkan lagi: next = b → window [a,b,a,b] → masih terdeteksi
+        # (pola berkelanjutan tidak pernah "lolos")
+        history3 = [a, b, a]
+        detected3, kind3 = self._simulate_loop_check(history3, b)
+        assert detected3 is True
+        assert kind3 == "alternating"
 
     # ------------------------------------------------------------------
     # BUG 11: exact match check menggunakan `_loop_history.count()`

@@ -386,21 +386,33 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
             )
 
             # 2. Alternating pattern detection (Bug 10: A/B/A/B).
-            #    Hitung berapa item di window yang punya "kembaran" (item lain
-            #    dengan similarity ≥ threshold). Kalau SEMUA item dalam window
-            #    punya kembaran, itu pertanda pola berulang.
+            #    twin_count lama menghitung JUMLAH ITEM BERBEDA yang punya
+            #    kembaran, sehingga pola 2-siklus A/B/A/B selalu jenuh di 2
+            #    (hanya ada 2 item berbeda) dan tidak pernah mencapai threshold.
+            #    Akibatnya loop alternating berkelanjutan (A/B/A/B/A/B...)
+            #    tidak pernah terdeteksi (Bug 16).
+            #
+            #    FIXED: hitung JUMLAH KEMUNCULAN item yang berulang dalam
+            #    window (item yang muncul >= 2x, dihitung setiap kemunculannya).
+            #    Untuk window [A,B,A,B]: item berulang = A(2) + B(2) = 4 >= 3
+            #    → pola alternating berkelanjutan terdeteksi.
             _twin_count = 0
-            for i in range(len(_loop_history)):
-                for j in range(i):
-                    if _similarity(_loop_history[j], _loop_history[i]) >= state.LOOP_SIMILARITY_THRESHOLD:
-                        _twin_count += 1
-                        break  # setiap item dihitung maksimal 1x
+            for i, item in enumerate(_loop_history):
+                # item punya kembaran di posisi lain dalam window (bukan hanya
+                # sebelumnya) → dihitung. Ini menghitung SEMUA kemunculan item
+                # yang berulang: [A,B,A,B] → A(0,2) + B(1,3) = 4.
+                if any(
+                    _similarity(item, _loop_history[j]) >= state.LOOP_SIMILARITY_THRESHOLD
+                    for j in range(len(_loop_history))
+                    if j != i
+                ):
+                    _twin_count += 1
 
-            # twin_count menghitung item ke-i terhadap item j<i, sehingga item
-            # pertama (i=0) TIDAK pernah dihitung. Nilai maksimum yang bisa
-            # dicapai = LOOP_REPEAT_WINDOW - 1 (window penuh semua identik).
-            # Threshold harus window-1, bukan window, kalau tidak branch ini
-            # jadi dead code (tidak pernah trigger).
+            # twin_count = jumlah item (termasuk posisi pertama) yang punya
+            # kembaran. Nilai maksimum = LOOP_REPEAT_WINDOW (window penuh semua
+            # identik). Threshold window-1 menangkap pola alternating
+            # berkelanjutan (mis. [A,B,A,B] → 4) tanpa false-positive pada
+            # window yang hanya punya 1 duplikat (mis. [A,B,C,A] → 2).
             _is_loop = (
                 _repeat_count >= state.LOOP_REPEAT_THRESHOLD
                 or _twin_count >= state.LOOP_REPEAT_WINDOW - 1
