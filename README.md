@@ -152,6 +152,43 @@ python -m garwa --help
 > Uninstall **tidak** menghapus database sesi (`*.db`) atau folder `skills/`,
 > jadi riwayat sesi Anda tetap aman.
 
+### Instalasi Windows (install.ps1)
+
+Di Windows, gunakan `install.ps1` (PowerShell). Skrip ini membuat virtualenv
+terisolasi di `garwa\.venv`, menginstall `requirements.txt`, memasang launcher
+`garwa.cmd` + `garwa.ps1` di `%USERPROFILE%\.local\bin` (default), dan otomatis
+menambahkan folder launcher ke `PATH` user.
+
+```powershell
+# Dari root repo, di PowerShell (buka sekali kalau kebijakan eksekusi menolak):
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+
+.\install.ps1                 # instal dengan pengaturan default
+.\install.ps1 -Prefix DIR     # pasang launcher ke DIR (default ~\.local\bin)
+.\install.ps1 -NoVenv         # pakai Python sistem, tanpa virtualenv
+.\install.ps1 -Python py -3.12   # pakai interpreter Python tertentu
+.\install.ps1 -Help           # lihat semua opsi
+```
+
+Setelah selesai, **buka terminal baru** (agar perubahan PATH berlaku) lalu:
+
+```powershell
+garwa --help
+```
+
+Uninstall menggunakan `uninstall.ps1`:
+
+```powershell
+.\uninstall.ps1                 # hapus launcher saja (venv dibiarkan)
+.\uninstall.ps1 -Purge          # hapus launcher + folder .venv
+.\uninstall.ps1 -Prefix DIR     # hapus launcher dari folder selain default
+.\uninstall.ps1 -RemoveFromPath # sekalian hapus folder launcher dari PATH user
+.\uninstall.ps1 -Yes            # tanpa konfirmasi
+```
+
+> Sama seperti versi Unix, uninstall **tidak** menghapus database sesi
+> (`*.db`) atau folder `skills/`.
+
 ---
 
 ## Cara Pakai
@@ -531,8 +568,10 @@ garwa/
     llm_client/              HTTP client ke server model
 
 garwa_cli.py                 convenience runner di root: python garwa_cli.py
-install.sh                   installer (venv + launcher global)
-uninstall.sh                 uninstaller
+install.sh                   installer Unix (venv + launcher global)
+uninstall.sh                 uninstaller Unix
+install.ps1                  installer Windows (PowerShell)
+uninstall.ps1                uninstaller Windows (PowerShell)
 requirements.txt             dependensi
 skills/                      folder skill
 tests/                       test suite (pytest)
