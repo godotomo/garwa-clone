@@ -67,8 +67,11 @@ OUTPUT_CAP_BYTES = 50 * 1024   # 50 KB, sesuai permintaan
 _OUTPUT_HEAD_KEEP = 15 * 1024  # simpan awal (perintah/log pembuka)
 _OUTPUT_TAIL_KEEP = 30 * 1024  # simpan akhir -- error/exit summary/traceback
 _DANGEROUS_BASH_PATTERNS = [
-    r"\brm\s+(-\S+\s+)*-[a-zA-Z]*r[a-zA-Z]*f",       # rm -rf / -fr / -Rf dst
-    r"\brm\s+(-\S+\s+)*-[a-zA-Z]*f[a-zA-Z]*r",
+    # rm dengan flag rekursif+force. Gunakan lookahead supaya menangkap semua
+    # bentuk: tergabung (-rf/-fr/-Rf), terpisah (-r -f), long-form
+    # (--recursive --force), maupun campuran (-r --force). Kedua lookahead
+    # hanya memindai token flag (diawali '-'), bukan argumen path.
+    r"\brm\s+(?=(?:-\S+\s*)*-\S*[rR]\S*)(?=(?:-\S+\s*)*-\S*[fF]\S*)",
     r"\bdd\s+.*\bof=/dev/",                           # dd ke block device
     r"\bmkfs(\.\w+)?\b",
     r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:",      # fork bomb klasik
@@ -82,7 +85,7 @@ _DANGEROUS_BASH_PATTERNS = [
     r">\s*/dev/sd[a-z]\d*\b",
     r"\bgit\s+push\s+.*(--force|-f)\b",
     r"\bgit\s+reset\s+--hard\b",
-    r"\bgit\s+clean\s+(-\S+\s+)*-[a-zA-Z]*f",
+    r"\bgit\s+clean\s+(?:-\S+\s+)*(?:-[a-zA-Z]*[fF][a-zA-Z]*|--force)\b",
     r"\bfind\s+.*-delete\b",
     r"\bfind\s+.*-exec\s+rm\b",
     r"\btruncate\s+-s\s*0\b",

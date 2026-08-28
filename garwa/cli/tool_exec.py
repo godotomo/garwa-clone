@@ -2,6 +2,7 @@
 Dipecah otomatis dari cli.py (lihat cli/_state.py untuk state bersama).
 """
 import json
+import os
 
 try:
 
@@ -11,6 +12,7 @@ except ImportError:
 
 
 from ..tools import TOOLS
+from .. import tools as tools_module
 from .. import tool_runtime
 from . import _state as state
 from .colors import C
@@ -68,6 +70,53 @@ def execute_tool(name: str, arguments: dict, auto_approve: bool) -> str:
     destructive = spec["destructive"]
     if callable(destructive):
         destructive = destructive(arguments)
+
+    # ------------------------------------------------------------------
+    # Path eksternal (di luar workdir) untuk tool tulis/hapus.
+    #
+    # SEBELUMNYA: _resolve() di sandbox selalu menolak path luar workdir,
+    # jadi meskipun user sudah menjawab 'y' di prompt konfirmasi di bawah,
+    # write_file/edit_file ke /tmp/... tetap gagal dengan error sandbox.
+    # Persetujuan user tidak pernah diteruskan ke lapisan sandbox.
+    #
+    # Fix: untuk tool tulis yang punya argumen 'path', cek apakah path
+    # targetnya di luar workdir. Kalau iya, minta konfirmasi EKSPLISIT
+    # (terpisah dari konfirmasi destructive umum). Kalau user setuju,
+    # daftarkan path ke ALLOWED_EXTERNAL_PATHS supaya _resolve_writable()
+    # di lapisan sandbox mengizinkannya. Kalau ditolak, batalkan.
+    # ------------------------------------------------------------------
+    if name in ("write_file", "edit_file") and isinstance(arguments, dict):
+        target = arguments.get("path")
+        if isinstance(target, str) and target:
+            candidate = target if os.path.isabs(target) else os.path.join(
+                tools_module.state.WORKDIR, target)
+            real_candidate = os.path.realpath(candidate)
+            real_workdir = os.path.realpath(tools_module.state.WORKDIR)
+            try:
+                _outside = os.path.commonpath([real_candidate, real_workdir]) != real_workdir
+            except ValueError:
+                _outside = True  # beda drive (Windows) -> di luar workdir
+            if _outside and tools_module.state.SANDBOX_ENABLED:
+                print(c(
+                    f"  [SANDBOX] Path target berada DI LUAR working directory:\n"
+                    f"            {real_candidate}\n"
+                    f"            (workdir: {real_workdir})",
+                    C.YELLOW,
+                ))
+                if not confirm(
+                    f"Izinkan {name} menulis ke path di luar working directory di atas?"
+                ):
+                    return (
+                        f"[DITOLAK] User menolak penulisan ke path di luar working directory: "
+                        f"{real_candidate}. Tool '{name}' dibatalkan."
+                    )
+                # Setujui path spesifik ini DAN parent dir-nya (supaya
+                # operasi lanjutan seperti edit ulang/hapus di folder yang
+                # sama tidak perlu konfirmasi berulang).
+                tools_module.state.ALLOWED_EXTERNAL_PATHS.add(real_candidate)
+                parent = os.path.dirname(real_candidate)
+                if parent:
+                    tools_module.state.ALLOWED_EXTERNAL_PATHS.add(parent)
 
     needs_confirm = destructive == "force" or (destructive and not auto_approve)
     if needs_confirm:

@@ -2,6 +2,8 @@
 Dipecah otomatis dari tools.py (lihat tools/_state.py untuk state bersama).
 """
 import re
+import socket
+import ipaddress
 
 import requests
 
@@ -58,6 +60,50 @@ def _webfetch_is_textual_mime(mime: str) -> bool:
         or mime.endswith("+xml")
         or mime == "application/javascript"
         or mime == "application/x-javascript"
+    )
+
+
+def _webfetch_is_private_host(host: str) -> bool:
+    """Deteksi host yang menunjuk ke alamat privat/loopback/link-local/metadata.
+
+    Mencegah SSRF: model bisa disuruh fetch endpoint metadata cloud
+    (169.254.169.254), loopback, atau jaringan internal bila CLI dijalankan
+    di server/container. `host` bisa berupa hostname maupun IP literal.
+    """
+    host = (host or "").strip().lower()
+    if not host:
+        return True
+    # IPv6 literal dalam kurung siku, mis. "[::1]".
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    # Abaikan port bila ada (host:port).
+    if host.startswith("[") and "]" in host:
+        host = host[1:host.index("]")]
+    elif host.count(":") == 1:
+        host = host.split(":", 1)[0]
+
+    # Hostname khusus yang selalu mengarah ke mesin lokal.
+    if host in ("localhost", "localhost.localdomain", "metadata.google.internal"):
+        return True
+
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        # Bukan IP literal -> resolve via DNS lalu cek semua alamat hasil.
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except OSError:
+            return True
+        addrs = {info[4][0] for info in infos}
+        return any(_webfetch_is_private_host(a) for a in addrs)
+
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
     )
 
 
@@ -155,6 +201,11 @@ def tool_webfetch(url: str, format: str = "markdown", timeout: int = None) -> st
     if not parsed or parsed.scheme not in ("http", "https"):
         return "[ERROR] URL harus menggunakan http:// atau https://."
 
+    # Blokir host privat/loopback/link-local/metadata (anti-SSRF). Cek host
+    # awal, dan redirect akan dicek ulang di bawah sebelum mengikuti.
+    if _webfetch_is_private_host(parsed.hostname):
+        return f"[ERROR] Akses ke host internal/loopback tidak diizinkan: {parsed.hostname!r}"
+
     fmt = str(format or "markdown").strip().lower()
     if fmt not in ("text", "markdown", "html"):
         fmt = "markdown"
@@ -174,7 +225,26 @@ def tool_webfetch(url: str, format: str = "markdown", timeout: int = None) -> st
     }
 
     try:
-        resp = requests.get(url, headers=headers, timeout=timeout, stream=True)
+        resp = requests.get(url, headers=headers, timeout=timeout, stream=True, allow_redirects=False)
+
+        # Ikuti redirect manual supaya tiap hop bisa divalidasi terhadap
+        # host internal (anti-SSRF lewat redirect). Batasi jumlah hop.
+        for _ in range(5):
+            if resp.status_code in (301, 302, 303, 307, 308):
+                loc = resp.headers.get("Location")
+                if not loc:
+                    break
+                next_url = requests.compat.urljoin(url, loc)
+                nparsed = requests.utils.urlparse(next_url)
+                if nparsed.scheme not in ("http", "https"):
+                    return "[ERROR] Redirect ke skema non-http/https ditolak."
+                if _webfetch_is_private_host(nparsed.hostname):
+                    return f"[ERROR] Redirect ke host internal ditolak: {nparsed.hostname!r}"
+                url = next_url
+                resp = requests.get(url, headers=headers, timeout=timeout, stream=True, allow_redirects=False)
+            else:
+                break
+
         resp.raise_for_status()
         content_type = resp.headers.get("Content-Type", "")
         mime = _webfetch_mime_from(content_type)

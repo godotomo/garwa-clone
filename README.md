@@ -371,6 +371,17 @@ dinamis dari MCP server eksternal jika diaktifkan). Ringkasan:
 > meminta konfirmasi interaktif, kecuali `--auto-approve` diaktifkan.
 > `bash` bersifat dinamis: hanya command yang cocok pola berbahaya
 > (mis. `rm -rf`, `dd` ke device, force-push) yang meminta konfirmasi.
+>
+> **Pengecualian — path di luar sandbox:** aksi tulis ke path di luar
+> *working directory* (sandbox) TETAP wajib konfirmasi manual walau
+> `--auto-approve` aktif. Di mode non-interaktif (tanpa stdin), aksi
+> semacam ini otomatis ditolak — tidak pernah crash.
+>
+> **⚠️ Implikasi untuk mode `--overnight`:** mode ini berjalan tanpa
+> pengawasan dan tanpa stdin, sehingga **semua aksi wajib berada di
+> dalam workdir**. Setiap percobaan menulis ke path di luar workdir
+> akan otomatis ditolak dan task yang memicunya akan gagal. Pastikan
+> prompt/checklist task Anda hanya merujuk path di dalam workdir.
 
 **Tool MCP dinamis** — saat integrasi MCP aktif, tool dari server eksternal
 muncul dengan nama `mcp.<server>.<tool>` (mis. `mcp.test-server.add`) dan

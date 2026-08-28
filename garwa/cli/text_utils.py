@@ -18,6 +18,7 @@ except ImportError:
 
 from . import _state as state
 from .colors import C
+from .colors import c
 from .colors import c_prompt
 
 
@@ -301,8 +302,14 @@ def _loop_similarity(a: str, b: str) -> float:
     sig_a = _tool_call_signatures(a)
     sig_b = _tool_call_signatures(b)
     if sig_a is not None and sig_b is not None:
-        # Keduanya berisi tool_call: loop hanya jika seluruh signature identik.
-        return 1.0 if sig_a == sig_b else 0.0
+        # Keduanya berisi tool_call: loop hanya jika seluruh MULTISET signature
+        # identik. Perbandingan multiset (Counter) membuat URUTAN tool_call
+        # tidak relevan: [read_file, write_file] dan [write_file, read_file]
+        # adalah loop yang sama. Jumlah kemunculan tetap diperhitungkan:
+        # [read_file] vs [read_file, read_file] BUKAN loop (respon kedua
+        # menambah tool = langkah progresif yang sah).
+        from collections import Counter
+        return 1.0 if Counter(sig_a) == Counter(sig_b) else 0.0
     if sig_a is not None or sig_b is not None:
         # Satu berisi tool_call, satu tidak: jelas langkah berbeda, bukan loop.
         return 0.0
@@ -466,6 +473,13 @@ def _detect_repetition(text: str, strict: bool = True) -> bool:
     #     TIDAK ditandai di sini.
     # ------------------------------------------------------------------
     fence_pattern = re.compile(r'^[\s]*`{3,}[\w+\-.]*[\s]*$|^[\s]*~{3,}[\w+\-.]*[\s]*$')
+    # Baris yang hanya berisi karakter struktural (kurung kurawal/siku/paren,
+    # koma, titik-koma) adalah sintaks JSON/kode yang sah. Dalam blok JSON
+    # bersarang, penutup objek "}" bisa muncul berkali-kali di antara konten
+    # yang valid -- itu BUKAN loop degenerate. Menghitungnya sebagai
+    # LINE-REPEAT memicu false positive saat model sah menulis contoh JSON
+    # atau kode dengan banyak kurung penutup bertingkat.
+    structural_pattern = re.compile(r'^[\s]*[\[\]{}();,]+[\s]*$')
     fence_run = 0
     max_fence_run = 0
     for ln in text.split("\n"):
@@ -514,6 +528,11 @@ def _detect_repetition(text: str, strict: bool = True) -> bool:
             # (sama seperti separator). Fence bertumpuk tanpa konten tetap
             # ditangkap oleh separator-run / diversity check.
             if fence_pattern.match(ln):
+                continue
+            # Baris yang hanya berisi karakter struktural (}, ], ), {, [, ;, ,)
+            # adalah sintaks JSON/kode yang sah. Dalam blok JSON bersarang,
+            # penutup objek "}" bisa muncul berkali-kali -- bukan loop.
+            if structural_pattern.match(ln):
                 continue
             # Delimiter tool_call (<tool_call>, </tool_call>) SELALU muncul
             # di setiap tool_call, jadi bukan indikasi repetisi. Menghitungnya
@@ -715,5 +734,21 @@ def _resp_text_utf8(response) -> str:
 
 
 def confirm(prompt: str) -> bool:
-    ans = input(c_prompt(f"  {prompt} [y/N] ", C.YELLOW)).strip().lower()
+    """Minta konfirmasi ya/tidak ke user.
+
+    Fail-safe: kalau stdin tidak tersedia (EOF pada mode non-interaktif
+    seperti --auto/--overnight, atau Ctrl-D), anggap TOLAK (False) -- tidak
+    pernah crash. Ini penting karena konfirmasi path eksternal (di luar
+    workdir) TETAP wajib diminta walau --auto-approve aktif; pada mode
+    non-interaktif yang tanpa stdin, jawaban otomatis yang aman adalah tolak.
+    """
+    try:
+        ans = input(c_prompt(f"  {prompt} [y/N] ", C.YELLOW)).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print(c(
+            "  [KONFIRMASI] Input tidak tersedia (non-interaktif) -> "
+            "dianggap TOLAK.",
+            C.YELLOW,
+        ))
+        return False
     return ans in ("y", "yes")

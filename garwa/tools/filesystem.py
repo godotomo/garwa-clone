@@ -29,6 +29,7 @@ from .bash_tool import _cap_output
 from .bash_tool import tool_bash
 from .sandbox import SandboxViolation
 from .sandbox import _resolve
+from .sandbox import _resolve_writable
 from .sandbox import _resolve_readonly
 from .sandbox import _touch
 
@@ -44,6 +45,17 @@ def tool_glob(pattern: str, path: str = ".", limit: int = None) -> str:
     pattern = str(pattern or "").strip()
     if not pattern:
         return "[ERROR] pattern wajib diisi."
+
+    # Validasi pattern terhadap sandbox. `pattern` TIDAK boleh berupa path
+    # absolut ataupun keluar dari WORKDIR lewat "../", karena di bawah nanti
+    # `os.path.join(target, pattern)` akan MEMBUANG `target` sepenuhnya kalau
+    # `pattern` absolut (perilaku os.path.join), sehingga glob bisa membaca
+    # seluruh filesystem host. `os.path.normpath` menormalkan segmen "../"
+    # (termasuk yang tersembunyi di balik wildcard seperti "*/../../etc").
+    _norm_pattern = os.path.normpath(pattern)
+    if os.path.isabs(pattern) or _norm_pattern == ".." or _norm_pattern.startswith(".." + os.sep):
+        return f"[ERROR] pattern tidak boleh path absolut atau keluar dari WORKDIR: {pattern!r}"
+
     if limit is not None:
         try:
             limit = int(limit)
@@ -149,6 +161,15 @@ def _atomic_write(target_path: str, content: str, encoding: str = "utf-8"):
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
+        # Pertahankan permission file target (mkstemp selalu membuat 0600,
+        # dan os.replace menimpa target termasuk mode-nya). Tanpa ini, mengedit
+        # file executable (script, git hook, dsb) akan menghilangkan bit +x.
+        try:
+            st = os.stat(target_path)
+            os.chmod(tmp_path, st.st_mode)
+        except OSError:
+            # Target belum ada (file baru) -> biarkan mode default.
+            pass
         os.replace(tmp_path, target_path)
     except BaseException:
         try:
@@ -160,7 +181,7 @@ def _atomic_write(target_path: str, content: str, encoding: str = "utf-8"):
 
 def tool_write_file(path: str, content: str) -> str:
     try:
-        p = _resolve(path)
+        p = _resolve_writable(path)
     except SandboxViolation as e:
         return f"[ERROR] {e}"
     try:
@@ -175,7 +196,7 @@ def tool_write_file(path: str, content: str) -> str:
 
 def tool_edit_file(path: str, old_str: str, new_str: str) -> str:
     try:
-        p = _resolve(path)
+        p = _resolve_writable(path)
     except SandboxViolation as e:
         return f"[ERROR] {e}"
 

@@ -61,6 +61,52 @@ def _resolve(path: str) -> str:
     return real_candidate
 
 
+def _is_allowed_external(real_path: str) -> bool:
+    """Cek apakah `real_path` (yang sudah di-realpath) termasuk path
+    eksternal yang sudah disetujui user (ALLOWED_EXTERNAL_PATHS).
+
+    Cocok kalau:
+      - path-nya persis ada di ALLOWED_EXTERNAL_PATHS, ATAU
+      - path-nya berada di dalam sebuah DIREKTORI yang ada di
+        ALLOWED_EXTERNAL_PATHS (supaya menyetujui folder eksternal
+        sekali mengizinkan semua file di bawahnya).
+    """
+    for allowed in state.ALLOWED_EXTERNAL_PATHS:
+        try:
+            real_allowed = os.path.realpath(allowed)
+        except OSError:
+            continue
+        if real_path == real_allowed:
+            return True
+        try:
+            if os.path.commonpath([real_path, real_allowed]) == real_allowed:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _resolve_writable(path: str) -> str:
+    """Sama seperti _resolve(), tapi juga mengizinkan path eksternal yang
+    sudah disetujui user (mis. lewat konfirmasi di execute_tool() untuk
+    write_file/edit_file, atau drag-drop di file_drop.py).
+
+    Dipakai oleh tool tulis (write_file/edit_file). Tanpa fallback ini,
+    persetujuan user di prompt konfirmasi tidak punya efek apa-apa --
+    sandbox tetap menolak path luar workdir walau user sudah menjawab 'y'.
+    """
+    try:
+        return _resolve(path)
+    except SandboxViolation:
+        if not state.SANDBOX_ENABLED:
+            raise
+        candidate = path if os.path.isabs(path) else os.path.join(state.WORKDIR, path)
+        real_candidate = os.path.realpath(candidate)
+        if _is_allowed_external(real_candidate):
+            return real_candidate
+        raise
+
+
 def _resolve_readonly(path: str) -> str:
     """
     Sama seperti _resolve(), tapi kalau path di luar WORKDIR ditolak,
