@@ -105,6 +105,16 @@ REPEAT_MIN_UNIT_LEN = 100
 REPEAT_MAX_OCCUR = 5
 REPEAT_CHECK_EVERY = 200
 LOOP_SIMILARITY_THRESHOLD = 0.95
+# Ambang line-repeat untuk reasoning (chain of thought). Model secara
+# natural menulis ulang rencana/konsep yang sama di dalam CoT, jadi
+# deteksi yang terlalu agresif memicu false positive. Content (jawaban
+# asli) memakai ambang ketat (REPEAT_MAX_OCCUR).
+REPEAT_MAX_OCCUR_REASONING = 8
+# Fence markdown (```python, ~~~, ...) yang muncul berulang sebagai
+# pembuka banyak blok kode pendek adalah sintaks sah, bukan loop.
+# Baris yang hanya berisi fence diabaikan oleh LINE-REPEAT (seperti
+# separator), selama tidak bertumpuk tanpa konten.
+FENCE_REPEAT_MAX_OCCUR = 12
 REPEAT_NGRAM_MIN_LEN = 100
 REPEAT_NGRAM_MAX_OCCUR = 5
 # Multi-scale n-gram: cek repetisi di 3 ukuran berbeda (karakter).
@@ -128,6 +138,11 @@ REPEAT_NGRAM_FUZZY_THRESHOLD = 0.15
 # Threshold 0.35 memberi margin lebar ke dua arah.
 REPEAT_DIVERSITY_WINDOW = 25
 REPEAT_DIVERSITY_THRESHOLD = 0.35
+# Ambang diversity longgar untuk reasoning (chain of thought). Model
+# secara natural mengulang istilah/rencana yang sama di dalam CoT, jadi
+# rasio n-gram uniknya lebih rendah daripada content. Content memakai
+# ambang ketat (REPEAT_DIVERSITY_THRESHOLD).
+REPEAT_DIVERSITY_THRESHOLD_REASONING = 0.25
 # Panjang minimal teks (setelah normalisasi whitespace) sebelum diversity
 # check dijalankan; di bawah ini sampel n-gram terlalu sedikit untuk andal.
 REPEAT_DIVERSITY_MIN_LEN = 150

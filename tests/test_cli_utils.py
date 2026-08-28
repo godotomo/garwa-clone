@@ -16,10 +16,12 @@ Fokus:
 import io
 import json as _json
 import os
+import random
 import sys
 
 import pytest
 
+from garwa import config
 from garwa import db as dbmod
 from garwa.cli import _state as state
 from garwa.cli import json_repair, llm_errors, slash_commands, spinner as spinner_mod, stream_parse, text_utils
@@ -898,6 +900,111 @@ class TestDetectRepetition:
         # Tapi ini memastikan unit check berfungsi
         assert text_utils._detect_repetition(text) is True
 
+    # ------------------------------------------------------------------
+    # BUG FIX: Fence markdown (```python, ~~~, ...) yang TERSebar di antara
+    # konten adalah sintaks sah untuk banyak blok kode pendek, bukan loop.
+    # Sebelumnya baris fence yang identik dihitung oleh LINE-REPEAT sehingga
+    # 5+ blok kode pendek memicu false positive.
+    # ------------------------------------------------------------------
+    def test_markdown_fence_spread_not_detected(self):
+        blocks = []
+        for i in range(6):
+            blocks.append(
+                f"```python\nx = {i}\n```\n\n"
+                f"Langkah {i}: inisialisasi variabel x dengan nilai {i} "
+                f"lalu lanjut ke tahap berikutnya dengan penjelasan unik."
+            )
+        text = "\n".join(blocks)
+        assert text_utils._detect_repetition(text) is False
+
+    def test_markdown_fence_spread_not_detected_reasoning(self):
+        # Sama seperti di atas, tapi lewat jalur reasoning (strict=False).
+        blocks = []
+        for i in range(6):
+            blocks.append(
+                f"```python\nx = {i}\n```\n\n"
+                f"Langkah {i}: inisialisasi variabel x dengan nilai {i} "
+                f"lalu lanjut ke tahap berikutnya dengan penjelasan unik."
+            )
+        text = "\n".join(blocks)
+        assert text_utils._detect_repetition(text, strict=False) is False
+
+    def test_markdown_fence_stacked_detected(self):
+        # Fence bertumpuk tanpa konten di antaranya = loop degenerate,
+        # harus tetap terdeteksi (mirip separator bertumpuk).
+        text = "```python\n" * 6
+        assert text_utils._detect_repetition(text) is True
+
+    def test_tilde_fence_spread_not_detected(self):
+        # Fence tilde (~~~) juga pola fence: yang tersebar di antara konten
+        # adalah markdown sah (banyak blok kode pendek), bukan loop.
+        blocks = []
+        for i in range(6):
+            blocks.append(
+                f"~~~python\nx = {i}\n~~~\n\n"
+                f"Langkah {i}: inisialisasi variabel x dengan nilai {i} "
+                f"lalu lanjut ke tahap berikutnya dengan penjelasan unik."
+            )
+        text = "\n".join(blocks)
+        assert text_utils._detect_repetition(text) is False
+
+    def test_tilde_fence_stacked_detected(self):
+        # Fence tilde bertumpuk tanpa konten = loop degenerate, terdeteksi.
+        text = "~~~\n" * 6
+        assert text_utils._detect_repetition(text) is True
+
+    def test_fence_and_separator_stacked_detected(self):
+        # Kombinasi fence (```) dan separator (---) yang bertumpuk tanpa
+        # konten di antaranya tetap loop degenerate dan harus terdeteksi,
+        # walau tiap jenis baris hanya muncul 3x (di bawah threshold masing-
+        # masing) -- gabungan run-nya yang membuatnya degenerate.
+        # Diulang cukup panjang supaya diversity/n-gram check menangkapnya.
+        text = "```\n---\n" * 40
+        assert text_utils._detect_repetition(text) is True
+
+    def test_fence_and_separator_spread_not_detected(self):
+        # Fence dan separator yang TERSebar di antara konten unik adalah
+        # markdown normal (blok kode pendek + horizontal rule), bukan loop.
+        blocks = []
+        for i in range(6):
+            blocks.append(
+                f"```python\nx = {i}\n```\n\n"
+                f"---\n\n"
+                f"Langkah {i}: inisialisasi variabel x dengan nilai {i} "
+                f"lalu lanjut ke tahap berikutnya dengan penjelasan unik."
+            )
+        text = "\n".join(blocks)
+        assert text_utils._detect_repetition(text) is False
+
+    # ------------------------------------------------------------------
+    # BUG FIX: Reasoning (chain of thought) memakai ambang longgar.
+    # Model secara natural menulis ulang rencana/konsep yang sama di dalam
+    # CoT, jadi deteksi yang terlalu agresif memicu false positive.
+    # strict=False menaikkan ambang LINE-REPEAT (5 -> 8) dan melonggarkan
+    # ambang diversity (0.35 -> 0.25).
+    # ------------------------------------------------------------------
+    def test_reasoning_line_repeat_less_strict(self):
+        # 6x baris identik + banyak konten acak (diversity tinggi).
+        # strict=True -> LINE-REPEAT (5x) True; strict=False -> threshold 8, lolos.
+        repeated = "Baris identik yang diulang untuk tes line repeat.\n" * 6
+        # Konten acak yang benar-benar beragam supaya diversity check tidak memicu.
+        words = (
+            "alpha bravo charlie delta echo foxtrot golf hotel india juliet "
+            "kilo lima mike november oscar papa quebec romeo sierra tango "
+            "uniform victor whiskey xray yankee zulu"
+        ).split()
+        random.seed(7)
+        random_words = " ".join(random.choice(words) for _ in range(4000))
+        text = repeated + random_words
+        assert text_utils._detect_repetition(text, strict=True) is True
+        assert text_utils._detect_repetition(text, strict=False) is False
+
+    def test_reasoning_still_detects_true_loop(self):
+        # Kalimat identik berulang 8x adalah loop sungguhan, harus tetap
+        # terdeteksi bahkan dengan ambang longgar (strict=False).
+        text = "Kita perlu menambahkan fitur baru pada modul konfigurasi. " * 8
+        assert text_utils._detect_repetition(text, strict=False) is True
+
 
 class TestTerminalWidth:
     def test_ansi_stripped(self):
@@ -1148,6 +1255,8 @@ class _Args:
         self.session_title = None
         self.auto_approve = False
         self.model = "deepseek-v4-flash-0731"
+        self.url = "http://localhost:11434/v1"
+        self.api_key = ""
         self.context_window = 131072
         for k, v in kw.items():
             setattr(self, k, v)
@@ -1206,6 +1315,58 @@ class TestSlashCommands:
         r = slash_commands.handle_slash_command("/model", args, "s1", "sys")
         assert r["action"] == "skip"
         assert args.model == "deepseek-v4-flash-0731"
+
+    def test_url_set(self, capsys):
+        args = _Args()
+        r = slash_commands.handle_slash_command("/url http://localhost:8080/v1", args, "s1", "sys")
+        assert r["action"] == "skip"
+        assert args.url == "http://localhost:8080/v1"
+
+    def test_url_strips_trailing_slash(self, capsys):
+        args = _Args()
+        r = slash_commands.handle_slash_command("/url http://localhost:8080/v1/", args, "s1", "sys")
+        assert r["action"] == "skip"
+        assert args.url == "http://localhost:8080/v1"
+
+    def test_url_invalid_scheme_rejected(self, capsys):
+        args = _Args()
+        r = slash_commands.handle_slash_command("/url localhost:8080", args, "s1", "sys")
+        assert r["action"] == "skip"
+        assert args.url == "http://localhost:11434/v1"  # tidak berubah
+
+    def test_url_no_arg_shows_current(self, capsys):
+        args = _Args()
+        r = slash_commands.handle_slash_command("/url", args, "s1", "sys")
+        assert r["action"] == "skip"
+        assert args.url == "http://localhost:11434/v1"
+
+    def test_url_persists_to_config(self, capsys):
+        args = _Args()
+        r = slash_commands.handle_slash_command("/url http://localhost:9090/v1", args, "s1", "sys")
+        assert r["action"] == "skip"
+        assert args.url == "http://localhost:9090/v1"
+        assert config.load_user_config().get("url") == "http://localhost:9090/v1"
+
+    def test_api_key_persists_to_config(self, capsys):
+        args = _Args()
+        r = slash_commands.handle_slash_command("/api-key sk-persist123", args, "s1", "sys")
+        assert r["action"] == "skip"
+        assert args.api_key == "sk-persist123"
+        assert config.load_user_config().get("api_key") == "sk-persist123"
+
+    def test_api_key_set(self, capsys):
+        args = _Args()
+        r = slash_commands.handle_slash_command("/api-key sk-abc123", args, "s1", "sys")
+        assert r["action"] == "skip"
+        assert args.api_key == "sk-abc123"
+
+    def test_api_key_no_arg_shows_masked(self, capsys):
+        args = _Args(api_key="sk-secret1234")
+        r = slash_commands.handle_slash_command("/api-key", args, "s1", "sys")
+        assert r["action"] == "skip"
+        out = capsys.readouterr().out
+        assert "sk-secret1234" not in out  # key tidak boleh bocor penuh
+        assert "1234" in out  # hanya 4 karakter terakhir yang ditampilkan
 
     def test_ctx_set_valid(self, capsys):
         args = _Args()

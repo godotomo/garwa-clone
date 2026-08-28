@@ -40,6 +40,7 @@ from .llm_errors import RepetitionLoopError
 from .llm_errors import TruncatedGenerationError
 from .markdown_render import _render_markdown_once
 from .spinner import Spinner
+from .text_utils import _find_repeated_text
 from .text_utils import _similarity
 from .tool_exec import execute_tool
 from .tool_schema import _convert_alt_tool_call_syntax
@@ -277,18 +278,20 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                     C.RED,
                 ))
                 raise
-        except RepetitionLoopError:
+        except RepetitionLoopError as e:
 
             _loop_count += 1
 
             if _loop_count > _MAX_LOOP_RETRIES:
 
+                _rep_detail = str(e.args[0]) if e.args else ""
                 print(c(
                     f"\n[LOOP] Respon model berulang (degenerate loop) "
                     f"{_loop_count}x berturut-turut tanpa pernah "
                     f"menghasilkan jawaban/tool_call. "
                     "Menghentikan giliran ini -- kemungkinan model terjebak "
-                    "dalam pola repetitif yang tidak bisa dipatahkan.",
+                    "dalam pola repetitif yang tidak bisa dipatahkan."
+                    + (f"\n  {_rep_detail}" if _rep_detail else ""),
                     C.RED,
                 ))
                 _emit_summary()
@@ -422,11 +425,13 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
             if _loop_interventions < 1:
 
                 _loop_interventions += 1
+                _rep = _find_repeated_text(assistant_text)
                 print(c(
                     f"  [LOOP] Model mengulang respon yang sama "
                     f"({_repeat_count}x dalam {state.LOOP_REPEAT_WINDOW} iterasi "
                     f"terakhir). Menyuntikkan peringatan agar model berhenti "
-                    f"mengulang dan mengambil langkah baru...",
+                    f"mengulang dan mengambil langkah baru..."
+                    + (f"\n  ulang: {_rep}" if _rep else ""),
                     C.YELLOW,
                 ))
                 loop_warning = (
@@ -464,11 +469,13 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                 continue
             else:
 
+                _rep = _find_repeated_text(assistant_text)
                 print(c(
                     f"  [LOOP] Model masih mengulang respon yang sama "
                     f"({_repeat_count}x dalam {state.LOOP_REPEAT_WINDOW} iterasi "
                     f"terakhir) meski sudah diperingatkan. Menghentikan "
-                    f"giliran ini untuk mencegah loop tak berujung.",
+                    f"giliran ini untuk mencegah loop tak berujung."
+                    + (f"\n  ulang: {_rep}" if _rep else ""),
                     C.RED,
                 ))
 

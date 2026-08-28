@@ -7,7 +7,9 @@ mengeksekusi aksi yang mengubah alur loop (seperti ganti sesi / keluar)
 secara langsung -- ia mengembalikan dict "aksi" yang diinterpretasikan
 oleh loop di main.py, sehingga alur kontrol tetap satu tempat.
 """
+from .. import config
 from .. import db as dbmod
+from .. import tools as tools_module
 from ..tools import TOOLS
 from . import _state as state
 from .colors import C
@@ -24,7 +26,12 @@ COMMANDS = {
     "new": "Mulai sesi baru (histori sesi lama tetap tersimpan)",
     "resume": "Lanjutkan sesi: /resume <session_id>, atau /resume untuk sesi terbuka terakhir",
     "model": "Ganti model aktif: /model <nama> (mis. /model deepseek-v4-flash-0731)",
+    "url": "Ganti endpoint server model: /url <http://host:port>",
+    "api-key": "Ganti API key server model: /api-key <kunci> (kosongkan untuk menghapus)",
     "ctx": "Ubah context window (token): /ctx <angka>",
+    "github-token": "Ganti token GitHub: /github-token <token> (kosongkan untuk menghapus)",
+    "github-max": "Batas konten file yang dibaca GitHub (karakter): /github-max <angka>",
+    "news-lang": "Bahasa hasil pencarian berita: /news-lang <kode> (mis. id, en, de, ja)",
     "approve": "Toggle auto-approve (lewati konfirmasi aksi destruktif) on/off",
     "todos": "Cetak plan/todo list sesi ini ke layar",
     "tools": "Tampilkan daftar tool yang tersedia",
@@ -33,7 +40,7 @@ COMMANDS = {
 }
 
 # Command yang butuh argumen tambahan.
-_COMMANDS_WITH_ARGS = {"resume", "model", "ctx"}
+_COMMANDS_WITH_ARGS = {"resume", "model", "url", "api-key", "ctx", "github-token", "github-max", "news-lang"}
 
 
 def _print_help() -> None:
@@ -144,6 +151,37 @@ def handle_slash_command(cmd_line: str, args, session_id: str, system_content: s
         print(c(f"[model] model aktif diubah ke: {args.model}", C.GREEN))
         return {"action": "skip"}
 
+    if name == "url":
+        if not arg:
+            print(c(f"[url] endpoint server model saat ini: {args.url}", C.DIM))
+            print(c("Gunakan: /url <http://host:port> untuk menggantinya.", C.DIM))
+            return {"action": "skip"}
+        # Validasi ringan: endpoint harus berupa URL http(s).
+        if not (arg.startswith("http://") or arg.startswith("https://")):
+            print(c(
+                f"[url] nilai tidak valid: '{arg}'. Harus diawali http:// atau https://.",
+                C.RED,
+            ))
+            return {"action": "skip"}
+        args.url = arg.rstrip("/")
+        config.save_user_config(url=args.url)
+        print(c(f"[url] endpoint server model diubah ke: {args.url}", C.GREEN))
+        print(c(f"[url] tersimpan di {config.USER_CONFIG_PATH} (lintas sesi).", C.DIM))
+        return {"action": "skip"}
+
+    if name == "api-key":
+        if not arg:
+            masked = "****" + args.api_key[-4:] if args.api_key else "(kosong)"
+            print(c(f"[api-key] API key saat ini: {masked}", C.DIM))
+            print(c("Gunakan: /api-key <kunci> untuk menggantinya (kosongkan untuk menghapus).", C.DIM))
+            return {"action": "skip"}
+        args.api_key = arg
+        config.save_user_config(api_key=args.api_key)
+        masked = "****" + args.api_key[-4:]
+        print(c(f"[api-key] API key server model diubah ke: {masked}", C.GREEN))
+        print(c(f"[api-key] tersimpan di {config.USER_CONFIG_PATH} (lintas sesi).", C.DIM))
+        return {"action": "skip"}
+
     if name == "ctx":
         if not arg:
             print(c(f"[ctx] context window saat ini: {args.context_window} token", C.DIM))
@@ -155,6 +193,56 @@ def handle_slash_command(cmd_line: str, args, session_id: str, system_content: s
             return {"action": "skip"}
         args.context_window = n
         print(c(f"[ctx] context window diubah ke: {args.context_window} token", C.GREEN))
+        return {"action": "skip"}
+
+    if name == "github-token":
+        if not arg:
+            cur = tools_module.state.GITHUB_TOKEN
+            masked = "****" + cur[-4:] if cur else "(kosong)"
+            print(c(f"[github-token] token GitHub saat ini: {masked}", C.DIM))
+            print(c("Gunakan: /github-token <token> untuk menggantinya (kosongkan untuk menghapus).", C.DIM))
+            return {"action": "skip"}
+        tools_module.state.GITHUB_TOKEN = arg.strip()
+        config.save_user_config(github_token=tools_module.state.GITHUB_TOKEN)
+        masked = "****" + tools_module.state.GITHUB_TOKEN[-4:]
+        print(c(f"[github-token] token GitHub diubah ke: {masked}", C.GREEN))
+        print(c(f"[github-token] tersimpan di {config.USER_CONFIG_PATH} (lintas sesi).", C.DIM))
+        return {"action": "skip"}
+
+    if name == "github-max":
+        if not arg:
+            print(c(f"[github-max] batas konten file GitHub saat ini: {tools_module.state._GITHUB_MAX_CONTENT} karakter", C.DIM))
+            print(c("Gunakan: /github-max <angka> untuk mengubahnya.", C.DIM))
+            return {"action": "skip"}
+        n = _parse_int_arg(arg)
+        if n is None or n <= 0:
+            print(c(f"[github-max] nilai tidak valid: '{arg}'. Gunakan angka positif.", C.RED))
+            return {"action": "skip"}
+        tools_module.state._GITHUB_MAX_CONTENT = n
+        config.save_user_config(github_max=n)
+        print(c(f"[github-max] batas konten file GitHub diubah ke: {n} karakter", C.GREEN))
+        print(c(f"[github-max] tersimpan di {config.USER_CONFIG_PATH} (lintas sesi).", C.DIM))
+        return {"action": "skip"}
+
+    if name == "news-lang":
+        if not arg:
+            hl, gl, ceid = (tools_module.state.GOOGLE_NEWS_HL,
+                            tools_module.state.GOOGLE_NEWS_GL,
+                            tools_module.state.GOOGLE_NEWS_CEID)
+            print(c(f"[news-lang] bahasa berita saat ini: hl={hl}, gl={gl}, ceid={ceid}", C.DIM))
+            print(c("Gunakan: /news-lang <kode> (mis. id, en, de, ja) untuk mengubahnya.", C.DIM))
+            return {"action": "skip"}
+        lang = arg.strip().lower()
+        hl, gl, ceid = config.news_lang_to_params(lang)
+        if (hl, gl, ceid) == config.news_lang_to_params("id") and lang != "id":
+            print(c(f"[news-lang] kode bahasa tidak dikenal: '{arg}'. Gunakan mis. id, en, de, ja.", C.RED))
+            return {"action": "skip"}
+        tools_module.state.GOOGLE_NEWS_HL = hl
+        tools_module.state.GOOGLE_NEWS_GL = gl
+        tools_module.state.GOOGLE_NEWS_CEID = ceid
+        config.save_user_config(news_lang=lang)
+        print(c(f"[news-lang] bahasa berita diubah ke: {lang} (hl={hl}, gl={gl}, ceid={ceid})", C.GREEN))
+        print(c(f"[news-lang] tersimpan di {config.USER_CONFIG_PATH} (lintas sesi).", C.DIM))
         return {"action": "skip"}
 
     if name == "new":

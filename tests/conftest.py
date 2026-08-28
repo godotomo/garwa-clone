@@ -20,7 +20,17 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+from garwa import config  # noqa: E402
 from garwa import db as dbmod  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _isolate_user_config(tmp_path):
+    """Arahkan file konfigurasi pengguna ke tmp_path agar test tidak pernah
+    menulis/membaca ~/.config/garwa/config milik user asli."""
+    config.USER_CONFIG_PATH = str(tmp_path / "garwa_config")
+    yield
+    config.USER_CONFIG_PATH = os.path.expanduser("~/.config/garwa/config")
 
 
 @pytest.fixture

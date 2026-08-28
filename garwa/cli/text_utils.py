@@ -232,7 +232,62 @@ def _warn_repetition(kind: str, detail: str, sample: str) -> None:
     sys.stderr.flush()
 
 
-def _detect_repetition(text: str) -> bool:
+def _find_repeated_text(text: str, max_sample: int = 160) -> str:
+    """Ekstrak contoh kata/baris yang paling mungkin jadi sumber loop, untuk
+    ditampilkan di pesan [LOOP] agar debugging lebih jelas.
+
+    Strategi (makin spesifik makin diprioritaskan):
+      1. Baris non-kosong yang muncul paling banyak (LINE-REPEAT).
+      2. Kata konten (anti-stopword) yang muncul paling banyak.
+      3. Kalimat/segmen pendek yang paling sering muncul sebagai substring.
+
+    Mengembalikan string pendek (<= max_sample karakter) berisi sample + jumlah
+    kemunculan, atau string kosong kalau tidak ada tanda repetisi yang jelas.
+    """
+    if not text:
+        return ""
+
+    lines = [ln.strip() for ln in text.split("\n")]
+    non_empty = [ln for ln in lines if ln]
+
+    # 1. Baris paling sering muncul (kandidat LINE-REPEAT).
+    if non_empty:
+        from collections import Counter
+        line_counts = Counter(non_empty)
+        most_line, line_n = line_counts.most_common(1)[0]
+        if line_n >= 2 and len(most_line) <= max_sample:
+            return f"baris {line_n}x: {most_line[:max_sample]!r}"
+
+    # 2. Kalimat/segmen pendek yang paling sering muncul (lebih informatif
+    #    daripada kata, dan menangkap loop kalimat penuh dalam satu baris).
+    sentences = re.split(r"[.!?]\s|\n", text)
+    sentences = [s.strip() for s in sentences if len(s.strip()) >= 8]
+    if sentences:
+        from collections import Counter
+        sent_counts = Counter(sentences)
+        most_sent, sent_n = sent_counts.most_common(1)[0]
+        if sent_n >= 2:
+            return f"kalimat {sent_n}x: {most_sent[:max_sample]!r}"
+
+    # 3. Kata konten paling sering muncul (fallback terakhir).
+    tokens = re.findall(r"[A-Za-z0-9_]+", text.lower())
+    stop = {
+        "yang", "dan", "di", "ke", "dari", "ini", "itu", "untuk", "dengan",
+        "pada", "adalah", "akan", "tidak", "the", "and", "of", "to", "in",
+        "a", "is", "for", "on", "with", "as", "at", "by", "or", "an",
+    }
+    content_tokens = [t for t in tokens if t not in stop and len(t) > 1]
+    if content_tokens:
+        from collections import Counter
+        token_counts = Counter(content_tokens)
+        most_token, token_n = token_counts.most_common(1)[0]
+        if token_n >= 3:
+            return f"kata {token_n}x: {most_token!r}"
+
+    return ""
+
+
+def _detect_repetition(text: str, strict: bool = True) -> bool:
     """Deteksi pola repetisi/degenerasi di dalam satu respon.
 
     Mengembalikan True kalau teks yang sudah terkumpul menunjukkan tanda
@@ -240,6 +295,15 @@ def _detect_repetition(text: str) -> bool:
     terakhir (unit) muncul berkali-kali di seluruh teks, ATAU ada substring
     berulang (n-gram) dengan panjang cukup di posisi mana pun, ATAU simbol
     separator (---, ===, ***) berulang terus-menerus.
+
+    ``strict`` membedakan dua konteks pemakaian:
+    - ``strict=True`` (default): untuk jawaban asli (content). Model tidak
+      seharusnya menulis ulang kalimat yang identik berkali-kali, jadi
+      ambang line-repeat ketat (REPEAT_MAX_OCCUR).
+    - ``strict=False``: untuk reasoning (chain of thought). Model secara
+      natural menulis ulang rencana/konsep yang sama sebagai bagian normal
+      berpikir, sehingga ambang line-repeat dilonggarkan
+      (REPEAT_MAX_OCCUR_REASONING) untuk menekan false positive.
 
     Perbaikan dari versi sebelumnya:
     - Multi-scale n-gram (25, 60, 120 karakter) untuk menangkap repetisi
@@ -295,10 +359,44 @@ def _detect_repetition(text: str) -> bool:
         return True
 
     # ------------------------------------------------------------------
-    # 1. Line-repeat: baris yang sama muncul >= REPEAT_MAX_OCCUR kali.
+    # 0b. Fence-run detection: fence markdown (```, ```python, ~~~, ...)
+    #     yang muncul BERURUTAN tanpa konten di antaranya adalah loop
+    #     degenerate (mirip separator bertumpuk). Fence yang TERSebar di
+    #     antara konten adalah markdown sah (banyak blok kode pendek) dan
+    #     TIDAK ditandai di sini.
+    # ------------------------------------------------------------------
+    fence_pattern = re.compile(r'^[\s]*`{3,}[\w+\-.]*[\s]*$|^[\s]*~{3,}[\w+\-.]*[\s]*$')
+    fence_run = 0
+    max_fence_run = 0
+    for ln in text.split("\n"):
+        if fence_pattern.match(ln):
+            fence_run += 1
+            if fence_run > max_fence_run:
+                max_fence_run = fence_run
+        elif ln.strip() == "":
+            continue  # baris kosong tidak memutus run
+        else:
+            fence_run = 0  # konten memutus run
+    if max_fence_run >= state.SEPARATOR_REPEAT_THRESHOLD:
+        if _dbg:
+            _warn_repetition(
+                "FENCE-REPEAT",
+                f"fence markdown muncul {max_fence_run}x berurutan (threshold={state.SEPARATOR_REPEAT_THRESHOLD})",
+                text[:200],
+            )
+        return True
+
+    # ------------------------------------------------------------------
+    # 1. Line-repeat: baris yang sama muncul >= threshold kali.
     #    Baris pendek (1-2 karakter) yang berupa simbol repetitif tetap
     #    diperiksa; hanya baris kosong yang diabaikan.
+    #    Ambang bergantung pada `strict`: content ketat (REPEAT_MAX_OCCUR),
+    #    reasoning longgar (REPEAT_MAX_OCCUR_REASONING).
     # ------------------------------------------------------------------
+    line_repeat_threshold = (
+        state.REPEAT_MAX_OCCUR if strict else state.REPEAT_MAX_OCCUR_REASONING
+    )
+    # fence_pattern sudah didefinisikan di bagian 0b.
     lines = [ln.strip() for ln in text.split("\n")]
     # Filter: abaikan baris yang benar-benar kosong setelah strip
     non_empty_lines = [ln for ln in lines if ln]
@@ -312,17 +410,18 @@ def _detect_repetition(text: str) -> bool:
             # loop) dan tidak boleh memicu LINE-REPEAT.
             if separator_pattern.match(ln):
                 continue
-            # Baris sangat pendek (1-2 karakter): hanya periksa kalau
-            # isinya simbol repetitif (bukan teks biasa seperti "OK")
-            if len(ln) < 3:
-                # Tetap cek: "OK" 2 karakter yang berulang 5x juga repetitif
-                pass
+            # Fence markdown yang TERSebar di antara konten juga bukan loop
+            # (sama seperti separator). Fence bertumpuk tanpa konten tetap
+            # ditangkap oleh separator-run / diversity check.
+            if fence_pattern.match(ln):
+                continue
             line_counts[ln] = line_counts.get(ln, 0) + 1
-            if line_counts[ln] >= state.REPEAT_MAX_OCCUR:
+            if line_counts[ln] >= line_repeat_threshold:
                 if _dbg:
                     _warn_repetition(
                         "LINE-REPEAT",
-                        f"baris muncul {line_counts[ln]}x (threshold={state.REPEAT_MAX_OCCUR})",
+                        f"baris muncul {line_counts[ln]}x "
+                        f"(threshold={line_repeat_threshold}, strict={strict})",
                         ln[:200],
                     )
                 return True
@@ -443,13 +542,18 @@ def _detect_repetition(text: str) -> bool:
         ]
         if grams:
             diversity = len(set(grams)) / len(grams)
-            if diversity < state.REPEAT_DIVERSITY_THRESHOLD:
+            diversity_threshold = (
+                state.REPEAT_DIVERSITY_THRESHOLD
+                if strict
+                else state.REPEAT_DIVERSITY_THRESHOLD_REASONING
+            )
+            if diversity < diversity_threshold:
                 if _dbg:
                     _warn_repetition(
                         "LOW-DIVERSITY",
                         f"rasio n-gram unik {diversity:.3f} < threshold "
-                        f"{state.REPEAT_DIVERSITY_THRESHOLD} "
-                        f"(window={window}, total={len(grams)})",
+                        f"{diversity_threshold} "
+                        f"(window={window}, total={len(grams)}, strict={strict})",
                         text_ws[-200:],
                     )
                 return True

@@ -45,6 +45,7 @@ from ..stream_parse import _flush_visible_text
 from ..stream_parse import _print_stream_text
 from ..stream_parse import _stream_visible_text
 from ..text_utils import _detect_repetition
+from ..text_utils import _find_repeated_text
 from ..text_utils import _resp_text_utf8
 from ..tool_schema import _accumulate_stream_tool_calls
 from ..tool_schema import _native_tool_calls_to_blocks
@@ -175,22 +176,27 @@ def _call_llama_server_stream(url: str, model: str, messages: list,
                 if _reasoning_chars_since_check >= state.REPEAT_CHECK_EVERY:
                     _reasoning_chars_since_check = 0
                     _reasoning_so_far = "".join(reasoning_parts)
-                    if _detect_repetition(_reasoning_so_far):
+                    # Reasoning (chain of thought) memakai ambang longgar:
+                    # model secara natural menulis ulang rencana yang sama.
+                    if _detect_repetition(_reasoning_so_far, strict=False):
                         if reasoning_preview is not None:
                             reasoning_preview.close()
                         visible_state["renderer"].abort()
+                        _rep = _find_repeated_text(_reasoning_so_far)
                         print(c(
                             "\n[LOOP] Model mengulang kalimat/baris yang sama "
                             "berulang-ulang di dalam reasoning (chain of "
                             "thought) -- degenerate loop sebelum jawaban "
                             "asli keluar. Menghentikan stream lebih awal "
-                            "untuk menghemat token.",
+                            "untuk menghemat token."
+                            + (f"\n  ulang: {_rep}" if _rep else ""),
                             C.RED,
                         ))
                         raise RepetitionLoopError(
                             "Model mengulang teks yang sama di dalam "
                             "reasoning_content (intra-response degenerate "
                             "loop di chain of thought)."
+                            + (f" Sample: {_rep}" if _rep else "")
                         )
 
             if not delta:
@@ -212,16 +218,19 @@ def _call_llama_server_stream(url: str, model: str, messages: list,
                     if reasoning_preview is not None:
                         reasoning_preview.close()
                     visible_state["renderer"].abort()
+                    _rep = _find_repeated_text(_content_so_far)
                     print(c(
                         "\n[LOOP] Model mengulang kalimat/baris yang sama "
                         "berulang-ulang di dalam jawaban aslinya "
                         "(degenerate loop pada content). Menghentikan "
-                        "stream lebih awal untuk menghemat token.",
+                        "stream lebih awal untuk menghemat token."
+                        + (f"\n  ulang: {_rep}" if _rep else ""),
                         C.RED,
                     ))
                     raise RepetitionLoopError(
                         "Model mengulang teks yang sama di dalam content "
                         "(intra-response degenerate loop pada jawaban asli)."
+                        + (f" Sample: {_rep}" if _rep else "")
                     )
 
         if reasoning_preview is not None:
