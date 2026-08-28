@@ -42,7 +42,14 @@ def load_user_config() -> dict:
 
 
 # Kunci-kunci yang dipersistenkan ke file konfigurasi pengguna, urutan tulis.
-_USER_CONFIG_KEYS = ("url", "api_key", "github_token", "github_max", "news_lang")
+_USER_CONFIG_KEYS = (
+    "url",
+    "api_key",
+    "github_token",
+    "github_max",
+    "news_lang",
+    "firecrawl_token",
+)
 
 
 def save_user_config(
@@ -51,6 +58,7 @@ def save_user_config(
     github_token: str | None = None,
     github_max: int | None = None,
     news_lang: str | None = None,
+    firecrawl_token: str | None = None,
 ) -> None:
     """Tulis nilai konfigurasi ke file konfigurasi pengguna.
 
@@ -68,6 +76,8 @@ def save_user_config(
         cfg["github_max"] = str(int(github_max))
     if news_lang is not None:
         cfg["news_lang"] = news_lang
+    if firecrawl_token is not None:
+        cfg["firecrawl_token"] = firecrawl_token
     try:
         os.makedirs(os.path.dirname(USER_CONFIG_PATH), exist_ok=True)
         with open(USER_CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -118,6 +128,7 @@ def _reload_values() -> None:
     global _USER_CFG, GITHUB_TOKEN
     global GOOGLE_NEWS_HL, GOOGLE_NEWS_GL, GOOGLE_NEWS_CEID
     global GITHUB_MAX_CONTENT, LLAMA_URL, LLAMA_API_KEY
+    global FIRECRAWL_API_KEY, FIRECRAWL_API_URL
 
     _USER_CFG = load_user_config()
 
@@ -139,6 +150,14 @@ def _reload_values() -> None:
     # (~/.config/garwa/config) > default bawaan.
     LLAMA_URL = (os.environ.get("LLAMA_URL") or _USER_CFG.get("url") or _DEFAULT_URL).strip()
     LLAMA_API_KEY = (os.environ.get("LLAMA_API_KEY") or _USER_CFG.get("api_key") or "").strip()
+
+    # Firecrawl: prioritas env > config pengguna > default API endpoint.
+    FIRECRAWL_API_KEY = (
+        os.environ.get("FIRECRAWL_API_KEY") or _USER_CFG.get("firecrawl_token") or ""
+    ).strip()
+    FIRECRAWL_API_URL = (
+        os.environ.get("FIRECRAWL_API_URL") or "https://api.firecrawl.dev/v1"
+    ).rstrip("/")
 
 
 _reload_values()

@@ -17,6 +17,7 @@ import time
 import unicodedata
 from collections import OrderedDict
 from datetime import datetime
+from typing import Optional
 from urllib.parse import unquote, urlparse
 
 try:
@@ -49,6 +50,8 @@ from .skills import build_system_prompt
 from .slash_commands import handle_slash_command
 from .text_utils import confirm
 from .tool_schema import _init_tool_registry
+from ..mcp import MCPToolRegistry, load_mcp_config, mcp_available
+from ..mcp.client import set_global_registry
 
 
 # Lokasi file history readline (persisten antar sesi CLI).
@@ -87,6 +90,61 @@ def _save_readline_history() -> None:
         pass
 
 
+
+
+def _init_mcp(mcp_config: Optional[str]) -> Optional[MCPToolRegistry]:
+    """Inisialisasi integrasi MCP dan daftarkan tool eksternal ke TOOLS.
+
+    Membaca konfigurasi (default ~/.config/garwa/mcp.json), menyambungkan ke
+    tiap server, mengambil daftar tool, lalu mendaftarkannya ke `TOOLS`
+    dengan prefix `mcp.<server>.<tool>`. Mengembalikan registry (untuk
+    dibersihkan saat shutdown) atau None bila tidak ada konfigurasi / SDK
+    tidak tersedia.
+    """
+    if not mcp_available():
+        print(c(
+            "[WARN] Modul 'mcp' tidak terinstall. Integrasi MCP dinonaktifkan. "
+            "Install dengan: pip install 'mcp>=2.0'",
+            C.YELLOW,
+        ))
+        return None
+
+    configs = load_mcp_config(mcp_config)
+    if not configs:
+        return None
+
+    registry = MCPToolRegistry(configs)
+    registry.connect_all()
+    tools = registry.list_tools()
+    if tools:
+        tools_module.TOOLS.update(tools)
+        # Tool MCP ditambahkan ke TOOLS setelah _init_tool_registry() dipanggil
+        # di main(); panggil ulang agar tool MCP ikut terdaftar di REGISTRY
+        # (fungsi ini idempoten -- menimpa key yang sama).
+        _init_tool_registry()
+        set_global_registry(registry)
+        print(c(
+            f"[MCP] Terhubung ke {len(registry._connected)} server, "
+            f"{registry.tool_count()} tool eksternal didaftarkan "
+            f"(prefix 'mcp.<server>.<tool>').",
+            C.GREEN,
+        ))
+    else:
+        print(c("[MCP] Tidak ada tool MCP yang berhasil didaftarkan.", C.YELLOW))
+    return registry
+
+
+def _close_mcp(registry: Optional[MCPToolRegistry]) -> None:
+    """Tutup koneksi ke semua server MCP saat aplikasi keluar.
+
+    Idempoten dan aman dipanggil di tiap titik keluar main() -- registry
+    None (MCP tidak aktif) langsung diabaikan.
+    """
+    if registry is not None:
+        try:
+            registry.close_all()
+        except Exception as e:  # noqa: BLE001 - cleanup tak boleh menggagalkan exit
+            print(c(f"[WARN] Gagal menutup koneksi MCP: {e}", C.YELLOW))
 
 
 def main():
@@ -190,6 +248,10 @@ def main():
                               "'- [ ]' yang belum tercentang. Wajib dipakai bersama --plan-file.")
     parser.add_argument("--max-repeats", type=int, default=50,
                          help="Batas jumlah pengulangan untuk --repeat-until-done (default: 50)")
+    parser.add_argument("--mcp-config", default=None, metavar="FILE",
+                        help="Path ke file konfigurasi MCP (format mirip mcpServers Claude "
+                             "Desktop). Default: ~/.config/garwa/mcp.json. Tool dari server "
+                             "MCP didaftarkan dengan prefix 'mcp.<server>.<tool>'.")
     args = parser.parse_args()
 
     if args.auto and args.overnight:
@@ -232,6 +294,12 @@ def main():
 
     _init_tool_registry()
 
+    # Integrasi MCP: daftarkan tool dari MCP server eksternal (jika ada).
+    # Tool MCP didaftarkan ke TOOLS dengan prefix 'mcp.<server>.<tool>' dan
+    # handler yang membungkus ClientSession.call_tool. Mesin eksekusi tool
+    # Garwa (execute_tool / run_tool_with_runtime) tidak diubah.
+    _mcp_registry = _init_mcp(args.mcp_config)
+
     try:
         dbmod.init_db(args.db_path)
     except Exception as e:
@@ -247,6 +315,7 @@ def main():
             status = "terbuka" if not r["ended"] else "selesai"
             title = r["title"] or "(tanpa judul)"
             print(f"{r['id']}  [{status}]  {title}")
+        _close_mcp(_mcp_registry)
         return
 
     model_id = None
@@ -362,7 +431,10 @@ def main():
             print(c(f"({len(todos)} item plan tersimpan -- gunakan tool todo_read untuk melihatnya)", C.DIM))
 
     if args.auto:
-        run_auto_mode(args, session_id, system_content)
+        try:
+            run_auto_mode(args, session_id, system_content)
+        finally:
+            _close_mcp(_mcp_registry)
         return
 
     workdir_label = os.path.basename(os.path.normpath(args.workdir)) or args.workdir
@@ -477,6 +549,7 @@ def main():
             print()
     finally:
         _save_readline_history()
+        _close_mcp(_mcp_registry)
 
 
 def _build_prompt_label(args, session_id, workdir_label):

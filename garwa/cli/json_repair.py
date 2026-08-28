@@ -219,6 +219,14 @@ def extract_tool_call(text: str):
             except json.JSONDecodeError:
                 continue
         if obj is None:
+            if "..." in raw_json:
+                return "PARSE_ERROR", (
+                    f"tool_call mengandung placeholder '...' (ellipsis): model "
+                    f"menulis '...' sebagai pengganti isi field sehingga JSON "
+                    f"tidak bisa diperbaiki otomatis. Tulis field lengkap "
+                    f"(mis. \"arguments\": {{...}}), bukan '...'. "
+                    f"raw_json={raw_json!r}"
+                )
             return "PARSE_ERROR", f"{e} | raw_json={raw_json!r}"
 
     name = obj.get("name")

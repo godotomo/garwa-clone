@@ -41,12 +41,30 @@ from .llm_errors import TruncatedGenerationError
 from .markdown_render import _render_markdown_once
 from .spinner import Spinner
 from .text_utils import _find_repeated_text
+from .text_utils import _loop_similarity
 from .text_utils import _similarity
 from .tool_exec import execute_tool
 from .tool_schema import _convert_alt_tool_call_syntax
 from .tool_schema import build_openai_tools_payload
 from .vision import _inject_attachment_instructions
 from .vision import _prepare_messages_for_vision
+
+
+def _shorten(text: str, limit: int = 160) -> str:
+    """Ringkas teks untuk ditampilkan di pesan [LOOP].
+
+    Menghapus whitespace berlebih dan memotong ke `limit` karakter supaya
+    pesan loop tetap ringkas namun tetap menunjukkan KEBIASAAN yang diulang
+    (mis. tool_call yang sama persis antar-iterasi, yang tidak tertangkap
+    oleh `_find_repeated_text` karena repetisinya antar-respon, bukan
+    internal dalam satu respon).
+    """
+    if not text:
+        return ""
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3] + "..."
 
 
 
@@ -385,7 +403,7 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
             #    termasuk -- tidak lagi dipisah (Bug 12: unified exact+similarity).
             _repeat_count = sum(
                 1 for prev in window_prev
-                if _similarity(prev, assistant_text) >= state.LOOP_SIMILARITY_THRESHOLD
+                if _loop_similarity(prev, assistant_text) >= state.LOOP_SIMILARITY_THRESHOLD
             )
 
             # 2. Alternating pattern detection (Bug 10: A/B/A/B).
@@ -405,7 +423,7 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                 # sebelumnya) → dihitung. Ini menghitung SEMUA kemunculan item
                 # yang berulang: [A,B,A,B] → A(0,2) + B(1,3) = 4.
                 if any(
-                    _similarity(item, _loop_history[j]) >= state.LOOP_SIMILARITY_THRESHOLD
+                    _loop_similarity(item, _loop_history[j]) >= state.LOOP_SIMILARITY_THRESHOLD
                     for j in range(len(_loop_history))
                     if j != i
                 ):
@@ -425,7 +443,7 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
             if _loop_interventions < 1:
 
                 _loop_interventions += 1
-                _rep = _find_repeated_text(assistant_text)
+                _rep = _find_repeated_text(assistant_text) or _shorten(assistant_text)
                 print(c(
                     f"  [LOOP] Model mengulang respon yang sama "
                     f"({_repeat_count}x dalam {state.LOOP_REPEAT_WINDOW} iterasi "
@@ -440,7 +458,8 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                     "mengulang respon yang SAMA PERSIS beberapa kali "
                     "berturut-turut tanpa pernah maju. Ini indikasi jelas "
                     "Anda terjebak dalam loop yang tidak produktif.\n"
-                    "\n"
+                    + (f"RESPON YANG DIULANG: {_rep}\n" if _rep else "")
+                    + "\n"
                     "INSTRUKSI WAJIB -- JANGAN ULANGI RESPON YANG SAMA:\n"
                     "1. BERHENTI SEKARANG juga mengulang respon/tool_call yang "
                     "identik dengan yang sudah Anda kirim sebelumnya.\n"
@@ -469,7 +488,7 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                 continue
             else:
 
-                _rep = _find_repeated_text(assistant_text)
+                _rep = _find_repeated_text(assistant_text) or _shorten(assistant_text)
                 print(c(
                     f"  [LOOP] Model masih mengulang respon yang sama "
                     f"({_repeat_count}x dalam {state.LOOP_REPEAT_WINDOW} iterasi "
@@ -514,6 +533,79 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                 "Perbaiki format JSON dan coba lagi."
             )
             print(c(f"  {error_msg}", C.RED))
+
+            # Track PARSE_ERROR di history yang sama dengan error tool biasa,
+            # supaya model yang terus-menerus menghasilkan JSON tidak valid
+            # (mis. placeholder '...') ikut terdeteksi sebagai loop dan bisa
+            # dipaksa berhenti, bukan loop tak berujung tanpa intervensi.
+            _parse_fp = f"PARSE_ERROR::{arguments.strip()}"
+            _error_history.append(_parse_fp)
+            if len(_error_history) > state.ERROR_REPEAT_WINDOW:
+                _error_history.pop(0)
+            _parse_repeat_count = _error_history.count(_parse_fp)
+            _is_parse_loop = _parse_repeat_count >= state.ERROR_REPEAT_THRESHOLD
+
+            if _is_parse_loop and _error_interventions < 1:
+                _error_interventions += 1
+                print(c(
+                    f"  [ERROR-LOOP] Model mengulang tool_call JSON yang "
+                    f"tidak valid ({_parse_repeat_count}x dalam "
+                    f"{state.ERROR_REPEAT_WINDOW} iterasi terakhir). "
+                    f"Menyuntikkan peringatan tegas agar model memperbaiki "
+                    f"format JSON-nya..."
+                    + (f"\n  ulang: {_shorten(arguments)}" if arguments else ""),
+                    C.YELLOW,
+                ))
+                tool_result_msg = (
+                    "<tool_result>\n"
+                    "[ERROR-LOOP-DETECTED] PERINGATAN TEGAS: Anda (model) "
+                    "berulang kali menghasilkan tool_call dengan JSON yang "
+                    "TIDAK VALID (format sama/serupa) tanpa pernah "
+                    "memperbaikinya.\n"
+                    + (f"JSON YANG GAGAL: {_shorten(arguments)}\n" if arguments else "")
+                    + "\n"
+                    "INSTRUKSI WAJIB:\n"
+                    "1. BERHENTI mengulang tool_call dengan format yang sama.\n"
+                    "2. Periksa pesan error di atas dengan saksama dan "
+                    "PERBAIKI format JSON Anda secara fundamental (jangan "
+                    "sekadar mengirim ulang hal yang sama).\n"
+                    "3. Kalau Anda menulis '...' (ellipsis) sebagai "
+                    "placeholder, ganti dengan field lengkap yang valid.\n"
+                    "4. Kalau sudah tidak ada cara yang benar, BERHENTI dan "
+                    "berikan jawaban akhir yang jujur.\n"
+                    "\n"
+                    "Mengulang JSON tidak valid yang sama lagi akan "
+                    "dianggap kegagalan dan giliran ini dihentikan paksa.\n"
+                    "</tool_result>"
+                )
+                dbmod.add_message(
+                    args.db_path,
+                    session_id,
+                    "user",
+                    tool_result_msg,
+                    kind="tool_result",
+                )
+                continue
+
+            if _is_parse_loop:
+                print(c(
+                    f"  [ERROR-LOOP] Model masih mengulang tool_call JSON "
+                    f"yang tidak valid ({_parse_repeat_count}x dalam "
+                    f"{state.ERROR_REPEAT_WINDOW} iterasi terakhir) meski "
+                    f"sudah diperingatkan. Menghentikan giliran ini untuk "
+                    f"mencegah loop tak berujung."
+                    + (f"\n  ulang: {_shorten(arguments)}" if arguments else ""),
+                    C.RED,
+                ))
+                print(c(
+                    f"  [ERROR-LOOP] Menunggu {state.LOOP_BREAK_COOLDOWN_SECONDS} "
+                    f"detik sebelum melanjutkan proses terakhir...",
+                    C.DIM,
+                ))
+                time.sleep(state.LOOP_BREAK_COOLDOWN_SECONDS)
+                _emit_summary()
+                return last_visible
+
             tool_result_msg = (
                 "<tool_result>\n"
                 f"[ERROR] tool_call JSON tidak valid: {arguments}.\n"
@@ -578,6 +670,7 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
             _is_error_loop = _error_repeat_count >= state.ERROR_REPEAT_THRESHOLD
 
             if _is_error_loop:
+                _err_detail = f"{name} {_shorten(_arg_fp)}"
                 if _error_interventions < 1:
 
                     _error_interventions += 1
@@ -587,7 +680,8 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                         f"({_error_repeat_count}x dalam {state.ERROR_REPEAT_WINDOW} "
                         f"iterasi terakhir). Menyuntikkan peringatan tegas "
                         f"agar model berhenti mengulang dan mengambil "
-                        f"langkah baru...",
+                        f"langkah baru..."
+                        + (f"\n  ulang: {_err_detail}" if _err_detail else ""),
                         C.YELLOW,
                     ))
                     error_loop_warning = (
@@ -599,7 +693,8 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                         "sama persis -- tanpa pernah maju. Ini indikasi "
                         "jelas Anda terjebak dalam loop yang tidak "
                         "produktif.\n"
-                        "\n"
+                        + (f"TOOL_CALL YANG DIULANG: {_err_detail}\n" if _err_detail else "")
+                        + "\n"
                         "INSTRUKSI WAJIB -- JANGAN ULANGI RESPON YANG SAMA:\n"
                         "1. BERHENTI SEKARANG juga memanggil tool yang sama "
                         "dengan argumen yang sama persis seperti yang baru "
@@ -639,7 +734,8 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                         f"({_error_repeat_count}x dalam {state.ERROR_REPEAT_WINDOW} "
                         f"iterasi terakhir) meski sudah diperingatkan. "
                         f"Menghentikan giliran ini untuk mencegah loop tak "
-                        f"berujung.",
+                        f"berujung."
+                        + (f"\n  ulang: {_err_detail}" if _err_detail else ""),
                         C.RED,
                     ))
                     print(c(

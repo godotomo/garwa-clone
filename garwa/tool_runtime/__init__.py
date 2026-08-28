@@ -11,8 +11,13 @@ from . import _shared as shared
 from .errors import ToolRuntimeError, tool_error, is_blocked_member, InvalidDataValueError
 from .copy_utils import copy_in
 from .hooks import ToolCallStarted, ToolCallEnded, ToolCallHooks, DEFAULT_HOOKS
-from .registry import ToolRegistry, register_signature, REGISTRY
-from .introspection import parse_argument_description, build_openai_tools_payload
+from .registry import ToolRegistry, register_signature, clear_signatures, REGISTRY
+from .introspection import (
+    parse_argument_description,
+    build_openai_tools_payload,
+    _resolve_schema,
+    _schema_to_legacy,
+)
 from .executor import run_tool_with_runtime
 
 # Konstanta yang aslinya tinggal di top-level tool_runtime.py --

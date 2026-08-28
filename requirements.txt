@@ -1,6 +1,11 @@
 # Wajib
 requests>=2.31
 
+# Integrasi MCP (Model Context Protocol) -- Garwa sebagai MCP client.
+# Opsional: kalau tidak terinstall, CLI tetap berjalan tanpa tool MCP
+# (fallback otomatis; lihat garwa/mcp/client.py).
+mcp>=2.0
+
 # Opsional -- dipakai kalau terinstall, ada fallback otomatis kalau tidak:
 # - beautifulsoup4: parsing HTML lebih akurat di tools/webfetch.py
 #   (fallback: strip tag pakai regex sederhana)

@@ -45,6 +45,11 @@ class ToolRegistry:
         """Daftarkan deskripsi tool flat untuk pencarian."""
         self._descriptions[name] = description
 
+    def clear(self) -> None:
+        """Kosongkan semua alias & deskripsi (dipakai saat rebuild registry)."""
+        self._aliases.clear()
+        self._descriptions.clear()
+
     def resolve(self, name: str) -> str:
         """Resolve nama (bisa path namespace) ke nama tool flat.
 
@@ -126,6 +131,11 @@ def _signature_for(tool_name: str) -> str:
 def register_signature(tool_name: str, signature: str) -> None:
     """Daftarkan signature tool untuk pencarian/katalog."""
     shared._SIGNATURES[tool_name] = signature
+
+
+def clear_signatures() -> None:
+    """Kosongkan semua signature (dipakai saat rebuild registry)."""
+    shared._SIGNATURES.clear()
 
 
 REGISTRY = ToolRegistry()

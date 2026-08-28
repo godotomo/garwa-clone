@@ -58,6 +58,21 @@ natural atau mode otomatis (auto / overnight) tanpa pengawasan.
   retry otomatis saat request ditolak karena melampaui konteks.
 - **Native tool-calling** — skema tool dikirim lewat field `tools` ala
   OpenAI di tiap request, dengan fallback ke skema teks penuh.
+- **Integrasi MCP (Model Context Protocol)** — Garwa bertindak sebagai **MCP
+  client** yang mengonsumsi tool dari MCP server eksternal (stdio /
+  streamable HTTP). Tool eksternal didaftarkan dengan prefix
+  `mcp.<server>.<tool>` dan dipakai seperti tool bawaan. Kelola lewat
+  slash-command `/mcp-server`, `/mcp-api-key`, `/mcp-enable` atau file
+  `~/.config/garwa/mcp.json`.
+- **Integrasi Firecrawl** — tool `firecrawl_scrape`, `firecrawl_search`, dan
+  `firecrawl_crawl` untuk mengambil & mencari konten web via Firecrawl
+  (butuh API key; atur lewat `/firecrawl-key` atau env `FIRECRAWL_API_KEY`).
+- **Deteksi loop & repetisi** — deteksi loop antar-respon (tool_call
+  berulang), repetisi teks, dan error-loop (JSON tidak valid berulang)
+  dengan intervensi otomatis agar agent tidak terjebak loop tak berujung.
+- **Standardisasi skema tool (JSON-Schema)** — `inputSchema` berformat
+  JSON-Schema penuh sebagai sumber kebenaran kanonik, interoperabel dengan
+  MCP & OpenAI function-calling.
 
 ---
 
@@ -197,6 +212,10 @@ garwa [opsi]
   --plan-file FILE        Checklist markdown ('- [ ]' / '- [x]') untuk overnight
   --repeat-until-done     Ulangi task terakhir sampai checklist selesai
   --max-repeats N         Batas pengulangan --repeat-until-done (default: 50)
+  --mcp-config FILE       Path file konfigurasi MCP (format mirip mcpServers
+                          Claude Desktop). Default: ~/.config/garwa/mcp.json.
+                          Tool dari server MCP didaftarkan dengan prefix
+                          'mcp.<server>.<tool>'.
 ```
 
 ---
@@ -214,7 +233,17 @@ Beberapa perilaku khusus di input:
   melampirkan file tersebut sebagai input (termasuk gambar sebagai vision).
 - **Tempel teks multi-baris** — teks yang mengandung baris baru dianggap
   sebagai paste/attachment, bukan perintah shell.
-- **Slash command** — `/exit`, `/quit` untuk keluar.
+- **Slash command** — `/exit`, `/quit` untuk keluar. Beberapa command
+  menerima argumen, mis. `/model deepseek-v4-flash-0731`, `/news-lang en`,
+  `/github-token <token>`, dan `/firecrawl-key <token>` (API key Firecrawl,
+  disimpan lintas sesi di `~/.config/garwa/config`).
+- **Slash command MCP** — kelola server MCP langsung dari prompt:
+  - `/mcp-server list` — tampilkan server yang terdaftar.
+  - `/mcp-server add <nama> <cmd> [args...]` — daftarkan server stdio.
+  - `/mcp-server add <nama> http <url>` — daftarkan server streamable HTTP.
+  - `/mcp-server remove <nama>` — hapus server.
+  - `/mcp-api-key <nama> <key>` — set header Authorization untuk server HTTP.
+  - `/mcp-enable <nama> [on|off]` — aktifkan/nonaktifkan koneksi server.
 
 ---
 
@@ -289,7 +318,8 @@ garwa --overnight --plan-file tasks.md --repeat-until-done
 
 ## Tool yang Tersedia
 
-Garwa mendaftarkan **20 tool** yang bisa dipanggil model. Ringkasan:
+Garwa mendaftarkan **23 tool bawaan** yang bisa dipanggil model (plus tool
+dinamis dari MCP server eksternal jika diaktifkan). Ringkasan:
 
 | Tool | Deskripsi | Destruktif? |
 |------|-----------|-------------|
@@ -312,12 +342,20 @@ Garwa mendaftarkan **20 tool** yang bisa dipanggil model. Ringkasan:
 | `github_search_repos` | Cari repository publik GitHub | Tidak |
 | `github_search_code` | Cari potongan kode di GitHub (butuh token) | Tidak |
 | `github_read_file` | Baca file source code dari repo GitHub publik | Tidak |
+| `firecrawl_scrape` | Ambil konten satu halaman web jadi markdown (butuh API key Firecrawl) | Tidak |
+| `firecrawl_search` | Cari di web via Firecrawl (butuh API key Firecrawl) | Tidak |
+| `firecrawl_crawl` | Crawl satu situs via Firecrawl (butuh API key Firecrawl) | Tidak |
 | `webfetch` | Fetch konten dari URL (text/markdown/html) | Tidak |
 
 > **Destruktif** = tool yang bisa mengubah/menghapus data. Aksi destruktif
 > meminta konfirmasi interaktif, kecuali `--auto-approve` diaktifkan.
 > `bash` bersifat dinamis: hanya command yang cocok pola berbahaya
 > (mis. `rm -rf`, `dd` ke device, force-push) yang meminta konfirmasi.
+
+**Tool MCP dinamis** — saat integrasi MCP aktif, tool dari server eksternal
+muncul dengan nama `mcp.<server>.<tool>` (mis. `mcp.test-server.add`) dan
+bisa dipanggil seperti tool bawaan. Daftarnya bergantung pada server yang
+didaftarkan via `/mcp-server` atau `~/.config/garwa/mcp.json`.
 
 ---
 
@@ -417,6 +455,8 @@ Semua variabel dibaca dari environment (lihat `garwa/config.py`):
 | `GOOGLE_NEWS_GL` | `ID` | Region Google News |
 | `GOOGLE_NEWS_CEID` | `ID:id` | CEID Google News |
 | `GITHUB_MAX_CONTENT` | `12000` | Batas konten file yang dibaca dari GitHub |
+| `FIRECRAWL_API_KEY` | *(kosong)* | API key Firecrawl (wajib untuk tool `firecrawl_*`) |
+| `FIRECRAWL_API_URL` | `https://api.firecrawl.dev/v1` | Endpoint API Firecrawl |
 
 Contoh:
 
@@ -424,6 +464,7 @@ Contoh:
 export GITHUB_TOKEN="github_pat_..."
 export LLAMA_API_KEY="sk-..."
 export LLAMA_URL="http://localhost:8080/v1/chat/completions"
+export FIRECRAWL_API_KEY="fc-..."
 garwa
 ```
 

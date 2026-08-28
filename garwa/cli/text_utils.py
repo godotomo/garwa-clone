@@ -232,11 +232,101 @@ def _warn_repetition(kind: str, detail: str, sample: str) -> None:
     sys.stderr.flush()
 
 
+# ----------------------------------------------------------------------
+# Tool-call parsing untuk deteksi loop antar-respon.
+#
+# Masalah: _similarity memakai _normalize_entities yang mengganti path file
+# menjadi __FILE__ dan angka menjadi __NUM__. Akibatnya dua tool_call yang
+# BERBEDA (mis. read_file dengan path/baris berbeda) menjadi identik setelah
+# normalisasi entitas, sehingga dianggap "loop" padahal itu langkah progresif
+# yang sah (membaca file/baris berikutnya). Delimiter <tool_call> yang selalu
+# sama di setiap tool_call juga memperparah kemiripan tekstual.
+#
+# Solusi: deteksi loop antar-respon harus membandingkan tool_call secara
+# EKSPLISIT (nama + seluruh argumen harus identik persis), bukan teks mentah.
+# ----------------------------------------------------------------------
+
+_TOOL_CALL_BLOCK_RE = re.compile(
+    r"<tool_call>\s*(.*?)\s*</tool_call>",
+    re.DOTALL,
+)
+
+
+def _extract_tool_calls(text: str) -> list:
+    """Ekstrak semua blok <tool_call>...</tool_call> dari `text` menjadi list
+    dict {'name': str, 'arguments': dict}. Blok yang JSON-nya gagal di-parse
+    diabaikan (memperbaiki JSON adalah tanggung jawab json_repair, bukan di
+    sini). Mengembalikan list kosong kalau tidak ada tool_call yang valid.
+    """
+    out = []
+    for raw in _TOOL_CALL_BLOCK_RE.findall(text):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            continue
+        if not isinstance(obj, dict) or "name" not in obj:
+            continue
+        args = obj.get("arguments")
+        if not isinstance(args, dict):
+            args = {}
+        out.append({"name": str(obj.get("name", "")), "arguments": args})
+    return out
+
+
+def _call_signature(call: dict):
+    """Representasi kanonik (hashable) dari SATU tool_call: (name, sorted args).
+    Argumen di-serialize JSON dengan sort_keys supaya urutan key tidak
+    memengaruhi kesamaan (dua dict dengan isi sama tapi urutan beda = sama).
+    """
+    args = tuple(sorted(
+        (k, json.dumps(v, sort_keys=True, ensure_ascii=False))
+        for k, v in call["arguments"].items()
+    ))
+    return (call["name"], args)
+
+
+def _tool_call_signatures(text: str):
+    """Tuple signature dari SEMUA tool_call dalam `text`, atau None kalau tidak
+    ada tool_call valid sama sekali. Dipakai untuk membandingkan dua respon.
+    """
+    calls = _extract_tool_calls(text)
+    if not calls:
+        return None
+    return tuple(_call_signature(c) for c in calls)
+
+
+def _loop_similarity(a: str, b: str) -> float:
+    """Skor kemiripan khusus untuk deteksi loop ANTAR-RESPON.
+
+    Berbeda dari _similarity: kalau KEDUA respon berisi tool_call, kita
+    bandingkan tool_call-nya secara eksplisit (nama + seluruh argumen harus
+    identik persis). Dua tool_call yang berbeda argumennya (mis. read_file
+    dengan path/baris berbeda) adalah langkah PROGRESIF yang sah, BUKAN loop,
+    meskipun secara tekstual mirip (delimiter <tool_call> sama, template JSON
+    sama, dan _normalize_entities akan menyamakan path/angka).
+
+    Kalau salah satu/keduanya tidak berisi tool_call, fallback ke _similarity.
+    """
+    sig_a = _tool_call_signatures(a)
+    sig_b = _tool_call_signatures(b)
+    if sig_a is not None and sig_b is not None:
+        # Keduanya berisi tool_call: loop hanya jika seluruh signature identik.
+        return 1.0 if sig_a == sig_b else 0.0
+    if sig_a is not None or sig_b is not None:
+        # Satu berisi tool_call, satu tidak: jelas langkah berbeda, bukan loop.
+        return 0.0
+    return _similarity(a, b)
+
+
 def _find_repeated_text(text: str, max_sample: int = 160) -> str:
     """Ekstrak contoh kata/baris yang paling mungkin jadi sumber loop, untuk
     ditampilkan di pesan [LOOP] agar debugging lebih jelas.
 
     Strategi (makin spesifik makin diprioritaskan):
+      0. Tool-call yang sama persis (nama + argumen) muncul >= 2x.
       1. Baris non-kosong yang muncul paling banyak (LINE-REPEAT).
       2. Kata konten (anti-stopword) yang muncul paling banyak.
       3. Kalimat/segmen pendek yang paling sering muncul sebagai substring.
@@ -247,8 +337,26 @@ def _find_repeated_text(text: str, max_sample: int = 160) -> str:
     if not text:
         return ""
 
+    # 0. Tool-call repeat: sumber loop paling jelas dan informatif. Delimiter
+    #    <tool_call>/</tool_call> sengaja TIDAK dihitung (selalu muncul di setiap
+    #    tool_call, jadi bukan indikasi repetisi), hanya nama+argumen yang sama.
+    calls = _extract_tool_calls(text)
+    if len(calls) >= 2:
+        from collections import Counter
+        sig_counts = Counter(_call_signature(c) for c in calls)
+        most_sig, sig_n = sig_counts.most_common(1)[0]
+        if sig_n >= 2:
+            name, args = most_sig
+            sample = f"{name} {dict(args)}"
+            if len(sample) <= max_sample:
+                return f"tool_call {sig_n}x: {sample!r}"
+            return f"tool_call {sig_n}x: {name!r}"
+
     lines = [ln.strip() for ln in text.split("\n")]
-    non_empty = [ln for ln in lines if ln]
+    non_empty = [
+        ln for ln in lines
+        if ln and ln not in ("<tool_call>", "</tool_call>")
+    ]
 
     # 1. Baris paling sering muncul (kandidat LINE-REPEAT).
     if non_empty:
@@ -261,7 +369,10 @@ def _find_repeated_text(text: str, max_sample: int = 160) -> str:
     # 2. Kalimat/segmen pendek yang paling sering muncul (lebih informatif
     #    daripada kata, dan menangkap loop kalimat penuh dalam satu baris).
     sentences = re.split(r"[.!?]\s|\n", text)
-    sentences = [s.strip() for s in sentences if len(s.strip()) >= 8]
+    sentences = [
+        s.strip() for s in sentences
+        if len(s.strip()) >= 8 and s.strip() not in ("<tool_call>", "</tool_call>")
+    ]
     if sentences:
         from collections import Counter
         sent_counts = Counter(sentences)
@@ -275,6 +386,7 @@ def _find_repeated_text(text: str, max_sample: int = 160) -> str:
         "yang", "dan", "di", "ke", "dari", "ini", "itu", "untuk", "dengan",
         "pada", "adalah", "akan", "tidak", "the", "and", "of", "to", "in",
         "a", "is", "for", "on", "with", "as", "at", "by", "or", "an",
+        "tool_call", "tool",
     }
     content_tokens = [t for t in tokens if t not in stop and len(t) > 1]
     if content_tokens:
@@ -414,6 +526,14 @@ def _detect_repetition(text: str, strict: bool = True) -> bool:
             # (sama seperti separator). Fence bertumpuk tanpa konten tetap
             # ditangkap oleh separator-run / diversity check.
             if fence_pattern.match(ln):
+                continue
+            # Delimiter tool_call (<tool_call>, </tool_call>) SELALU muncul
+            # di setiap tool_call, jadi bukan indikasi repetisi. Menghitungnya
+            # sebagai LINE-REPEAT memicu false positive saat model sah
+            # mengirim beberapa tool_call berbeda (mis. read_file beberapa
+            # file/baris). Repetisi tool_call yang SEBENARNYA (nama+argumen
+            # identik) ditangkap oleh _find_repeated_text / _loop_similarity.
+            if ln in ("<tool_call>", "</tool_call>"):
                 continue
             line_counts[ln] = line_counts.get(ln, 0) + 1
             if line_counts[ln] >= line_repeat_threshold:

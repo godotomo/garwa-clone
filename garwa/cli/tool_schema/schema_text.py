@@ -68,11 +68,15 @@ def build_tool_schema_text(full: bool = False) -> str:
     lines = []
     for i, (name, spec) in enumerate(TOOLS.items(), 1):
         s = spec["schema"]
+        args = tool_runtime._resolve_schema(s)[0]
         if full:
-            args_desc = "\n".join(f"     - {k}: {v}" for k, v in s["arguments"].items())
+            args_desc = "\n".join(
+                f"     - {k}: {tool_runtime._schema_to_legacy(v)}"
+                for k, v in args.items()
+            )
             lines.append(f"{i}. {s['name']}\n   Deskripsi: {s['description']}\n   Argumen:\n{args_desc}")
         else:
-            arg_names = ", ".join(s["arguments"].keys()) or "(tanpa argumen)"
+            arg_names = ", ".join(args.keys()) or "(tanpa argumen)"
             lines.append(
                 f"{i}. {s['name']} -- {s['description']}\n"
                 f"   Argumen: {arg_names} (skema tipe/deskripsi lengkap ada di "
@@ -102,11 +106,10 @@ def _build_tool_signature(name: str, spec: dict) -> str:
     pencarian tool.
     """
     s = spec.get("schema", {})
-    args = s.get("arguments", {})
+    args, required = tool_runtime._resolve_schema(s)
     parts = []
-    for argname, argdesc in args.items():
-        optional = "opsional" in argdesc or "optional" in argdesc
-        parts.append(f"{argname}?" if optional else argname)
+    for argname in args:
+        parts.append(f"{argname}?" if argname not in required else argname)
     return f"{name}({', '.join(parts)})"
 
 
@@ -118,6 +121,11 @@ def _init_tool_registry() -> None:
     terhadap isi, karena register_* menimpa key yang sama).
     """
     reg = tool_runtime.REGISTRY
+
+    # Rebuild bersih: kosongkan dulu agar tool yang sudah dihapus (mis. tool
+    # MCP yang di-remove via /mcp-*) tidak tertinggal sebagai entri yatim.
+    reg.clear()
+    tool_runtime.clear_signatures()
 
     for namespace, mapping in state._NAMESPACE_MAP.items():
         reg.register_namespace(namespace, mapping)

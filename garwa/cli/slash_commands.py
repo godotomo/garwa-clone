@@ -10,6 +10,16 @@ oleh loop di main.py, sehingga alur kontrol tetap satu tempat.
 from .. import config
 from .. import db as dbmod
 from .. import tools as tools_module
+from ..mcp import (
+    DEFAULT_MCP_CONFIG_PATH,
+    MCPServerConfig,
+    MCPToolRegistry,
+    MCPTransport,
+    get_global_registry,
+    mcp_available,
+    save_mcp_config,
+    set_global_registry,
+)
 from ..tools import TOOLS
 from . import _state as state
 from .colors import C
@@ -31,16 +41,20 @@ COMMANDS = {
     "ctx": "Ubah context window (token): /ctx <angka>",
     "github-token": "Ganti token GitHub: /github-token <token> (kosongkan untuk menghapus)",
     "github-max": "Batas konten file yang dibaca GitHub (karakter): /github-max <angka>",
+    "firecrawl-key": "Ganti API key Firecrawl: /firecrawl-key <token> (kosongkan untuk menghapus)",
     "news-lang": "Bahasa hasil pencarian berita: /news-lang <kode> (mis. id, en, de, ja)",
     "approve": "Toggle auto-approve (lewati konfirmasi aksi destruktif) on/off",
     "todos": "Cetak plan/todo list sesi ini ke layar",
     "tools": "Tampilkan daftar tool yang tersedia",
+    "mcp-server": "Kelola server MCP: /mcp-server list | add <nama> <cmd> [args...] | remove <nama>",
+    "mcp-api-key": "Set API key/header untuk server MCP HTTP: /mcp-api-key <nama> <key>",
+    "mcp-enable": "Aktifkan/nonaktifkan server MCP: /mcp-enable <nama> [on|off]",
     "exit": "Selesai & simpan sesi (alias: /quit)",
     "quit": "Selesai & simpan sesi (alias: /exit)",
 }
 
 # Command yang butuh argumen tambahan.
-_COMMANDS_WITH_ARGS = {"resume", "model", "url", "api-key", "ctx", "github-token", "github-max", "news-lang"}
+_COMMANDS_WITH_ARGS = {"resume", "model", "url", "api-key", "ctx", "github-token", "github-max", "firecrawl-key", "news-lang"}
 
 
 def _print_help() -> None:
@@ -91,6 +105,222 @@ def _parse_int_arg(arg: str) -> int | None:
         return int(arg)
     except (TypeError, ValueError):
         return None
+
+
+def _print_mcp_servers() -> None:
+    """Cetak daftar server MCP yang terkonfigurasi + status koneksinya."""
+    if not mcp_available():
+        print(c("[mcp] Modul 'mcp' tidak terinstall. Install: pip install 'mcp>=2.0'", C.YELLOW))
+        return
+    registry = get_global_registry()
+    if registry is None:
+        print(c("[mcp] MCP belum aktif (tidak ada server terkonfigurasi).", C.DIM))
+        return
+    if not registry.configs:
+        print(c("[mcp] Tidak ada server MCP terkonfigurasi.", C.DIM))
+        return
+    print(c("Server MCP:", C.BOLD))
+    for cfg in registry.configs:
+        state_mark = c("[ON]", C.GREEN) if cfg.enabled else c("[OFF]", C.DIM)
+        connected = "terhubung" if cfg.name in registry._connected else "putus"
+        tools_n = len(registry._server_tool_names.get(cfg.name, []))
+        print(f"  {state_mark} {cfg.name} ({cfg.transport}) — {connected}, {tools_n} tool")
+    print(c("Gunakan /mcp-server add <nama> <cmd> [args...] untuk menambah.", C.DIM))
+
+
+def _rebuild_tools_and_registry() -> None:
+    """Sinkronkan TOOLS global & tool_runtime.REGISTRY dari registry MCP.
+
+    Setelah tool MCP ditambah/dihapus on-the-fly, TOOLS harus di-update dan
+    `_init_tool_registry()` dipanggil ulang agar REGISTRY ikut dibangun ulang
+    (fungsi ini idempoten; aman dipanggil kapan pun).
+    """
+    from .tool_schema import _init_tool_registry
+
+    registry = get_global_registry()
+    # Hapus semua tool ber-prefix mcp.* dari TOOLS, lalu daftarkan ulang dari registry.
+    for key in [k for k in TOOLS if k.startswith("mcp.")]:
+        TOOLS.pop(key, None)
+    if registry is not None:
+        TOOLS.update(registry.list_tools())
+    _init_tool_registry()
+
+
+def _require_mcp_registry() -> "MCPToolRegistry | None":
+    """Kembalikan registry global, atau cetak pesan & None bila MCP tak aktif."""
+    if not mcp_available():
+        print(c("[mcp] Modul 'mcp' tidak terinstall. Install: pip install 'mcp>=2.0'", C.YELLOW))
+        return None
+    registry = get_global_registry()
+    if registry is None:
+        print(c("[mcp] MCP belum aktif. Tambahkan server dulu via /mcp-server add, "
+                "lalu mulai ulang CLI untuk mengaktifkannya.", C.YELLOW))
+        return None
+    return registry
+
+
+def _mcp_config_path(args) -> str:
+    """Path file konfigurasi MCP (flag --mcp-config atau default)."""
+    path = getattr(args, "mcp_config", None)
+    return path or DEFAULT_MCP_CONFIG_PATH
+
+
+def _persist_mcp(registry: "MCPToolRegistry", args) -> None:
+    """Tulis konfigurasi MCP saat ini ke disk (lintas sesi)."""
+    try:
+        path = save_mcp_config(registry.configs, _mcp_config_path(args))
+        print(c(f"[mcp] konfigurasi tersimpan di {path} (lintas sesi).", C.DIM))
+    except OSError as e:
+        print(c(f"[mcp] gagal menyimpan konfigurasi: {e}", C.RED))
+
+
+def _get_or_create_registry() -> "MCPToolRegistry | None":
+    """Kembalikan registry global; buat baru bila belum ada (untuk /mcp-server add)."""
+    if not mcp_available():
+        print(c("[mcp] Modul 'mcp' tidak terinstall. Install: pip install 'mcp>=2.0'", C.YELLOW))
+        return None
+    registry = get_global_registry()
+    if registry is None:
+        registry = MCPToolRegistry([])
+        set_global_registry(registry)
+    return registry
+
+
+def _handle_mcp_server(arg: str, args) -> dict:
+    """Implementasi /mcp-server list | add <nama> <cmd> [args...] | remove <nama>."""
+    if not arg or arg.strip() == "list":
+        _print_mcp_servers()
+        return {"action": "skip"}
+
+    sub, _, rest = arg.strip().partition(" ")
+    sub = sub.lower()
+    rest = rest.strip()
+
+    if sub == "list":
+        _print_mcp_servers()
+        return {"action": "skip"}
+
+    if sub == "remove":
+        if not rest:
+            print(c("[mcp-server] gunakan: /mcp-server remove <nama>", C.YELLOW))
+            return {"action": "skip"}
+        registry = _require_mcp_registry()
+        if registry is None:
+            return {"action": "skip"}
+        if not registry.remove_server(rest):
+            print(c(f"[mcp-server] server '{rest}' tidak ditemukan.", C.RED))
+            return {"action": "skip"}
+        _rebuild_tools_and_registry()
+        _persist_mcp(registry, args)
+        print(c(f"[mcp-server] server '{rest}' dihapus.", C.GREEN))
+        return {"action": "skip"}
+
+    if sub == "add":
+        if not rest:
+            print(c("[mcp-server] gunakan: /mcp-server add <nama> <cmd> [args...]", C.YELLOW))
+            return {"action": "skip"}
+        name, _, cmd_rest = rest.partition(" ")
+        name = name.strip()
+        cmd_rest = cmd_rest.strip()
+        if not name or not cmd_rest:
+            print(c("[mcp-server] gunakan: /mcp-server add <nama> <cmd> [args...]", C.YELLOW))
+            return {"action": "skip"}
+        # Dukungan transport http: /mcp-server add <nama> http <url>
+        transport = MCPTransport.STDIO
+        command = None
+        cmd_args: list = []
+        url = None
+        if cmd_rest.startswith("http://") or cmd_rest.startswith("https://"):
+            transport = MCPTransport.STREAMABLE_HTTP
+            url = cmd_rest
+        else:
+            pieces = cmd_rest.split()
+            command = pieces[0]
+            cmd_args = pieces[1:]
+        cfg = MCPServerConfig(
+            name=name,
+            transport=transport,
+            command=command,
+            args=cmd_args,
+            url=url,
+            enabled=True,
+        )
+        registry = _get_or_create_registry()
+        if registry is None:
+            return {"action": "skip"}
+        if not registry.add_server(cfg, connect=True):
+            print(c(f"[mcp-server] server '{name}' sudah ada (hapus dulu via /mcp-server remove).", C.RED))
+            return {"action": "skip"}
+        _rebuild_tools_and_registry()
+        _persist_mcp(registry, args)
+        print(c(f"[mcp-server] server '{name}' ditambahkan & disambungkan.", C.GREEN))
+        return {"action": "skip"}
+
+    print(c(f"[mcp-server] sub-perintah tidak dikenal: '{sub}'. "
+            "Gunakan: list | add <nama> <cmd> [args...] | remove <nama>", C.YELLOW))
+    return {"action": "skip"}
+
+
+def _handle_mcp_api_key(arg: str, args) -> dict:
+    """Implementasi /mcp-api-key <nama> <key> (set header Authorization untuk HTTP)."""
+    if not arg:
+        print(c("[mcp-api-key] gunakan: /mcp-api-key <nama> <key>", C.YELLOW))
+        return {"action": "skip"}
+    name, _, key = arg.strip().partition(" ")
+    name = name.strip()
+    key = key.strip()
+    registry = _require_mcp_registry()
+    if registry is None:
+        return {"action": "skip"}
+    cfg = registry._find_config(name)
+    if cfg is None:
+        print(c(f"[mcp-api-key] server '{name}' tidak ditemukan.", C.RED))
+        return {"action": "skip"}
+    if cfg.transport != MCPTransport.STREAMABLE_HTTP:
+        print(c(f"[mcp-api-key] server '{name}' bukan HTTP (transport {cfg.transport}); "
+                "API key hanya relevan untuk server streamable_http.", C.YELLOW))
+        return {"action": "skip"}
+    if not key:
+        cfg.headers.pop("Authorization", None)
+        print(c(f"[mcp-api-key] Authorization server '{name}' dihapus.", C.GREEN))
+    else:
+        cfg.headers["Authorization"] = f"Bearer {key}"
+        _rebuild_tools_and_registry()  # refresh (header dipakai saat connect)
+        print(c(f"[mcp-api-key] Authorization server '{name}' di-set (Bearer ****{key[-4:]}).", C.GREEN))
+    _persist_mcp(registry, args)
+    return {"action": "skip"}
+
+
+def _handle_mcp_enable(arg: str, args) -> dict:
+    """Implementasi /mcp-enable <nama> [on|off] (toggle koneksi server)."""
+    if not arg:
+        print(c("[mcp-enable] gunakan: /mcp-enable <nama> [on|off]", C.YELLOW))
+        return {"action": "skip"}
+    name, _, flag = arg.strip().partition(" ")
+    name = name.strip()
+    flag = flag.strip().lower()
+    registry = _require_mcp_registry()
+    if registry is None:
+        return {"action": "skip"}
+    cfg = registry._find_config(name)
+    if cfg is None:
+        print(c(f"[mcp-enable] server '{name}' tidak ditemukan.", C.RED))
+        return {"action": "skip"}
+    if flag in ("on", "1", "true", "yes"):
+        enabled = True
+    elif flag in ("off", "0", "false", "no"):
+        enabled = False
+    else:
+        enabled = not cfg.enabled  # toggle
+    ok = registry.set_server_enabled(name, enabled)
+    if enabled and not ok:
+        print(c(f"[mcp-enable] gagal menyambungkan server '{name}'.", C.RED))
+        return {"action": "skip"}
+    _rebuild_tools_and_registry()
+    _persist_mcp(registry, args)
+    state = "diaktifkan" if enabled else "dinonaktifkan"
+    print(c(f"[mcp-enable] server '{name}' {state}.", C.GREEN))
+    return {"action": "skip"}
 
 
 def handle_slash_command(cmd_line: str, args, session_id: str, system_content: str) -> dict:
@@ -224,6 +454,20 @@ def handle_slash_command(cmd_line: str, args, session_id: str, system_content: s
         print(c(f"[github-max] tersimpan di {config.USER_CONFIG_PATH} (lintas sesi).", C.DIM))
         return {"action": "skip"}
 
+    if name == "firecrawl-key":
+        if not arg:
+            cur = tools_module.state.FIRECRAWL_API_KEY
+            masked = "****" + cur[-4:] if cur else "(kosong)"
+            print(c(f"[firecrawl-key] API key Firecrawl saat ini: {masked}", C.DIM))
+            print(c("Gunakan: /firecrawl-key <token> untuk menggantinya (kosongkan untuk menghapus).", C.DIM))
+            return {"action": "skip"}
+        tools_module.state.FIRECRAWL_API_KEY = arg.strip()
+        config.save_user_config(firecrawl_token=tools_module.state.FIRECRAWL_API_KEY)
+        masked = "****" + tools_module.state.FIRECRAWL_API_KEY[-4:]
+        print(c(f"[firecrawl-key] API key Firecrawl diubah ke: {masked}", C.GREEN))
+        print(c(f"[firecrawl-key] tersimpan di {config.USER_CONFIG_PATH} (lintas sesi).", C.DIM))
+        return {"action": "skip"}
+
     if name == "news-lang":
         if not arg:
             hl, gl, ceid = (tools_module.state.GOOGLE_NEWS_HL,
@@ -244,6 +488,15 @@ def handle_slash_command(cmd_line: str, args, session_id: str, system_content: s
         print(c(f"[news-lang] bahasa berita diubah ke: {lang} (hl={hl}, gl={gl}, ceid={ceid})", C.GREEN))
         print(c(f"[news-lang] tersimpan di {config.USER_CONFIG_PATH} (lintas sesi).", C.DIM))
         return {"action": "skip"}
+
+    if name == "mcp-server":
+        return _handle_mcp_server(arg, args)
+
+    if name == "mcp-api-key":
+        return _handle_mcp_api_key(arg, args)
+
+    if name == "mcp-enable":
+        return _handle_mcp_enable(arg, args)
 
     if name == "new":
         new_id = dbmod.create_session(args.db_path, args.workdir,

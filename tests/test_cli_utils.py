@@ -115,6 +115,15 @@ class TestExtractToolCall:
         text = open_t + "{...}" + close_t
         assert json_repair.extract_tool_call(text) == (None, None)
 
+    def test_placeholder_inside_field_returns_parse_error(self):
+        open_t = "<tool_call" + ">"
+        close_t = "</tool_call" + ">"
+        text = open_t + '{"name": "bash", "arguments": {...}}' + close_t
+        name, msg = json_repair.extract_tool_call(text)
+        assert name == "PARSE_ERROR"
+        assert "..." in msg
+        assert "placeholder" in msg.lower() or "ellipsis" in msg.lower()
+
     def test_no_tool_call_returns_none(self):
         assert json_repair.extract_tool_call("just some text") == (None, None)
 

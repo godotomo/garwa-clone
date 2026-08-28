@@ -15,6 +15,7 @@ from .sandbox import _touch, SandboxViolation, _resolve, _resolve_readonly
 from .datetime_utils import _now_wib, tool_local_now
 from .web_search import _query_needs_current_date, _prepare_news_query, _remote_get, _html_to_text, _decode_google_news_url, _search_google_news_rss, tool_web_search
 from .github import _github_headers, _github_repo_valid, tool_github_search_repos, tool_github_search_code, tool_github_read_file
+from .firecrawl import tool_firecrawl_scrape, tool_firecrawl_search, tool_firecrawl_crawl
 from .filesystem import tool_glob, _coerce_optional_int, tool_read_file, _atomic_write, tool_write_file, tool_edit_file, tool_list_dir, tool_grep
 from .webfetch import _webfetch_accept_header, _webfetch_mime_from, _webfetch_is_textual_mime, _webfetch_html_to_text, _webfetch_html_to_markdown, tool_webfetch
 from .security_tool import tool_security_scan
@@ -26,6 +27,14 @@ from .session_tools import _require_session, tool_todo_write, tool_todo_read, to
 # ---------------------------------------------------------------------------
 # Registry tool: nama -> {schema, handler, destructive}
 # ---------------------------------------------------------------------------
+#
+# CATATAN MIGRASI SKEMA:
+#   - `inputSchema` adalah format kanonik: JSON-Schema penuh (draft-07 subset)
+#     berbentuk {"type":"object","properties":{...},"required":[...]} -- format
+#     yang sama dipakai MCP dan OpenAI function-calling. Ini sumber kebenaran.
+#   - `arguments` (string deskriptif legacy) TIDAK lagi disimpan di sini.
+#     Konsumen lama yang membutuhkannya mendapat derivasi otomatis via
+#     tool_runtime._schema_to_legacy().
 
 TOOLS = {
     "bash": {
@@ -37,9 +46,13 @@ TOOLS = {
         "schema": {
             "name": "bash",
             "description": "Jalankan perintah shell di working directory. Gunakan untuk menjalankan program, install paket, git, dsb. Command yang cocok pola berbahaya (rm -rf, dd ke device, force-push, dll) tetap meminta konfirmasi user walau auto-approve aktif untuk tool lain.",
-            "arguments": {
-                "command": "string (wajib) - perintah shell yang akan dijalankan",
-                "timeout": "integer (opsional, default 60) - batas waktu detik",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "perintah shell yang akan dijalankan"},
+                    "timeout": {"type": "integer", "default": 60, "description": "batas waktu detik"},
+                },
+                "required": ["command"],
             },
         },
     },
@@ -49,10 +62,14 @@ TOOLS = {
         "schema": {
             "name": "read_file",
             "description": "Baca isi file teks, dengan nomor baris.",
-            "arguments": {
-                "path": "string (wajib) - path file, relatif atau absolut",
-                "start_line": "integer (opsional) - baris awal",
-                "end_line": "integer (opsional) - baris akhir",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "path file, relatif atau absolut"},
+                    "start_line": {"type": "integer", "description": "baris awal"},
+                    "end_line": {"type": "integer", "description": "baris akhir"},
+                },
+                "required": ["path"],
             },
         },
     },
@@ -62,9 +79,13 @@ TOOLS = {
         "schema": {
             "name": "write_file",
             "description": "Buat file baru atau timpa seluruh isi file yang sudah ada.",
-            "arguments": {
-                "path": "string (wajib) - path file tujuan",
-                "content": "string (wajib) - seluruh isi file",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "path file tujuan"},
+                    "content": {"type": "string", "description": "seluruh isi file"},
+                },
+                "required": ["path", "content"],
             },
         },
     },
@@ -74,10 +95,14 @@ TOOLS = {
         "schema": {
             "name": "edit_file",
             "description": "Cari string unik (old_str) di dalam file lalu ganti dengan new_str. old_str HARUS unik dan cocok persis (termasuk whitespace/indentasi). Gunakan ini untuk edit presisi, bukan write_file, agar tidak menghapus bagian lain file.",
-            "arguments": {
-                "path": "string (wajib) - path file",
-                "old_str": "string (wajib) - teks persis yang dicari, harus unik dalam file",
-                "new_str": "string (wajib) - teks pengganti",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "path file"},
+                    "old_str": {"type": "string", "description": "teks persis yang dicari, harus unik dalam file"},
+                    "new_str": {"type": "string", "description": "teks pengganti"},
+                },
+                "required": ["path", "old_str", "new_str"],
             },
         },
     },
@@ -87,8 +112,12 @@ TOOLS = {
         "schema": {
             "name": "list_dir",
             "description": "Tampilkan daftar file dan folder di suatu direktori.",
-            "arguments": {
-                "path": "string (opsional, default '.') - path direktori",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "default": ".", "description": "path direktori"},
+                },
+                "required": [],
             },
         },
     },
@@ -98,10 +127,14 @@ TOOLS = {
         "schema": {
             "name": "grep",
             "description": "Cari pola teks/regex di dalam file-file pada suatu direktori (rekursif).",
-            "arguments": {
-                "pattern": "string (wajib) - pola pencarian",
-                "path": "string (opsional, default '.') - direktori target",
-                "glob": "string (opsional, default '*') - filter nama file, mis. '*.py'",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "pola pencarian"},
+                    "path": {"type": "string", "default": ".", "description": "direktori target"},
+                    "glob": {"type": "string", "default": "*", "description": "filter nama file, mis. '*.py'"},
+                },
+                "required": ["pattern"],
             },
         },
     },
@@ -111,8 +144,12 @@ TOOLS = {
         "schema": {
             "name": "repo_map",
             "description": "Tampilkan peta struktur seluruh repo (file + simbol paling relevan, hasil ranking PageRank) supaya cepat memahami proyek tanpa membaca semua file satu-satu. File yang baru dibaca/diedit di sesi ini diberi bobot lebih.",
-            "arguments": {
-                "token_budget": "integer (opsional, default 1024) - perkiraan batas token output",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "token_budget": {"type": "integer", "default": 1024, "description": "perkiraan batas token output"},
+                },
+                "required": [],
             },
         },
     },
@@ -122,8 +159,12 @@ TOOLS = {
         "schema": {
             "name": "outline_file",
             "description": "Tampilkan daftar simbol top-level (fungsi/class/dll beserta nomor baris) dari satu file, tanpa isi lengkapnya. Cocok untuk file besar sebelum memutuskan bagian mana yang perlu dibaca detail lewat read_file.",
-            "arguments": {
-                "path": "string (wajib) - path file",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "path file"},
+                },
+                "required": ["path"],
             },
         },
     },
@@ -133,8 +174,27 @@ TOOLS = {
         "schema": {
             "name": "todo_write",
             "description": "Simpan/timpa plan (daftar todo) untuk sesi saat ini, mirip TodoWrite. Kirim seluruh daftar setiap kali (full replace), tiap item berupa objek {content, status}. status salah satu dari: pending, in_progress, done, cancelled.",
-            "arguments": {
-                "todos": "array (wajib) - list objek {\"content\": string, \"status\": string}",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "todos": {
+                        "type": "array",
+                        "description": "list objek {content, status}",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {"type": "string", "description": "isi item todo"},
+                                "status": {
+                                    "type": "string",
+                                    "description": "status item",
+                                    "enum": ["pending", "in_progress", "done", "cancelled"],
+                                },
+                            },
+                            "required": ["content", "status"],
+                        },
+                    },
+                },
+                "required": ["todos"],
             },
         },
     },
@@ -144,7 +204,11 @@ TOOLS = {
         "schema": {
             "name": "todo_read",
             "description": "Baca plan/todo list sesi saat ini yang tersimpan.",
-            "arguments": {},
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
         },
     },
     "remember": {
@@ -153,9 +217,13 @@ TOOLS = {
         "schema": {
             "name": "remember",
             "description": "Simpan catatan proyek key-value yang persisten lintas sesi untuk workdir ini (mis. konvensi kode, keputusan arsitektur).",
-            "arguments": {
-                "key": "string (wajib) - nama singkat catatan",
-                "value": "string (wajib) - isi catatan",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "nama singkat catatan"},
+                    "value": {"type": "string", "description": "isi catatan"},
+                },
+                "required": ["key", "value"],
             },
         },
     },
@@ -165,8 +233,12 @@ TOOLS = {
         "schema": {
             "name": "recall",
             "description": "Baca catatan proyek yang tersimpan untuk workdir ini. Kosongkan 'key' untuk melihat semua catatan.",
-            "arguments": {
-                "key": "string (opsional) - nama catatan spesifik yang ingin dibaca",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "nama catatan spesifik yang ingin dibaca"},
+                },
+                "required": [],
             },
         },
     },
@@ -184,20 +256,24 @@ TOOLS = {
                 "Scanner yang tidak terpasang dilaporkan INCOMPLETE, bukan dianggap aman. "
                 "Hasil dinormalisasi dan secret diredaKsi sebelum masuk context model."
             ),
-            "arguments": {
-                "scan_type": (
-                    "string (opsional, default 'all') - "
-                    "all|sast|dependencies|python|deep|secrets|iac|dast|compliance"
-                ),
-                "timeout": "integer (opsional, default 300) - timeout per scanner dalam detik",
-                "dast_target": (
-                    "string (opsional) - URL target DAST yang eksplisit; "
-                    "wajib untuk mode dast"
-                ),
-                "allow_nonlocal_dast": (
-                    "boolean (opsional, default false) - izinkan target DAST non-local "
-                    "hanya jika pengguna benar-benar memberi otorisasi"
-                ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "scan_type": {
+                        "type": "string",
+                        "default": "all",
+                        "description": "mode audit keamanan",
+                        "enum": ["all", "sast", "dependencies", "python", "deep", "secrets", "iac", "dast", "compliance"],
+                    },
+                    "timeout": {"type": "integer", "default": 300, "description": "timeout per scanner dalam detik"},
+                    "dast_target": {"type": "string", "description": "URL target DAST yang eksplisit; wajib untuk mode dast"},
+                    "allow_nonlocal_dast": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "izinkan target DAST non-local hanya jika pengguna benar-benar memberi otorisasi",
+                    },
+                },
+                "required": [],
             },
         },
     },
@@ -212,7 +288,11 @@ TOOLS = {
                 "relatif seperti hari ini, terbaru, saat ini, kemarin, atau "
                 "minggu ini; juga gunakan untuk kebutuhan timestamp lainnya."
             ),
-            "arguments": {},
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
         },
     },
     "web_search": {
@@ -225,10 +305,20 @@ TOOLS = {
                 "Gunakan param 'lang' untuk mengontrol bahasa: 'id' (Indonesia), 'en' (Inggris), "
                 "atau 'auto' (default) yang mencoba Indonesia lalu fallback ke Inggris."
             ),
-            "arguments": {
-                "query": "string (wajib) - topik/kata kunci pencarian",
-                "max_results": "integer (opsional, 1-10, default 5)",
-                "lang": "string (opsional, default 'auto') - bahasa hasil: 'id', 'en', atau 'auto'",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "topik/kata kunci pencarian"},
+                    "max_results": {
+                        "type": "integer",
+                        "default": 5,
+                        "minimum": 1,
+                        "maximum": 10,
+                        "description": "jumlah hasil maksimum",
+                    },
+                    "lang": {"type": "string", "default": "auto", "description": "bahasa hasil: 'id', 'en', atau 'auto'"},
+                },
+                "required": ["query"],
             },
         },
     },
@@ -238,9 +328,19 @@ TOOLS = {
         "schema": {
             "name": "github_search_repos",
             "description": "Cari repository publik GitHub berdasarkan nama, deskripsi, topic, language, stars, dan qualifier GitHub.",
-            "arguments": {
-                "query": "string (wajib) - query GitHub",
-                "max_results": "integer (opsional, 1-10, default 5)",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "query GitHub"},
+                    "max_results": {
+                        "type": "integer",
+                        "default": 5,
+                        "minimum": 1,
+                        "maximum": 10,
+                        "description": "jumlah hasil maksimum",
+                    },
+                },
+                "required": ["query"],
             },
         },
     },
@@ -250,9 +350,19 @@ TOOLS = {
         "schema": {
             "name": "github_search_code",
             "description": "Cari potongan kode di GitHub. Membutuhkan GITHUB_TOKEN.",
-            "arguments": {
-                "query": "string (wajib) - query code search, mis. 'def foo language:python repo:owner/name'",
-                "max_results": "integer (opsional, 1-10, default 5)",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "query code search, mis. 'def foo language:python repo:owner/name'"},
+                    "max_results": {
+                        "type": "integer",
+                        "default": 5,
+                        "minimum": 1,
+                        "maximum": 10,
+                        "description": "jumlah hasil maksimum",
+                    },
+                },
+                "required": ["query"],
             },
         },
     },
@@ -262,10 +372,63 @@ TOOLS = {
         "schema": {
             "name": "github_read_file",
             "description": "Baca isi satu file source code/dokumentasi dari repository GitHub publik.",
-            "arguments": {
-                "repo": "string (wajib) - format owner/name",
-                "path": "string (wajib) - path file relatif terhadap root repo",
-                "ref": "string (opsional) - branch, tag, atau commit SHA",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string", "description": "format owner/name"},
+                    "path": {"type": "string", "description": "path file relatif terhadap root repo"},
+                    "ref": {"type": "string", "description": "branch, tag, atau commit SHA"},
+                },
+                "required": ["repo", "path"],
+            },
+        },
+    },
+    "firecrawl_scrape": {
+        "handler": tool_firecrawl_scrape,
+        "destructive": False,
+        "schema": {
+            "name": "firecrawl_scrape",
+            "description": "Ambil konten satu halaman web menjadi teks markdown via Firecrawl. Butuh FIRECRAWL_API_KEY (set via /firecrawl-key atau env FIRECRAWL_API_KEY).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL halaman web yang akan di-scrape"},
+                    "formats": {"type": "string", "description": "format output, koma-terpisah. Opsi: markdown, html, rawHtml, links, screenshot. Default 'markdown'."},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    "firecrawl_search": {
+        "handler": tool_firecrawl_search,
+        "destructive": False,
+        "schema": {
+            "name": "firecrawl_search",
+            "description": "Cari di web via Firecrawl dan tampilkan judul+URL hasil teratas. Butuh FIRECRAWL_API_KEY.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "kata kunci pencarian web"},
+                    "limit": {"type": "integer", "description": "jumlah hasil maksimum (1-10), default 5"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    "firecrawl_crawl": {
+        "handler": tool_firecrawl_crawl,
+        "destructive": False,
+        "schema": {
+            "name": "firecrawl_crawl",
+            "description": "Crawl satu situs web via Firecrawl, polling status job sampai selesai. Butuh FIRECRAWL_API_KEY.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL root situs yang akan di-crawl"},
+                    "limit": {"type": "integer", "description": "jumlah halaman maksimum (1-100), default 10"},
+                    "max_depth": {"type": "integer", "description": "kedalaman crawl maksimum (1-10), default 3"},
+                },
+                "required": ["url"],
             },
         },
     },
@@ -275,10 +438,14 @@ TOOLS = {
         "schema": {
             "name": "glob",
             "description": "Cari file dengan glob pattern di dalam WORKDIR (atau subdirektori). Mengembalikan daftar path relatif terhadap WORKDIR, satu per baris. Gunakan path relatif untuk mempersempit pencarian dan limit untuk membatasi jumlah hasil.",
-            "arguments": {
-                "pattern": "string (wajib) - glob pattern untuk mencocokkan file, mis. '**/*.py'",
-                "path": "string (opsional, default '.') - direktori relatif untuk mencari",
-                "limit": "integer (opsional) - jumlah hasil maksimum",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "glob pattern untuk mencocokkan file, mis. '**/*.py'"},
+                    "path": {"type": "string", "default": ".", "description": "direktori relatif untuk mencari"},
+                    "limit": {"type": "integer", "description": "jumlah hasil maksimum"},
+                },
+                "required": ["pattern"],
             },
         },
     },
@@ -288,10 +455,14 @@ TOOLS = {
         "schema": {
             "name": "webfetch",
             "description": "Fetch konten dari URL HTTP/HTTPS dan kembalikan sebagai text, markdown, atau html. Markdown adalah default. Gunakan tool yang lebih spesifik bila tersedia. Tool ini read-only. Hasil teks besar dibatasi agar tidak membanjiri context window.",
-            "arguments": {
-                "url": "string (wajib) - URL HTTP/HTTPS untuk di-fetch",
-                "format": "string (opsional, default 'markdown') - format hasil: text, markdown, atau html",
-                "timeout": "integer (opsional, default 30, maks 120) - timeout dalam detik",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL HTTP/HTTPS untuk di-fetch"},
+                    "format": {"type": "string", "default": "markdown", "description": "format hasil: text, markdown, atau html"},
+                    "timeout": {"type": "integer", "default": 30, "maximum": 120, "description": "timeout dalam detik"},
+                },
+                "required": ["url"],
             },
         },
     },
