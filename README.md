@@ -156,11 +156,31 @@ python -m garwa --help
 
 ## Cara Pakai
 
-Jalankan `garwa` (atau `python garwa_cli.py`) dari folder kerja Anda:
+Sebelum menjalankan `garwa`, pastikan Anda sudah melakukan konfigurasi
+environment variables berikut:
 
 ```bash
-garwa
+# Wajib — kredensial server model
+export LLAMA_API_KEY="sk-..."
+export LLAMA_URL="http://localhost:8080/v1/chat/completions"
 ```
+
+Opsional, hanya jika ingin integrasi dengan GitHub atau menggunakan Firecrawl:
+
+```bash
+export GITHUB_TOKEN="github_pat_..."
+export FIRECRAWL_API_KEY="fc-..."
+```
+
+Setelah itu jalankan `garwa` (atau `python garwa_cli.py`) dari folder kerja
+Anda:
+
+```bash
+garwa --model deepseek-v4-pro
+```
+
+Jika tidak menyebutkan `--model`, Garwa memakai model default
+(`deepseek-v4-flash-0731`).
 
 Garwa akan mengecek koneksi ke server model, menampilkan banner, lalu
 memberikan prompt interaktif `You>`. Ketik permintaan dalam bahasa natural,
