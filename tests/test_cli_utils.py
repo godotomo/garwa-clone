@@ -293,18 +293,19 @@ class TestSimilarity:
     # BUG 9: _similarity tidak mendeteksi parafrase — kalimat yang sama
     # artinya tapi dikatakan dengan kata berbeda.
     # ------------------------------------------------------------------
-    def test_paraphrase_not_detected(self):
-        """BUG: similarity rendah untuk parafrase.
+    def test_paraphrase_detected(self):
+        """BUG FIX (BUG 9): parafrase pendek kini terdeteksi.
 
-        Model bisa lolos dengan parafrase — "File ini berisi fungsi
-        untuk memproses data" vs "Fungsi pemrosesan data terdapat dalam
-        file ini" hanya dapat similarity ~0.4 karena Jaccard dan char
-        n-gram belum cukup menangkap parafrase pendek.
+        Sebelumnya "File ini berisi fungsi untuk memproses data" vs
+        "Fungsi pemrosesan data terdapat dalam file ini" hanya mendapat
+        similarity ~0.4 karena Jaccard dan char n-gram belum cukup
+        menangkap parafrase pendek. Sinyal content-word (anti-stopword +
+        stemming ringan) menaikkannya ke >= 0.95.
         """
         a = "File ini berisi fungsi untuk memproses data"
         b = "Fungsi pemrosesan data terdapat dalam file ini"
         sim = text_utils._similarity(a, b)
-        assert sim < state.LOOP_SIMILARITY_THRESHOLD  # BUG: seharusnya >= 0.95
+        assert sim >= state.LOOP_SIMILARITY_THRESHOLD
 
     # ------------------------------------------------------------------
     # Edge case: teks kosong

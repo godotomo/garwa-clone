@@ -66,8 +66,102 @@ def _normalize_entities(text: str) -> str:
     return t
 
 
+# Stopword bahasa Indonesia untuk sinyal kemiripan konten (parafrase).
+# Kata-kata fungsi/gramatikal ini tidak membawa makna substantif sehingga
+# diabaikan saat membandingkan "isi" dua kalimat.
+_CONTENT_STOPWORDS = frozenset(
+    """yang dan di ke dari pada dengan untuk dalam ini itu akan saya kamu
+    anda kita mereka adalah merupakan terdapat berisi ada telah sudah tidak
+    juga atau tapi tetapi karena jadi maka bisa dapat harus lebih sangat
+    paling hanya semua seluruh para oleh sebagai secara serta antara yaitu
+    yakni seperti sepertinya kalau jika bila saat ketika sementara setelah
+    sebelum dgn utk dll dst misal sbb""".split()
+)
+
+
+def _content_tokens(text: str) -> list:
+    """Token kata konten (bukan stopword) dari teks, lowercase."""
+    return [
+        t for t in re.findall(r"[a-z0-9]+", text.lower())
+        if t not in _CONTENT_STOPWORDS
+    ]
+
+
+def _stem_light(word: str) -> str:
+    """Stemmer Indonesia ringan (afiks umum) untuk menyamakan bentuk kata.
+
+    Hanya menangkap satu lapis sufiks + satu lapis prefiks dengan panjang
+    minimum agar tidak merusak kata pendek. Cukup untuk deteksi parafrase
+    seperti "memproses"/"pemrosesan" -> "proses"/"roses".
+    """
+    w = word
+    for suf in ("kan", "an", "i", "lah", "kah", "pun", "nya", "ku", "mu"):
+        if w.endswith(suf) and len(w) - len(suf) >= 3:
+            w = w[:-len(suf)]
+            break
+    for pre in ("meng", "meny", "mem", "men", "me",
+                "peng", "peny", "pem", "pen", "pe",
+                "ber", "bel", "ter", "di", "ke"):
+        if w.startswith(pre) and len(w) - len(pre) >= 3:
+            w = w[len(pre):]
+            break
+    return w
+
+
+def _content_match_score(t1: str, t2: str) -> float:
+    """Skor kecocokan dua token konten (0, 0.8, atau 1.0).
+
+    1.0 = identik atau stem sama; 0.8 = berbagi substring panjang (>=4);
+    0.0 = tidak berhubungan.
+    """
+    if t1 == t2:
+        return 1.0
+    s1, s2 = _stem_light(t1), _stem_light(t2)
+    if s1 == s2:
+        return 1.0
+    if len(s1) >= 4 and len(s2) >= 4:
+        for length in range(min(len(s1), len(s2)), 3, -1):
+            if any(
+                s1[i:i + length] == s2[j:j + length]
+                for i in range(len(s1) - length + 1)
+                for j in range(len(s2) - length + 1)
+            ):
+                return 0.8
+    return 0.0
+
+
+def _content_similarity(a: str, b: str) -> float:
+    """Kemiripan berbasis kata konten (anti-stopword) dengan stemming ringan.
+
+    Menggunakan bidirectional coverage: setiap token di teks yang lebih
+    pendek harus punya pasangan yang cocok di teks lain, dan sebaliknya.
+    Ambil min dari dua arah supaya teks yang hanya "berisi subset" kata
+    teks lain (mis. "Saya membaca file" vs "Saya sudah membaca file dan
+    menemukan fungsi utama") tidak dianggap sangat mirip.
+
+    Nilai 0 jika salah satu teks tidak punya token konten.
+    """
+    ca = _content_tokens(a)
+    cb = _content_tokens(b)
+    if not ca or not cb:
+        return 0.0
+
+    def _dir_coverage(x, y):
+        # Berapa proporsi token dari x yang punya pasangan cocok di y.
+        # (Bukan iterasi atas yang lebih pendek, supaya kedua arah benar-benar
+        # dihitung -- sehingga teks yang hanya berisi subset token teks lain
+        # tidak dianggap sangat mirip.)
+        matched = sum(
+            1 for t in x
+            if max((_content_match_score(t, u) for u in y), default=0.0) >= 0.8
+        )
+        return matched / len(x)
+
+    return min(_dir_coverage(ca, cb), _dir_coverage(cb, ca))
+
+
 def _similarity(a: str, b: str) -> float:
-    """Skor kemiripan 0..1 antara dua string, menggabungkan empat sinyal:
+    """Skor kemiripan 0..1 antara dua string, menggabungkan lima sinyal:
 
     1. SequenceMatcher pada teks asli (LCS-based, sensitif urutan kata)
     2. Jaccard similarity pada token kata (tahan terhadap perubahan urutan,
@@ -76,8 +170,12 @@ def _similarity(a: str, b: str) -> float:
        (mendeteksi template loop meski nama file/URL/angka berbeda)
     4. Character n-gram similarity (3-gram) -- menangkap parafrase dengan
        diksi berbeda tapi masih banyak substring yang tumpang tindih.
+    5. Content-word similarity (anti-stopword + stemming ringan) -- menangkap
+       parafrase pendek yang mengganti kata fungsi dan mengubah urutan kata,
+       yang lolos dari keempat sinyal di atas (mis. "memproses" vs
+       "pemrosesan").
 
-    Return max dari keempatnya. 1.0 = identik secara struktural atau leksikal.
+    Return max dari kelimanya. 1.0 = identik secara struktural atau leksikal.
     """
     a_ws = _normalize_ws(a)
     b_ws = _normalize_ws(b)
@@ -115,7 +213,11 @@ def _similarity(a: str, b: str) -> float:
         else:
             char_ngram_sim = 1.0
 
-    return max(seq_sim, jaccard, ent_sim, char_ngram_sim)
+    # 5. Content-word similarity -- tangkap parafrase pendek yang mengganti
+    #    kata fungsi & mengubah urutan kata (lolos dari 4 sinyal di atas).
+    content_sim = _content_similarity(a, b)
+
+    return max(seq_sim, jaccard, ent_sim, char_ngram_sim, content_sim)
 
 
 def _warn_repetition(kind: str, detail: str, sample: str) -> None:
