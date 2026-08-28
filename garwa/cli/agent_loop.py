@@ -396,9 +396,14 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                         _twin_count += 1
                         break  # setiap item dihitung maksimal 1x
 
+            # twin_count menghitung item ke-i terhadap item j<i, sehingga item
+            # pertama (i=0) TIDAK pernah dihitung. Nilai maksimum yang bisa
+            # dicapai = LOOP_REPEAT_WINDOW - 1 (window penuh semua identik).
+            # Threshold harus window-1, bukan window, kalau tidak branch ini
+            # jadi dead code (tidak pernah trigger).
             _is_loop = (
                 _repeat_count >= state.LOOP_REPEAT_THRESHOLD
-                or _twin_count >= state.LOOP_REPEAT_WINDOW
+                or _twin_count >= state.LOOP_REPEAT_WINDOW - 1
             )
 
         if _is_loop:
