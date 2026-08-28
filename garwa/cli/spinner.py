@@ -10,8 +10,13 @@ input()/konfirmasi dari stdin: spinner hanya menulis ke stderr, tidak
 menyentuh stdin, jadi prompt konfirmasi tetap bisa dibaca user. Namun demi
 kebersihan, caller sebaiknya hanya mengaktifkan spinner saat tahu tidak ada
 prompt interaktif yang akan muncul (mis. mode auto-approve).
+
+Semua output spinner dijaga agar tidak melebihi lebar terminal, sehingga
+tidak terjadi line-wrap yang menyebabkan baris tercetak berulang di baris
+baru (terutama di Python 3.11+).
 """
 import itertools
+import shutil
 import sys
 import threading
 import time
@@ -22,6 +27,14 @@ _FALLBACK_FRAMES = ("|", "/", "-", "\\")
 
 # Interval antar frame (detik).
 _FRAME_INTERVAL = 0.1
+
+
+def _term_width() -> int:
+    """Lebar terminal saat ini (fallback 80 jika tidak bisa dideteksi)."""
+    try:
+        return shutil.get_terminal_size().columns
+    except Exception:
+        return 80
 
 
 class Spinner:
@@ -46,7 +59,13 @@ class Spinner:
         for frame in itertools.cycle(self._frames):
             if self._stop.is_set():
                 break
-            self._stream.write(f"\r{frame} {self._message}")
+            line = f"{frame} {self._message}"
+            term_w = _term_width()
+            visual_len = len(line)
+            if visual_len > term_w:
+                line = line[:term_w]
+            # Tulis baris + bersihkan sisa karakter dari output sebelumnya.
+            self._stream.write("\r" + line + " " * max(0, term_w - visual_len))
             self._stream.flush()
             time.sleep(_FRAME_INTERVAL)
 
@@ -65,7 +84,8 @@ class Spinner:
         if self._thread is not None:
             self._stop.set()
             self._thread.join(timeout=_FRAME_INTERVAL * 2)
-            # Hapus baris spinner (carriage-return + spasi penutup).
-            self._stream.write("\r" + " " * (len(self._message) + 2) + "\r")
+            # Hapus seluruh baris spinner (carriage-return + spasi selebar terminal).
+            term_w = _term_width()
+            self._stream.write("\r" + " " * term_w + "\r")
             self._stream.flush()
         return False  # jangan menelan exception

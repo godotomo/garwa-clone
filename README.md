@@ -177,7 +177,7 @@ garwa [opsi]
                           (default: folder saat dipanggil)
   --no-sandbox            Izinkan tool file/bash akses path di luar --workdir
   --auto-approve          Lewati konfirmasi aksi destruktif
-  --max-tool-iters N      Batas pemanggilan tool per giliran (default: 1000)
+  --max-tool-iters N      Batas pemanggilan tool per giliran (default: 100)
   --max-image-mb FLOAT    Batas ukuran gambar vision (MB, default: 8)
   --context-window N      Ukuran context window server (token, default: 131072)
   --no-stream             Pakai response JSON biasa, bukan SSE streaming

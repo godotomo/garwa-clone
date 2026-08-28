@@ -91,6 +91,21 @@ if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
     echo "ERROR: '$PYTHON_BIN' tidak ditemukan di PATH." >&2
     exit 1
 fi
+
+# --- Cek versi Python minimal 3.10 -------------------------------------------
+PYTHON_MAJOR="$("$PYTHON_BIN" -c 'import sys; print(sys.version_info.major)' 2>/dev/null)"
+PYTHON_MINOR="$("$PYTHON_BIN" -c 'import sys; print(sys.version_info.minor)' 2>/dev/null)"
+if [[ -z "$PYTHON_MAJOR" || -z "$PYTHON_MINOR" ]]; then
+    echo "ERROR: Tidak dapat mendeteksi versi '$PYTHON_BIN'." >&2
+    exit 1
+fi
+if [[ "$PYTHON_MAJOR" -lt 3 ]] || { [[ "$PYTHON_MAJOR" -eq 3 && "$PYTHON_MINOR" -lt 10 ]]; }; then
+    echo "ERROR: Dibutuhkan Python >= 3.10, tetapi ditemukan Python $PYTHON_MAJOR.$PYTHON_MINOR." >&2
+    echo "       Silakan upgrade Python atau gunakan path Python lain dengan:" >&2
+    echo "         PYTHON=python3.12 ./install.sh" >&2
+    exit 1
+fi
+echo "  [ok] Python $PYTHON_MAJOR.$PYTHON_MINOR terdeteksi (minimal 3.10 terpenuhi)"
 if [[ ! -f "$REPO_ROOT/garwa_cli.py" ]]; then
     echo "ERROR: garwa_cli.py tidak ditemukan di $REPO_ROOT." >&2
     echo "       Pastikan install.sh dijalankan dari root repo Garwa." >&2

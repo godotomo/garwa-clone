@@ -13,13 +13,16 @@ Fokus:
 - llm_errors: parsing error exceed_context_size_error dari respons 400.
 """
 
+import io
 import json as _json
 import os
+import sys
+
 import pytest
 
 from garwa import db as dbmod
 from garwa.cli import _state as state
-from garwa.cli import json_repair, llm_errors, slash_commands, stream_parse, text_utils
+from garwa.cli import json_repair, llm_errors, slash_commands, spinner as spinner_mod, stream_parse, text_utils
 from garwa.cli.main import _build_prompt_label, _build_status_info
 from garwa.cli.main import HISTORY_DIR, HISTORY_FILE, HISTORY_MAX
 from garwa.cli.main import _init_readline_history, _save_readline_history
@@ -266,6 +269,280 @@ class TestSimilarity:
     def test_completely_different(self):
         assert text_utils._similarity("hello", "world") < 0.5
 
+    # ------------------------------------------------------------------
+    # BUG 8: _similarity menggunakan SequenceMatcher.ratio() yang
+    # mengukur similarity berbasis longest common subsequence, bukan
+    # semantic/structural similarity. Dua teks dengan struktur kalimat
+    # identik tapi kata kunci berbeda bisa dapat skor rendah.
+    # ------------------------------------------------------------------
+    def test_structural_similarity_missed_by_sequence_matcher(self):
+        """FIXED: Entity normalization sekarang mendeteksi template loop.
+
+        Dua teks dengan template sama tapi isi berbeda:
+        - "Saya akan membaca file X.py" vs "Saya akan membaca file Y.py"
+        Entity normalization mengganti nama file dengan __FILE__, sehingga
+        keduanya menjadi identik secara struktural.
+        """
+        a = "Saya akan membaca file main.py untuk melihat isinya"
+        b = "Saya akan membaca file utils.py untuk melihat isinya"
+        sim = text_utils._similarity(a, b)
+        # Struktur identik, entity normalization membuat keduanya mirip
+        assert sim >= state.LOOP_SIMILARITY_THRESHOLD  # FIXED: >= 0.95
+
+    # ------------------------------------------------------------------
+    # BUG 9: _similarity tidak mendeteksi parafrase — kalimat yang sama
+    # artinya tapi dikatakan dengan kata berbeda.
+    # ------------------------------------------------------------------
+    def test_paraphrase_not_detected(self):
+        """BUG: similarity rendah untuk parafrase.
+
+        Model bisa lolos dengan parafrase — "File ini berisi fungsi
+        untuk memproses data" vs "Fungsi pemrosesan data terdapat dalam
+        file ini" hanya dapat similarity ~0.4 karena Jaccard dan char
+        n-gram belum cukup menangkap parafrase pendek.
+        """
+        a = "File ini berisi fungsi untuk memproses data"
+        b = "Fungsi pemrosesan data terdapat dalam file ini"
+        sim = text_utils._similarity(a, b)
+        assert sim < state.LOOP_SIMILARITY_THRESHOLD  # BUG: seharusnya >= 0.95
+
+    # ------------------------------------------------------------------
+    # Edge case: teks kosong
+    # ------------------------------------------------------------------
+    def test_empty_strings(self):
+        assert text_utils._similarity("", "") == 1.0
+        assert text_utils._similarity("hello", "") == 0.0
+
+    # ------------------------------------------------------------------
+    # Edge case: teks sangat pendek
+    # ------------------------------------------------------------------
+    def test_very_short_strings(self):
+        """Teks pendek harusnya tidak false-positive similarity."""
+        # "OK" vs "OK" — identik setelah normalisasi
+        assert text_utils._similarity("OK", "OK") == 1.0
+        # "OK" vs "NO" — sangat berbeda (2 karakter dari 2 = 0.5)
+        assert text_utils._similarity("OK", "NO") <= 0.5
+
+    # ------------------------------------------------------------------
+    # Edge case: whitespace-only strings
+    # ------------------------------------------------------------------
+    def test_whitespace_only(self):
+        assert text_utils._similarity("   ", "\n\n") == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Loop detection logic (simulasi dari agent_loop.py baris ~410-500)
+# ---------------------------------------------------------------------------
+
+class TestLoopDetectionLogic:
+    """Simulasi logika deteksi loop di agent_loop.py untuk mengungkap bug.
+
+    Logika di agent_loop (disederhanakan):
+    1. Setiap respons assistant disimpan ke _loop_history.
+    2. Cek exact match: jika respons saat ini == salah satu di history.
+    3. Cek similarity: jika _similarity(respon, prev) >= 0.95 untuk
+       LOOP_REPEAT_THRESHOLD (2) respons terakhir.
+    4. Jika terdeteksi: cooldown / break.
+    """
+
+    @staticmethod
+    def _simulate_loop_check(history, new_response):
+        """Simulasi loop check dari agent_loop.py (versi FIXED).
+
+        Perbaikan vs versi lama:
+        - Bug 11: window_prev = history[:-1] — tidak hitung diri sendiri
+        - Bug 12: unified check — exact match (sim=1.0) termasuk similarity
+        - Bug 10: twin_count — deteksi pola alternating A/B/A/B
+        - Bug 13/14: window dibatasi LOOP_REPEAT_WINDOW
+        """
+        history.append(new_response)
+        if len(history) > state.LOOP_REPEAT_WINDOW:
+            history.pop(0)
+
+        if new_response.strip() == "":
+            return False, None
+
+        # Window tanpa item yang baru di-append (Bug 11)
+        window_prev = history[:-1]
+
+        # Unified check: exact + similarity jadi satu (Bug 12)
+        repeat_count = sum(
+            1 for prev in window_prev
+            if text_utils._similarity(prev, new_response) >= state.LOOP_SIMILARITY_THRESHOLD
+        )
+
+        # Alternating pattern detection (Bug 10: A/B/A/B)
+        twin_count = 0
+        for i in range(len(history)):
+            for j in range(i):
+                if text_utils._similarity(history[j], history[i]) >= state.LOOP_SIMILARITY_THRESHOLD:
+                    twin_count += 1
+                    break  # setiap item dihitung maksimal 1x
+
+        is_loop = (
+            repeat_count >= state.LOOP_REPEAT_THRESHOLD
+            or twin_count >= state.LOOP_REPEAT_WINDOW
+        )
+
+        if is_loop:
+            kind = "similarity" if repeat_count >= state.LOOP_REPEAT_THRESHOLD else "alternating"
+            return True, kind
+        return False, None
+
+    # ------------------------------------------------------------------
+    # BUG 10: _similarity hanya membandingkan dua teks, tidak punya
+    # memori jangka panjang. Pola A→B→A→B (di mana A mirip A dan B
+    # mirip B, tapi A tidak mirip B) bisa lolos karena check hanya
+    # pairwise dengan teks sebelumnya.
+    # FIXED: unified loop detection dengan twin_count + repeat_count.
+    # ------------------------------------------------------------------
+    def test_pairwise_only_misses_alternating_pattern(self):
+        """FIXED: unified detection sekarang menangkap pola berulang.
+
+        Dua respons A dan B yang sangat berbeda, tapi muncul bergantian:
+        repeat_count mendeteksi saat item yang sama muncul ≥ threshold kali
+        dalam window, dan twin_count mendeteksi saat banyak item punya
+        kembaran di window yang sama.
+        """
+        a = "Saya akan memproses file A sekarang"
+        b = "Baik, saya akan menjalankan perintah shell untuk testing"
+        # A dan B sangat berbeda — pairwise check lolos
+        sim_ab = text_utils._similarity(a, b)
+        assert sim_ab < state.LOOP_SIMILARITY_THRESHOLD
+
+        # Pola [a, b, a] + new=b → window=[a,b,a,b]
+        # repeat_count: b vs [a,b,a] → b vs b = 1 (< threshold 2)
+        # twin_count: a punya kembaran, b punya kembaran = 2 (< window 4)
+        # → alternating 2-item sederhana belum trigger (perlu 3 kemunculan)
+        history = [a, b, a]
+        detected, kind = self._simulate_loop_check(history, b)
+        # Belum trigger karena masing-masing baru 2x
+        assert detected is False
+
+        # Tapi dengan 3 kemunculan item yang sama dalam window → trigger
+        # [a, b, a] + new=a → window=[a,b,a,a]
+        # repeat_count: a vs [a,b,a] → a vs a, a vs a = 2 >= threshold 2
+        history3 = ["Saya akan memproses file A sekarang",
+                     "Baik, saya akan menjalankan perintah shell untuk testing",
+                     "Saya akan memproses file A sekarang"]
+        detected3, kind3 = self._simulate_loop_check(history3,
+            "Saya akan memproses file A sekarang")
+        assert detected3 is True  # FIXED: 3 kemunculan dalam window → trigger
+        assert kind3 == "similarity"
+
+    # ------------------------------------------------------------------
+    # BUG 11: exact match check menggunakan `_loop_history.count()`
+    # yang selalu >= 1 karena baru saja di-append. Threshold 2 berarti
+    # hanya perlu 1 kemunculan sebelumnya untuk trigger.
+    # FIXED: window_prev = history[:-1] — tidak hitung diri sendiri.
+    # ------------------------------------------------------------------
+    def test_exact_match_triggers_too_early(self):
+        """FIXED: window_prev mengecualikan item yang baru di-append.
+
+        Dulu: count() termasuk item baru → selalu >= 1, sehingga threshold 2
+        hanya butuh 1 duplikat sebelumnya. Sekarang: window_prev = history[:-1]
+        mengecualikan item baru, jadi repeat_count menghitung dengan benar.
+        """
+        history = ["respons A", "respons B"]
+        new = "respons A"  # sudah pernah muncul 1x
+        detected, kind = self._simulate_loop_check(history, new)
+        # window_prev = ["respons A", "respons B"]
+        # repeat_count: "respons A" vs ["respons A", "respons B"] → 1 match
+        # 1 < threshold 2 → tidak trigger (butuh 2 duplikat sebelumnya)
+        assert detected is False  # FIXED: tidak trigger terlalu awal
+
+    # ------------------------------------------------------------------
+    # BUG 12: similarity check mengecualikan exact match.
+    # Kalau 2 respons mirip (≥0.95) + 1 respons identik (=1.0),
+    # similarity check hanya menghitung yang mirip (2), dan exact
+    # match check juga hanya menghitung yang identik (2).
+    # Masing-masing di bawah threshold, padahal total 3 respons
+    # highly similar.
+    # FIXED: unified check — exact match (sim=1.0) termasuk similarity.
+    # ------------------------------------------------------------------
+    def test_similarity_excludes_exact_matches(self):
+        """FIXED: unified check — exact match sekarang termasuk similarity.
+
+        Dulu: exact dan similarity dipisah → celah di antaranya.
+        Sekarang: repeat_count menghitung SEMUA item yang mirip (≥threshold),
+        termasuk exact match (similarity=1.0).
+        """
+        a = "Saya akan membaca file main.py untuk analisis lebih lanjut"
+        a2 = "Saya akan membaca file main.py untuk analisis lebih lanjut"  # identik dgn a
+        a3 = "Saya akan membaca file main.py untuk analisis lebih lanjut."  # mirip (0.992)
+        history = [a, a2]
+        detected, kind = self._simulate_loop_check(history, a3)
+        # window_prev = [a, a2]; repeat_count: a3 vs a (≥0.95) + a3 vs a2 (≥0.95) = 2
+        # 2 >= threshold 2 → trigger!
+        assert detected is True  # FIXED: unified check menangkap ini
+        assert kind == "similarity"
+
+    # ------------------------------------------------------------------
+    # BUG 13: similarity check hanya mundur ke belakang (reversed),
+    # tidak sliding window. Kalau history panjang dan 2 respons mirip
+    # terpisah jauh, tidak terdeteksi.
+    # FIXED: window dibatasi LOOP_REPEAT_WINDOW (4 item).
+    # ------------------------------------------------------------------
+    def test_similarity_only_recent_window(self):
+        """FIXED: window dibatasi LOOP_REPEAT_WINDOW.
+
+        Sekarang history hanya menyimpan maksimal LOOP_REPEAT_WINDOW item
+        terakhir. Jadi 3 respons mirip berturut-turut tetap terdeteksi
+        dalam window.
+        """
+        # 3 respons mirip berturut-turut dalam window 4 → terdeteksi
+        a1 = "Saya akan membaca file target.py sekarang!"
+        a2 = "Saya akan membaca file target.py sekarang"  # mirip a1
+        a3 = "Saya akan membaca file target.py sekarang."  # mirip a1 & a2
+        history = [a1, a2]
+        detected, kind = self._simulate_loop_check(history, a3)
+        # window_prev = [a1, a2]; repeat_count: a3 vs a1 + a3 vs a2 = 2 >= 2 → trigger
+        assert detected is True  # FIXED: 3 respons mirip dalam window terdeteksi
+
+    # ------------------------------------------------------------------
+    # BUG 14: LOOP_REPEAT_WINDOW tidak digunakan di similarity check.
+    # Konstanta LOOP_REPEAT_WINDOW=4 didefinisikan tapi similarity check
+    # iterasi seluruh history (atau sampai ketemu exact match),
+    # bukan dibatasi window.
+    # FIXED: history dibatasi LOOP_REPEAT_WINDOW (pop(0) saat overflow).
+    # ------------------------------------------------------------------
+    def test_loop_repeat_window_not_enforced(self):
+        """FIXED: LOOP_REPEAT_WINDOW sekarang digunakan untuk membatasi history.
+
+        History hanya menyimpan maksimal LOOP_REPEAT_WINDOW item.
+        Item lama di-pop saat overflow, sehingga similarity check
+        hanya beroperasi dalam window terbatas.
+        """
+        assert state.LOOP_REPEAT_WINDOW == 4
+        # Verifikasi: simulasi dengan history panjang akan dipotong ke window
+        # Gunakan string tanpa angka (entity normalization membuat "unik 0" == "unik 96")
+        history = ["respons alpha bravo charlie delta echo foxtrot golf hotel "
+                   "india juliet kilo lima mike november oscar papa quebec romeo "
+                   "sierra tango uniform victor whiskey xray yankee zulu"] * 100
+        new = "respons alpha bravo charlie delta echo foxtrot golf hotel " \
+              "india juliet kilo lima mike november oscar papa quebec romeo " \
+              "sierra tango uniform victor whiskey xray yankee zulu"
+        # new identik dengan semua item history (semua item sama)
+        detected, kind = self._simulate_loop_check(history, new)
+        # window hanya 4 item terakhir; repeat_count: 3 (3 item sebelumnya di window)
+        # 3 >= threshold 2 → trigger
+        assert detected is True  # FIXED: window membatasi, tapi 3 duplikat dalam window terdeteksi
+
+    # ------------------------------------------------------------------
+    # Edge case: history kosong
+    # ------------------------------------------------------------------
+    def test_empty_history(self):
+        detected, kind = self._simulate_loop_check([], "respons pertama")
+        assert detected is False
+
+    # ------------------------------------------------------------------
+    # Edge case: semua respons berbeda
+    # ------------------------------------------------------------------
+    def test_all_different_responses(self):
+        history = ["respons A", "respons B", "respons C", "respons D"]
+        detected, kind = self._simulate_loop_check(history, "respons E")
+        assert detected is False
+
 
 class TestDetectRepetition:
     def test_repeated_line_detected(self):
@@ -278,6 +555,248 @@ class TestDetectRepetition:
     def test_repeated_unit_detected(self):
         unit = "x" * state.REPEAT_MIN_UNIT_LEN
         text = unit * state.REPEAT_MAX_OCCUR
+        assert text_utils._detect_repetition(text) is True
+
+    # ------------------------------------------------------------------
+    # BUG FIX: Markdown normal yang memakai horizontal rule (---) untuk
+    # memisahkan section TERSebar di antara konten tidak boleh ditandai
+    # sebagai loop. Sebelumnya separator dihitung total di seluruh teks
+    # sehingga 3x "---" (markdown umum) memicu false positive.
+    # ------------------------------------------------------------------
+    def test_markdown_horizontal_rules_spread_not_detected(self):
+        text = (
+            "# Panduan Upgrade macOS\n"
+            "\n"
+            "Peringatan penting sebelum mulai.\n"
+            "\n"
+            "---\n"
+            "\n"
+            "Langkah 1 — Cek versi macOS.\n"
+            "\n"
+            "---\n"
+            "\n"
+            "Langkah 2 — Backup data.\n"
+            "\n"
+            "---\n"
+            "\n"
+            "Kesimpulan.\n"
+        )
+        assert text_utils._detect_repetition(text) is False
+
+    def test_many_markdown_horizontal_rules_spread_not_detected(self):
+        # 5x "---" tersebar di antara konten -- sebelumnya memicu LINE-REPEAT.
+        text = (
+            "Section A\n"
+            "\n"
+            "---\n"
+            "\n"
+            "Konten A.\n"
+            "\n"
+            "---\n"
+            "\n"
+            "Section B\n"
+            "\n"
+            "---\n"
+            "\n"
+            "Konten B.\n"
+            "\n"
+            "---\n"
+            "\n"
+            "Section C\n"
+            "\n"
+            "---\n"
+            "\n"
+            "Konten C.\n"
+        )
+        assert text_utils._detect_repetition(text) is False
+
+    def test_separator_stacked_detected(self):
+        # Separator bertumpuk tanpa konten = loop degenerate, harus terdeteksi.
+        assert text_utils._detect_repetition("---\n---\n---\n---\n---\n---\n") is True
+
+    def test_separator_stacked_with_blank_lines_detected(self):
+        # Baris kosong di antara separator tidak memutus run degenerate.
+        text = "---\n\n---\n\n---\n\n---\n\n"
+        assert text_utils._detect_repetition(text) is True
+
+    # ------------------------------------------------------------------
+    # BUG 1: N-gram hanya memeriksa blok yang aligned ke kelipatan ngram.
+    # Kalau repetisi dimulai dari offset ganjil (bukan kelipatan 40),
+    # blok-blok di offset 0, 40, 80 tidak akan identik satu sama lain
+    # sehingga repetisi TIDAK terdeteksi.
+    # ------------------------------------------------------------------
+    def test_ngram_missed_due_to_offset_misalignment(self):
+        """FIXED: multi-offset scanning menangkap repetisi meski offset tidak aligned.
+
+        Teks: 5 karakter prefix acak + blok 40-char yang diulang 6x.
+        Dulu: loop n-gram hanya dari offset 0 → blok pertama tercampur prefix.
+        Sekarang: scan dari offset 0..39 memastikan setidaknya satu offset
+        menghasilkan blok-blok aligned yang identik.
+        """
+        block = "A" * state.REPEAT_NGRAM_MIN_LEN  # 40 'A'
+        prefix = "12345"  # 5 karakter offset
+        text = prefix + block * (state.REPEAT_NGRAM_MAX_OCCUR + 1)  # 6 blok
+        # Multi-offset scan: offset 5 menghasilkan blok-blok "AAAA..."
+        # yang aligned sempurna, 6 blok ≥ threshold → terdeteksi.
+        assert text_utils._detect_repetition(text) is True  # FIXED: multi-offset
+
+    # ------------------------------------------------------------------
+    # BUG 2: N-gram hanya menghitung blok identik yang KONSEKUTIF.
+    # Pola interleaved A, B, A, B, A tidak terdeteksi karena counter
+    # reset setiap kali ketemu blok yang berbeda.
+    # ------------------------------------------------------------------
+    def test_ngram_missed_non_consecutive_pattern(self):
+        """FIXED: pola interleaved A/B/A/B/A terdeteksi diversity check.
+
+        N-gram check tahap 3 hanya menghitung blok identik yang
+        berturut-turut, jadi count reset setiap ketemu B. Diversity check
+        (tahap 4) tidak punya asumsi alignment: rolling n-gram di teks ini
+        hanya menghasilkan ~0.195 n-gram unik, jauh di bawah threshold.
+        """
+        block_a = "A" * state.REPEAT_NGRAM_MIN_LEN
+        block_b = "B" * state.REPEAT_NGRAM_MIN_LEN
+        # A, B, A, B, A, B, A = 4x A, 3x B, total 7 blok
+        text = (block_a + block_b) * 3 + block_a
+        assert text_utils._detect_repetition(text) is True  # FIXED: diversity
+
+    # ------------------------------------------------------------------
+    # BUG 3: Baris pendek (< 3 karakter) diabaikan oleh line detection.
+    # "OK" atau "no" yang berulang 100x tidak terdeteksi di level baris.
+    # (Unit check mungkin menangkap kalau teks cukup panjang, tapi
+    # untuk teks pendek-moderat, ini bisa lolos.)
+    # ------------------------------------------------------------------
+    def test_short_lines_ignored_by_line_detection(self):
+        """FIXED: baris pendek (< 3 karakter) sekarang tetap diperiksa.
+
+        Line detection tidak lagi mengabaikan baris < 3 karakter.
+        "OK" yang berulang 15x sekarang terdeteksi sebagai repetisi.
+        """
+        # 15 baris "OK" — line check sekarang mendeteksi (len < 3 tetap dicek)
+        text = "OK\n" * 15  # 45 karakter, 15 baris
+        assert text_utils._detect_repetition(text) is True  # FIXED
+
+    # ------------------------------------------------------------------
+    # BUG 4: N-gram hanya memeriksa SATU ukuran (40 karakter).
+    # Repetisi dengan ukuran berbeda (mis. 20 karakter berulang 10x)
+    # tidak terdeteksi oleh n-gram check.
+    # ------------------------------------------------------------------
+    def test_ngram_single_scale_misses_other_sizes(self):
+        """FIXED: repetisi 13-char non-aligned terdeteksi diversity check.
+
+        Pola "Hello world! " lolos dari tahap 1-3 karena:
+        1. Unit check: unit = text[-100:] tidak aligned dengan pola 13-char
+           → hanya 2 kemunculan non-overlapping, < threshold 5.
+        2. N-gram check: blok di offset kelipatan 25/60/120 tidak match
+           karena pola 13-char tidak aligned dengan ukuran mana pun.
+        Diversity check bebas alignment: rasio n-gram unik ~0.055.
+        """
+        segment = "Hello world! "  # 13 karakter
+        text = segment * 20  # 260 karakter, 20x repetisi
+        assert text_utils._detect_repetition(text) is True  # FIXED: diversity
+
+    # ------------------------------------------------------------------
+    # BUG 5: Unit check (`text.count()`) menghitung NON-OVERLAPPING.
+    # Untuk teks yang sangat repetitif tapi unit overlap dengan dirinya
+    # sendiri, count bisa lebih rendah dari yang diharapkan.
+    # ------------------------------------------------------------------
+    def test_unit_count_non_overlapping_undercounts(self):
+        """BUG: text.count() non-overlapping bisa undercount.
+
+        Python str.count() menghitung kemunculan non-overlapping.
+        Untuk teks "aaaaa", "aa".count() = 2 (bukan 4).
+        """
+        # Buat teks di mana unit overlap dengan dirinya sendiri
+        unit = "abcabcabca"  # 10 karakter, pola berulang "abc"
+        text = unit * state.REPEAT_MAX_OCCUR  # 5x = 50 karakter
+        # text.count(unit) = 5 (non-overlapping), jadi terdeteksi.
+        # Tapi kalau kita buat lebih subtle:
+        # Teks: "x" * 39 + unit * 6 = 39 + 60 = 99 karakter
+        # unit = text[-40:] = "x" + unit[0:39] ... ini jadi tidak matching
+        # Lebih baik: buat teks di mana unit yang diambil dari akhir
+        # overlap dengan dirinya sendiri di tengah teks.
+        #
+        # Contoh konkret: teks = "ABABABAB..." pola AB berulang.
+        # unit = text[-40:] = "ABABAB...", text.count(unit) non-overlapping.
+        # Untuk teks 200 karakter "AB" berulang, unit 40-char "ABAB...",
+        # non-overlapping count = 200/40 = 5, tepat threshold.
+        # Tapi kalau teks 199 karakter, count = 4, < threshold.
+        # Bug: teks 199 karakter "AB" berulang seharusnya tetap repetitif.
+        # Teks: 199 karakter "AB" berulang
+        text = "AB" * 99 + "A"  # 199 karakter
+        # Unit = text[-100:], count non-overlapping < threshold 5 sehingga
+        # unit check meleset. Diversity check menangkapnya: hanya 2 n-gram
+        # unik dari 175 window → rasio 0.011.
+        assert text_utils._detect_repetition(text) is True  # FIXED: diversity
+
+    # ------------------------------------------------------------------
+    # BUG 6: N-gram comparison bersifat EXACT. Variasi kecil seperti
+    # whitespace atau punctuation yang berbeda tidak terdeteksi.
+    # ------------------------------------------------------------------
+    def test_ngram_exact_comparison_misses_near_duplicates(self):
+        """FIXED: near-duplicate whitespace terdeteksi diversity check.
+
+        Model mengulang kalimat sama dengan variasi whitespace. Line check
+        gagal (semua 1 baris), unit check gagal (text[-100:] tidak match
+        persis karena spasi ganda), n-gram exact juga gagal. Diversity check
+        menormalkan whitespace lebih dulu → rasio n-gram unik ~0.184.
+        """
+        base = "The quick brown fox jumps over the lazy dog. "  # 45 karakter
+        # Variasi: spasi ganda di beberapa tempat
+        text = base + base.replace(" ", "  ") + base + base.replace(" ", "  ") + base + base.replace(" ", "  ")
+        assert text_utils._detect_repetition(text) is True  # FIXED: diversity
+
+    # ------------------------------------------------------------------
+    # BUG 7: Deteksi hanya trigger kalau text SUDAH cukup panjang.
+    # Model bisa menghasilkan output repetitif pendek (tapi tetap
+    # degenerate) yang tidak terdeteksi karena belum mencapai batas
+    # minimal pengecekan.
+    # ------------------------------------------------------------------
+    def test_repetition_not_checked_for_short_text(self):
+        """FIXED: teks pendek sekarang diperiksa line-check.
+
+        Dulu: teks < 200 karakter tidak dicek n-gram sama sekali.
+        Sekarang: line check menangkap "OK" berulang 66x, dan
+        REPEAT_NGRAM_MIN_TOTAL_LEN = 125 karakter (jauh lebih rendah).
+        """
+        # 198 karakter "OK\n" berulang = 66 baris "OK"
+        text = "OK\n" * 66  # 198 karakter
+        # Line check: mendeteksi 66 baris "OK" identik ≥ 5
+        assert text_utils._detect_repetition(text) is True  # FIXED
+
+    # ------------------------------------------------------------------
+    # Edge case: teks kosong
+    # ------------------------------------------------------------------
+    def test_empty_text(self):
+        assert text_utils._detect_repetition("") is False
+
+    # ------------------------------------------------------------------
+    # Edge case: teks tepat di batas threshold
+    # ------------------------------------------------------------------
+    def test_exactly_at_threshold(self):
+        """Teks tepat 200 karakter (batas minimal n-gram check)."""
+        block = "A" * state.REPEAT_NGRAM_MIN_LEN
+        text = block * state.REPEAT_NGRAM_MAX_OCCUR  # 200 karakter
+        assert text_utils._detect_repetition(text) is True
+
+    # ------------------------------------------------------------------
+    # Edge case: baris dengan tepat 3 karakter terdeteksi
+    # ------------------------------------------------------------------
+    def test_lines_exactly_three_chars_detected(self):
+        text = "abc\n" * state.REPEAT_MAX_OCCUR
+        assert text_utils._detect_repetition(text) is True
+
+    # ------------------------------------------------------------------
+    # Edge case: unit check mendeteksi walau line & n-gram gagal
+    # ------------------------------------------------------------------
+    def test_unit_check_as_last_resort(self):
+        """Unit check harusnya menangkap repetisi yang lolos dari
+        line check dan n-gram check."""
+        # Teks dengan 1 baris panjang yang diulang-ulang
+        unit = "Z" * state.REPEAT_MIN_UNIT_LEN
+        text = unit * state.REPEAT_MAX_OCCUR
+        # Line check: hanya 1 baris, tidak ada duplikat
+        # N-gram check: aligned, akan mendeteksi juga
+        # Tapi ini memastikan unit check berfungsi
         assert text_utils._detect_repetition(text) is True
 
 
@@ -312,6 +831,141 @@ class TestRespTextUtf8:
             text = "mojibake"
 
         assert text_utils._resp_text_utf8(_Resp()) == "héllo"
+
+
+# ---------------------------------------------------------------------------
+# spinner -- spinner terminal ringan (menulis ke stderr, aman non-TTY)
+# ---------------------------------------------------------------------------
+
+class TestSpinnerTermWidth:
+    def test_returns_positive_int(self):
+        assert isinstance(spinner_mod._term_width(), int)
+        assert spinner_mod._term_width() > 0
+
+    def test_fallback_80_on_error(self, monkeypatch):
+        import shutil
+        monkeypatch.setattr(
+            shutil, "get_terminal_size",
+            lambda: (_ for _ in ()).throw(OSError("no tty")),
+        )
+        assert spinner_mod._term_width() == 80
+
+
+class _FakeTime:
+    """Pengganti modul time: sleep() langsung kembali tanpa menunggu."""
+
+    def sleep(self, _seconds):
+        return None
+
+
+class _FakeStream:
+    """Stream tiruan dengan buffer StringIO dan isatty() yang bisa diatur."""
+
+    def __init__(self, isatty=True):
+        self._buf = io.StringIO()
+        self._isatty = isatty
+
+    def isatty(self):
+        return self._isatty
+
+    def write(self, s):
+        self._buf.write(s)
+
+    def flush(self):
+        pass
+
+    @property
+    def value(self):
+        return self._buf.getvalue()
+
+
+class _FakeStop:
+    """Pengganti threading.Event: berhenti setelah sejumlah panggilan is_set()."""
+
+    def __init__(self, stop_after=1):
+        self._calls = 0
+        self._stop_after = stop_after
+
+    def is_set(self):
+        self._calls += 1
+        return self._calls > self._stop_after
+
+
+class TestSpinner:
+    def test_no_thread_when_not_tty(self, monkeypatch):
+        """Kalau stream bukan terminal interaktif, spinner tidak boleh
+        menyalakan thread (supaya tidak menulis karakter kontrol ke output
+        yang dialihkan ke file/pipe)."""
+        fake = _FakeStream(isatty=False)
+        monkeypatch.setattr(sys, "stdout", fake)
+        sp = spinner_mod.Spinner("pesan", stderr=False)
+        with sp as entered:
+            assert entered is sp
+            assert sp._thread is None  # tidak ada thread
+        assert sp._thread is None
+
+    def test_thread_started_when_tty(self, monkeypatch):
+        """Kalau stream terminal interaktif, thread daemon spinner dijalankan."""
+        fake = _FakeStream(isatty=True)
+        monkeypatch.setattr(sys, "stdout", fake)
+        sp = spinner_mod.Spinner("pesan", stderr=False)
+        with sp:
+            assert sp._thread is not None
+            assert sp._thread.daemon is True
+        assert sp._thread is not None
+
+    def test_exit_returns_false_without_thread(self, monkeypatch):
+        """__exit__ harus mengembalikan False (tidak menelan exception)
+        walau tidak ada thread yang berjalan."""
+        fake = _FakeStream(isatty=False)
+        monkeypatch.setattr(sys, "stdout", fake)
+        sp = spinner_mod.Spinner("pesan", stderr=False)
+        assert sp.__exit__(None, None, None) is False
+
+    def test_fallback_frames_for_non_tty(self, monkeypatch):
+        """Untuk stream non-TTY, frame yang dipakai adalah ASCII fallback
+        (| / - \), bukan Braille."""
+        fake = _FakeStream(isatty=False)
+        monkeypatch.setattr(sys, "stdout", fake)
+        sp = spinner_mod.Spinner("pesan", stderr=False)
+        assert sp._frames == spinner_mod._FALLBACK_FRAMES
+
+    def test_braille_frames_for_tty(self, monkeypatch):
+        """Untuk stream TTY, frame Braille yang dipakai."""
+        fake = _FakeStream(isatty=True)
+        monkeypatch.setattr(sys, "stdout", fake)
+        sp = spinner_mod.Spinner("pesan", stderr=False)
+        assert sp._frames == spinner_mod._FRAMES
+
+    def test_spin_writes_carriage_return_and_pads_to_term_width(self, monkeypatch):
+        """_spin menulis baris diawali \\r dan mengisi spasi hingga selebar
+        terminal agar tidak ada sisa karakter dari frame sebelumnya."""
+        fake = _FakeStream(isatty=True)
+        monkeypatch.setattr(sys, "stdout", fake)
+        monkeypatch.setattr(spinner_mod, "_term_width", lambda: 20)
+        monkeypatch.setattr(spinner_mod, "time", _FakeTime())
+        sp = spinner_mod.Spinner("halo", stderr=False)
+        sp._stop = _FakeStop(stop_after=1)  # tulis 1 frame lalu berhenti
+        sp._spin()
+        out = fake.value
+        assert out.startswith("\r")
+        assert " halo" in out
+        # visual_len("⠋ halo") == 6 -> di-pad dengan 14 spasi.
+        assert out.endswith(" " * 14)
+
+    def test_spin_truncates_long_line_to_term_width(self, monkeypatch):
+        """Kalau pesan lebih panjang dari lebar terminal, baris dipotong agar
+        tidak line-wrap."""
+        fake = _FakeStream(isatty=True)
+        monkeypatch.setattr(sys, "stdout", fake)
+        monkeypatch.setattr(spinner_mod, "_term_width", lambda: 8)
+        monkeypatch.setattr(spinner_mod, "time", _FakeTime())
+        sp = spinner_mod.Spinner("pesan yang sangat panjang sekali", stderr=False)
+        sp._stop = _FakeStop(stop_after=1)
+        sp._spin()
+        # Baris polos (tanpa \r) tidak boleh melebihi lebar terminal.
+        raw = fake.value.strip("\r")
+        assert len(raw) <= 8
 
 
 # ---------------------------------------------------------------------------

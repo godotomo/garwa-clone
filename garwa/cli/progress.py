@@ -14,7 +14,13 @@ hanya kalau terminal mendukungnya (via colors.c()).
 Spinner dan progress bar dirancang agar bisa dipakai BERSAMAAN tanpa
 saling menimpa: Spinner dapat menampilkan bilah progress inline sehingga
 satu baris berisi spinner + bilah + persen + status.
+
+Semua output progress dijaga agar TIDAK PERNAH melebihi lebar terminal,
+sehingga tidak terjadi line-wrap yang menyebabkan baris tercetak
+berulang di baris baru (terutama di Python 3.11+).
 """
+import re
+import shutil
 import sys
 import threading
 import time
@@ -28,6 +34,22 @@ _SPINNER_INTERVAL = 0.1  # detik per frame
 
 # Lebar bilah progress bar (jumlah kolom karakter).
 _BAR_WIDTH = 30
+
+# Regex untuk menghapus ANSI escape sequences dari string.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    """Hapus semua ANSI escape sequences, menyisakan teks polos."""
+    return _ANSI_RE.sub("", text)
+
+
+def _term_width() -> int:
+    """Lebar terminal saat ini (fallback 80 jika tidak bisa dideteksi)."""
+    try:
+        return shutil.get_terminal_size().columns
+    except Exception:
+        return 80
 
 
 def _enabled() -> bool:
@@ -90,13 +112,25 @@ class Spinner:
                     parts.append(_render_bar(fraction))
                 if status:
                     parts.append(c(status, C.DIM))
-                sys.stdout.write("\r" + " ".join(parts) + " " * 4)
+                line = " ".join(parts)
+                # Potong agar tidak melebihi lebar terminal (mencegah
+                # line-wrap yang menyebabkan baris tercetak ke baris baru).
+                term_w = _term_width()
+                visual_len = len(_strip_ansi(line))
+                if visual_len > term_w:
+                    # Potong dari teks polos, lalu rekonstruksi ulang
+                    # dengan ANSI code yang sudah di-strip.
+                    line = _strip_ansi(line)[:term_w]
+                # Tulis baris + bersihkan sisa karakter dari output
+                # sebelumnya dengan spasi hingga selebar terminal.
+                sys.stdout.write("\r" + line + " " * max(0, term_w - visual_len))
                 sys.stdout.flush()
                 idx += 1
                 self._stop.wait(_SPINNER_INTERVAL)
         finally:
-            # Bersihkan baris spinner saat dihentikan.
-            sys.stdout.write("\r" + " " * 80 + "\r")
+            # Bersihkan seluruh baris spinner saat dihentikan.
+            term_w = _term_width()
+            sys.stdout.write("\r" + " " * term_w + "\r")
             sys.stdout.flush()
 
     def __enter__(self) -> "Spinner":
@@ -127,7 +161,12 @@ def progress_bar(
     line = _render_bar(fraction, width)
     if message:
         line += c(f" {message}", C.DIM)
-    sys.stdout.write("\r" + line + " " * 4)
+    # Potong agar tidak melebihi lebar terminal.
+    term_w = _term_width()
+    visual_len = len(_strip_ansi(line))
+    if visual_len > term_w:
+        line = _strip_ansi(line)[:term_w]
+    sys.stdout.write("\r" + line + " " * max(0, term_w - visual_len))
     sys.stdout.flush()
     if fraction >= 1.0:
         sys.stdout.write("\n")

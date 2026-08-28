@@ -104,6 +104,47 @@ def _is_server_error(e: Exception) -> bool:
     return False
 
 
+def _countdown_sleep(seconds: float, label: str) -> None:
+    """Tidur `seconds` detik sambil menampilkan animasi hitung mundur
+    (spinner + angka mundur + bilah progress) di satu baris yang di-rewrite
+    via carriage return.
+
+    Aman untuk non-TTY: kalau stdout bukan terminal (pipe/file, mode
+    --auto/--overnight), langsung time.sleep() polos tanpa output apa pun
+    supaya tidak mengotori log.
+    """
+    if not sys.stdout.isatty():
+        time.sleep(seconds)
+        return
+    frames = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+    term_w = shutil.get_terminal_size().columns or 80
+    start = time.monotonic()
+    idx = 0
+    while True:
+        elapsed = time.monotonic() - start
+        if elapsed >= seconds:
+            break
+        remaining = max(0, seconds - elapsed)
+        fraction = elapsed / seconds
+        # Bilah progress 20 kolom.
+        filled = int(round(fraction * 20))
+        bar = "█" * filled + "░" * (20 - filled)
+        frame = frames[idx % len(frames)]
+        line = (
+            c(f"{frame} {label} ", C.BOLD_CYAN)
+            + c(f"[{bar}]", C.BOLD_CYAN)
+            + c(f" {remaining:4.0f}s ", C.BOLD_WHITE)
+            + c("menunggu...", C.DIM)
+        )
+        sys.stdout.write("\r" + line)
+        sys.stdout.flush()
+        idx += 1
+        time.sleep(0.1)
+    # Bersihkan baris.
+    sys.stdout.write("\r" + " " * term_w + "\r")
+    sys.stdout.flush()
+
+
 def call_llama_server(url: str, model: str, messages: list,
                       temperature: float = 0.2, stream: bool = True,
                       api_key: str = "", debug: bool = False) -> str:
@@ -188,4 +229,4 @@ def call_llama_server(url: str, model: str, messages: list,
                     f"(percobaan {attempt + 1}/{max_attempts})...",
                     C.YELLOW,
                 ))
-            time.sleep(sleep_sec)
+            _countdown_sleep(sleep_sec, f"percobaan {attempt + 1}/{max_attempts}")

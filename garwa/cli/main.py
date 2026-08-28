@@ -116,7 +116,7 @@ def main():
                               "Hati-hati -- ini membuka akses baca/tulis/eksekusi ke seluruh sistem.")
     parser.add_argument("--auto-approve", action="store_true",
                          help="Lewati konfirmasi untuk aksi destruktif (bash/write_file/edit_file)")
-    parser.add_argument("--max-tool-iters", type=int, default=1000,
+    parser.add_argument("--max-tool-iters", type=int, default=100,
                          help="Batas jumlah pemanggilan tool berturut-turut per giliran user")
     parser.add_argument("--max-image-mb", type=float, default=8.0,
                          help="Batas ukuran (MB, sebelum base64) untuk gambar yang di-drop "

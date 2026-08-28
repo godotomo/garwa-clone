@@ -93,14 +93,44 @@ _WARNED_CONTEXT_MANAGER_NO_TOOLS_BUDGET = [False]
 LOOP_REPEAT_WINDOW = 4
 LOOP_REPEAT_THRESHOLD = 2
 LOOP_BREAK_COOLDOWN_SECONDS = 3
+# Jeda minimum antar request ke server model setelah setiap tool call sukses.
+# Proxy publik (mis. 9inference.cloud) menerapkan rate limit (HTTP 429) per
+# jendela waktu; tanpa pacing, deretan tool_call cepat (bash/read_file/grep)
+# bisa membanjiri server dan memicu 429. Jeda 1 detik cukup untuk menurunkan
+# volume request tanpa memperlambat alur kerja secara signifikan.
+TOOL_CALL_PACING_SECONDS = 1
 ERROR_REPEAT_WINDOW = 4
 ERROR_REPEAT_THRESHOLD = 2
-REPEAT_MIN_UNIT_LEN = 40
-REPEAT_MAX_OCCUR = 3
+REPEAT_MIN_UNIT_LEN = 100
+REPEAT_MAX_OCCUR = 5
 REPEAT_CHECK_EVERY = 200
 LOOP_SIMILARITY_THRESHOLD = 0.95
-REPEAT_NGRAM_MIN_LEN = 40
-REPEAT_NGRAM_MAX_OCCUR = 3
+REPEAT_NGRAM_MIN_LEN = 100
+REPEAT_NGRAM_MAX_OCCUR = 5
+# Multi-scale n-gram: cek repetisi di 3 ukuran berbeda (karakter).
+# Ukuran kecil (25) menangkap pola pendek seperti "---", "OK\n", dll.
+# Ukuran sedang (60) menangkap kalimat pendek berulang.
+# Ukuran besar (120) menangkap paragraf berulang (threshold asli ~100).
+REPEAT_NGRAM_SCALES = (25, 60, 120)
+# Threshold minimal karakter untuk memulai pengecekan n-gram (skala terkecil).
+REPEAT_NGRAM_MIN_TOTAL_LEN = 25 * 5  # 125 karakter
+# Threshold khusus untuk simbol separator berulang (---, ===, ***, ...).
+# Simbol separator biasanya pendek (1-5 karakter), jadi threshold lebih rendah.
+SEPARATOR_REPEAT_THRESHOLD = 3
+# Near-duplicate n-gram: setelah normalisasi whitespace, bandingkan n-gram
+# dengan toleransi kemiripan ini (0.0 = exact, 1.0 = apa saja dianggap sama).
+# Nilai 0.15 berarti n-gram dengan 85%+ karakter sama dianggap match.
+REPEAT_NGRAM_FUZZY_THRESHOLD = 0.15
+# Diversity check (rolling n-gram): rasio n-gram unik terhadap total n-gram
+# setelah normalisasi whitespace. Teks natural (prosa/kode/markdown) yang
+# diukur dari repo ini punya rasio >= 0.60; pola degenerate (interleaved
+# A/B, segmen pendek berulang, near-duplicate whitespace) berada di 0.01-0.20.
+# Threshold 0.35 memberi margin lebar ke dua arah.
+REPEAT_DIVERSITY_WINDOW = 25
+REPEAT_DIVERSITY_THRESHOLD = 0.35
+# Panjang minimal teks (setelah normalisasi whitespace) sebelum diversity
+# check dijalankan; di bawah ini sampel n-gram terlalu sedikit untuk andal.
+REPEAT_DIVERSITY_MIN_LEN = 150
 PASTE_PREVIEW_CHARS = 10
 IMAGE_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg",
@@ -264,7 +294,7 @@ OPENROUTER_CACHE_TAIL_BREAKPOINTS = 3
 AGENT_NAME = "Garwa"
 _DEBUG_EXTRA_SINK = [None]  # optional file-like object; run_overnight_mode
 RATE_LIMIT_RETRY_ATTEMPTS = 3
-RATE_LIMIT_BACKOFF_SECONDS = [30, 30, 30]
+RATE_LIMIT_BACKOFF_SECONDS = [15, 15, 15]
 # Error server (HTTP 5xx): server model/proxy sedang bermasalah (overload,
 # internal error, gateway timeout, dsb). Sama seperti rate limit, kita tunggu
 # 30 detik lalu coba ulang beberapa kali -- jangan langsung mematikan seluruh

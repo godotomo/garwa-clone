@@ -71,6 +71,9 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
     _truncation_count = 0
     _MAX_TRUNCATION_RETRIES = 2
 
+    _loop_count = 0
+    _MAX_LOOP_RETRIES = 2
+
     _t_start = time.monotonic()          # awal giliran (untuk durasi total)
     _iteration_count = 0                 # jumlah iterasi loop (putaran model)
     _error_count = 0                     # jumlah tool_call yang menghasilkan error
@@ -93,6 +96,8 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
         print(c(f"  iterasi    : {_iteration_count}", C.DIM))
         if _truncation_count:
             print(c(f"  truncasi   : {_truncation_count}x", C.YELLOW))
+        if _loop_count:
+            print(c(f"  loop       : {_loop_count}x", C.YELLOW))
 
     def _build_context_messages(context_window_tokens: int):
         """Rakit `messages` dari histori DB via context_manager, memakai
@@ -274,6 +279,21 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                 raise
         except RepetitionLoopError:
 
+            _loop_count += 1
+
+            if _loop_count > _MAX_LOOP_RETRIES:
+
+                print(c(
+                    f"\n[LOOP] Respon model berulang (degenerate loop) "
+                    f"{_loop_count}x berturut-turut tanpa pernah "
+                    f"menghasilkan jawaban/tool_call. "
+                    "Menghentikan giliran ini -- kemungkinan model terjebak "
+                    "dalam pola repetitif yang tidak bisa dipatahkan.",
+                    C.RED,
+                ))
+                _emit_summary()
+                return last_visible
+
             print(c(
                 f"  [LOOP] Respon model berulang di dalam satu respon "
                 f"(degenerate loop). Menunggu {state.LOOP_BREAK_COOLDOWN_SECONDS} "
@@ -340,6 +360,7 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
             continue
 
         _truncation_count = 0
+        _loop_count = 0
 
         assistant_text = _convert_alt_tool_call_syntax(assistant_text)
 
@@ -347,17 +368,38 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
         if len(_loop_history) > state.LOOP_REPEAT_WINDOW:
             _loop_history.pop(0)
 
-        _repeat_count = _loop_history.count(assistant_text)
-        if _repeat_count < state.LOOP_REPEAT_THRESHOLD:
+        # --- Unified loop detection (perbaikan Bug 10,11,12,13,14) ---
+        # Skip empty responses
+        if assistant_text.strip() == "":
+            _is_loop = False
+            _repeat_count = 0
+        else:
+            # Window tanpa item yang baru di-append (Bug 11: jangan hitung diri sendiri)
+            window_prev = _loop_history[:-1]
+
+            # 1. Direct check: berapa item di window yang mirip (≥threshold)
+            #    dengan respons saat ini? Exact match (similarity=1.0) otomatis
+            #    termasuk -- tidak lagi dipisah (Bug 12: unified exact+similarity).
             _repeat_count = sum(
-                1 for prev in _loop_history
-                if prev != assistant_text
-                and _similarity(prev, assistant_text) >= state.LOOP_SIMILARITY_THRESHOLD
+                1 for prev in window_prev
+                if _similarity(prev, assistant_text) >= state.LOOP_SIMILARITY_THRESHOLD
             )
-        _is_loop = (
-            assistant_text.strip() != ""
-            and _repeat_count >= state.LOOP_REPEAT_THRESHOLD
-        )
+
+            # 2. Alternating pattern detection (Bug 10: A/B/A/B).
+            #    Hitung berapa item di window yang punya "kembaran" (item lain
+            #    dengan similarity ≥ threshold). Kalau SEMUA item dalam window
+            #    punya kembaran, itu pertanda pola berulang.
+            _twin_count = 0
+            for i in range(len(_loop_history)):
+                for j in range(i):
+                    if _similarity(_loop_history[j], _loop_history[i]) >= state.LOOP_SIMILARITY_THRESHOLD:
+                        _twin_count += 1
+                        break  # setiap item dihitung maksimal 1x
+
+            _is_loop = (
+                _repeat_count >= state.LOOP_REPEAT_THRESHOLD
+                or _twin_count >= state.LOOP_REPEAT_WINDOW
+            )
 
         if _is_loop:
             if _loop_interventions < 1:
@@ -593,6 +635,12 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
             tool_result_msg,
             kind="tool_result",
         )
+
+        # Pacing antar request: jeda singkat setelah setiap tool call sukses
+        # sebelum iterasi berikutnya memicu request model lagi. Mencegah
+        # deretan tool_call cepat (bash/read_file/grep) membanjiri proxy
+        # publik dan memicu rate limit HTTP 429 (lihat TOOL_CALL_PACING_SECONDS).
+        time.sleep(state.TOOL_CALL_PACING_SECONDS)
     else:
         print(c(
             f"[WARN] Batas {args.max_tool_iters} pemanggilan tool tercapai "
