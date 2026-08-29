@@ -15,6 +15,7 @@ Semua fungsi di sini sengaja synchronous & sederhana (pakai stdlib sqlite3)
 karena CLI ini single-user, single-process, single-threaded per giliran.
 """
 
+import json
 import os
 import sqlite3
 import time
@@ -50,6 +51,7 @@ CREATE TABLE IF NOT EXISTS summaries (
     session_id          TEXT NOT NULL,
     upto_message_id     INTEGER NOT NULL,   -- messages dengan id <= ini sudah terangkum
     summary_text        TEXT NOT NULL,
+    active_instructions TEXT,               -- JSON array string; instruksi aktif verbatim (ATURAN 1)
     created_at          REAL NOT NULL
 );
 
@@ -118,6 +120,14 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
         cols = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
         if "pinned" not in cols:
             conn.execute("ALTER TABLE messages ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+
+        # Migrasi ringan: kolom `active_instructions` di tabel summaries
+        # (menyimpan instruksi aktif verbatim hasil summarize sebagai JSON
+        # array string). DB lama tidak akan mendapatnya dari CREATE TABLE
+        # IF NOT EXISTS, jadi tambahkan secara idempoten kalau belum ada.
+        scol = [r[1] for r in conn.execute("PRAGMA table_info(summaries)").fetchall()]
+        if "active_instructions" not in scol:
+            conn.execute("ALTER TABLE summaries ADD COLUMN active_instructions TEXT")
 
 
 
@@ -247,22 +257,50 @@ def get_messages_after(db_path: str, session_id: str, after_id: int):
 
 
 
-def save_summary(db_path: str, session_id: str, upto_message_id: int, summary_text: str):
+def save_summary(db_path: str, session_id: str, upto_message_id: int, summary_text: str,
+                 active_instructions: list = None):
+    """Simpan ringkasan percakapan.
+
+    `active_instructions` (opsional): daftar string instruksi aktif yang
+    disalin verbatim oleh model summarize (ATURAN 1). Disimpan sebagai JSON
+    array string di kolom `active_instructions` supaya bisa disuntikkan
+    utuh ke context setiap giliran (lihat build_context_messages).
+    """
+    if active_instructions is None:
+        active_instructions = []
     with connect(db_path) as conn:
         conn.execute(
-            "INSERT INTO summaries (session_id, upto_message_id, summary_text, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            (session_id, upto_message_id, summary_text, time.time()),
+            "INSERT INTO summaries (session_id, upto_message_id, summary_text, "
+            "active_instructions, created_at) VALUES (?, ?, ?, ?, ?)",
+            (session_id, upto_message_id, summary_text,
+             json.dumps(active_instructions, ensure_ascii=False), time.time()),
         )
 
 
 def get_latest_summary(db_path: str, session_id: str):
+    """Ambil ringkasan terakhir, dengan kolom `active_instructions` di-parse
+    dari JSON menjadi list string (fallback: [] kalau NULL/rusak)."""
     with connect(db_path) as conn:
         row = conn.execute(
             "SELECT * FROM summaries WHERE session_id = ? ORDER BY id DESC LIMIT 1",
             (session_id,),
         ).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        d = dict(row)
+        raw = d.get("active_instructions")
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    d["active_instructions"] = [str(x) for x in parsed]
+                else:
+                    d["active_instructions"] = []
+            except (ValueError, TypeError):
+                d["active_instructions"] = []
+        else:
+            d["active_instructions"] = []
+        return d
 
 
 

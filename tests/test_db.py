@@ -190,6 +190,34 @@ def test_get_latest_summary_none_when_empty(db_path, session_id):
     assert dbmod.get_latest_summary(db_path, session_id) is None
 
 
+def test_summary_roundtrip_active_instructions(db_path, session_id):
+    dbmod.save_summary(
+        db_path, session_id, upto_message_id=5, summary_text="ringkas",
+        active_instructions=["instruksi A", "instruksi B"],
+    )
+    s = dbmod.get_latest_summary(db_path, session_id)
+    assert s["summary_text"] == "ringkas"
+    assert s["active_instructions"] == ["instruksi A", "instruksi B"]
+
+
+def test_summary_active_instructions_default_empty(db_path, session_id):
+    dbmod.save_summary(db_path, session_id, upto_message_id=5, summary_text="ringkas")
+    s = dbmod.get_latest_summary(db_path, session_id)
+    assert s["active_instructions"] == []
+
+
+def test_summary_active_instructions_corrupt_json_falls_back_empty(db_path, session_id):
+    # Simulasi data lama/rusak: tulis JSON tidak valid langsung ke kolom.
+    dbmod.save_summary(db_path, session_id, 5, "ringkas")
+    with dbmod.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE summaries SET active_instructions = ? WHERE session_id = ?",
+            ("{bukan json", session_id),
+        )
+    s = dbmod.get_latest_summary(db_path, session_id)
+    assert s["active_instructions"] == []
+
+
 # ---------------------------------------------------------------- todos
 
 def test_replace_todos_full_replace(db_path, session_id):

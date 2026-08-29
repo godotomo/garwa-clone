@@ -149,7 +149,7 @@ def test_maybe_summarize_triggers_and_saves(db_path, session_id):
 
     def fake_summarize(url, model, text, api_key="", progress=None):
         called.append(text)
-        return "RINGKASAN BARU"
+        return {"narasi": "RINGKASAN BARU", "instruksi_aktif": []}
 
     cm._summarize_text = fake_summarize
     result = cm.maybe_summarize(
@@ -177,6 +177,123 @@ def test_maybe_summarize_handles_failure_gracefully(db_path, session_id, monkeyp
     )
     assert result is False
     assert dbmod.get_latest_summary(db_path, session_id) is None
+
+
+def test_maybe_summarize_saves_active_instructions(db_path, session_id):
+    for i in range(30):
+        dbmod.add_message(db_path, session_id, "user", "kata " * 50)
+
+    def fake_summarize(url, model, text, api_key="", progress=None):
+        return {
+            "narasi": "RINGKASAN",
+            "instruksi_aktif": ["Selalu gunakan bahasa Indonesia", "Jangan hapus file config"],
+        }
+
+    cm._summarize_text = fake_summarize
+    result = cm.maybe_summarize(
+        db_path, session_id, "http://x", "model", context_window_tokens=2000
+    )
+    assert result is True
+    summary = dbmod.get_latest_summary(db_path, session_id)
+    assert summary["summary_text"] == "RINGKASAN"
+    assert summary["active_instructions"] == [
+        "Selalu gunakan bahasa Indonesia", "Jangan hapus file config",
+    ]
+
+
+def test_maybe_summarize_merges_prior_active_instructions(db_path, session_id):
+    # Summary pertama sudah menyimpan instruksi aktif.
+    dbmod.save_summary(
+        db_path, session_id, 1, "lama",
+        active_instructions=["instruksi lama"],
+    )
+    for i in range(30):
+        dbmod.add_message(db_path, session_id, "user", "kata " * 50)
+
+    def fake_summarize(url, model, text, api_key="", progress=None):
+        return {"narasi": "RINGKASAN BARU", "instruksi_aktif": ["instruksi baru"]}
+
+    cm._summarize_text = fake_summarize
+    result = cm.maybe_summarize(
+        db_path, session_id, "http://x", "model", context_window_tokens=2000
+    )
+    assert result is True
+    summary = dbmod.get_latest_summary(db_path, session_id)
+    # Instruksi lama harus tetap ada (digabung, dedup).
+    assert set(summary["active_instructions"]) == {"instruksi lama", "instruksi baru"}
+
+
+def test_maybe_summarize_skips_when_narasi_empty(db_path, session_id):
+    for i in range(30):
+        dbmod.add_message(db_path, session_id, "user", "kata " * 50)
+
+    def fake_summarize(url, model, text, api_key="", progress=None):
+        return {"narasi": "   ", "instruksi_aktif": ["x"]}
+
+    cm._summarize_text = fake_summarize
+    result = cm.maybe_summarize(
+        db_path, session_id, "http://x", "model", context_window_tokens=2000
+    )
+    assert result is False
+    assert dbmod.get_latest_summary(db_path, session_id) is None
+
+
+# ------------------------------------------------- _parse_summary_output
+
+def test_parse_summary_output_plain_json():
+    out = cm._parse_summary_output(
+        '{"narasi": "ringkasan", "instruksi_aktif": ["a", "b"]}'
+    )
+    assert out == {"narasi": "ringkasan", "instruksi_aktif": ["a", "b"]}
+
+
+def test_parse_summary_output_fenced_json():
+    raw = '```json\n{"narasi": "ringkasan", "instruksi_aktif": ["a"]}\n```'
+    out = cm._parse_summary_output(raw)
+    assert out["narasi"] == "ringkasan"
+    assert out["instruksi_aktif"] == ["a"]
+
+
+def test_parse_summary_output_fallback_to_plain_text():
+    out = cm._parse_summary_output("ringkasan biasa tanpa json")
+    assert out["narasi"] == "ringkasan biasa tanpa json"
+    assert out["instruksi_aktif"] == []
+
+
+def test_parse_summary_output_handles_non_list_instructions():
+    raw = '{"narasi": "ringkasan", "instruksi_aktif": "bukan list"}'
+    out = cm._parse_summary_output(raw)
+    assert out["narasi"] == "ringkasan"
+    assert out["instruksi_aktif"] == []
+
+
+def test_parse_summary_output_empty():
+    assert cm._parse_summary_output("") == {"narasi": "", "instruksi_aktif": []}
+
+
+# ------------------------------------------------- build_context_messages: instruksi aktif
+
+def test_build_context_messages_injects_active_instructions(db_path, session_id):
+    dbmod.add_message(db_path, session_id, "user", "pesan lama")
+    dbmod.save_summary(
+        db_path, session_id, 1, "RINGKASAN",
+        active_instructions=["Aturan: pakai JSON murni", "Jangan hapus file"],
+    )
+    dbmod.add_message(db_path, session_id, "user", "pesan baru")
+    msgs = cm.build_context_messages(db_path, session_id, "SYS")
+    summary_content = msgs[1]["content"]
+    assert "<instruksi_aktif>" in summary_content
+    assert "- Aturan: pakai JSON murni" in summary_content
+    assert "- Jangan hapus file" in summary_content
+    assert msgs[1]["role"] == "user"
+
+
+def test_build_context_messages_no_instruksi_block_when_empty(db_path, session_id):
+    dbmod.add_message(db_path, session_id, "user", "pesan lama")
+    dbmod.save_summary(db_path, session_id, 1, "RINGKASAN")
+    dbmod.add_message(db_path, session_id, "user", "pesan baru")
+    msgs = cm.build_context_messages(db_path, session_id, "SYS")
+    assert "<instruksi_aktif>" not in msgs[1]["content"]
 
 
 # ------------------------------------------------- prepare_context_messages

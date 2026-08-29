@@ -99,8 +99,20 @@ SUMMARIZE_SYSTEM = (
     "    ringkasan naratif.\n"
     "  - JANGAN menghilangkan instruksi aktif walau terasa panjang; lebih baik "
     "    ringkasan sedikit lebih panjang daripada kehilangan instruksi penting.\n\n"
-    "Tulis dalam poin-poin singkat berbahasa Indonesia. Untuk item ATURAN 1, tulis "
-    "persis sebagai: 'INSTRUKSI AKTIF: \"<teks verbatim>\"'."
+    "FORMAT OUTPUT (WAJIB JSON, tidak boleh teks lain di luar JSON):\n"
+    "Kembalikan SATU objek JSON dengan dua field:\n"
+    "  {\n"
+    "    \"narasi\": \"<ringkasan naratif bebas berisi ATURAN 2, poin-poin singkat berbahasa Indonesia>\",\n"
+    "    \"instruksi_aktif\": [\"<verbatim ATURAN 1 item 1>\", \"<verbatim ATURAN 1 item 2>\", ...]\n"
+    "  }\n"
+    "Aturan:\n"
+    "  - Setiap item ATURAN 1 (instruksi aktif yang masih berlaku, keputusan desain, "
+    "    format/protokol/konvensi yang harus diikuti, catatan penting) disalin "
+    "    KATA-PER-KATA dalam satu string di array `instruksi_aktif`.\n"
+    "  - Kalau tidak ada instruksi aktif, `instruksi_aktif` boleh berupa array kosong [].\n"
+    "  - `narasi` berisi ringkasan ATURAN 2 (file/hasil tool/plan yang belum selesai).\n"
+    "  - JANGAN menaruh instruksi aktif di dalam `narasi`; taruh di `instruksi_aktif`.\n"
+    "  - JANGAN membungkus JSON dengan ```fence``` atau teks penjelasan apa pun."
 )
 
 
@@ -140,14 +152,25 @@ def build_context_messages(db_path: str, session_id: str, system_prompt: str) ->
 
     summary = dbmod.get_latest_summary(db_path, session_id)
     if summary:
-        out.append({
-            "role": "user",
-            "content": (
-                "<ringkasan_percakapan_sebelumnya>\n"
-                f"{summary['summary_text']}\n"
-                "</ringkasan_percakapan_sebelumnya>"
-            ),
-        })
+        summary_content = (
+            "<ringkasan_percakapan_sebelumnya>\n"
+            f"{summary['summary_text']}\n"
+            "</ringkasan_percakapan_sebelumnya>"
+        )
+        # Lapis 2 (konteks-tidak-hilang): instruksi aktif disimpan oleh model
+        # summarize (kolom active_instructions) dan disuntikkan utuh setiap
+        # giliran supaya keputusan desain / aturan penting tidak pernah
+        # hilang walau riwayat sudah diringkas.
+        active_instr = summary.get("active_instructions") or []
+        if active_instr:
+            instr_block = "\n".join(f"- {s}" for s in active_instr)
+            summary_content += (
+                "\n\n<instruksi_aktif>\n"
+                "Instruksi berikut masih berlaku dan WAJIB diikuti verbatim:\n"
+                f"{instr_block}\n"
+                "</instruksi_aktif>"
+            )
+        out.append({"role": "user", "content": summary_content})
         out.append({
             "role": "assistant",
             "content": "Baik, saya sudah paham konteks sesi sebelumnya. Lanjutkan.",
@@ -201,8 +224,52 @@ def _is_retryable_error(exc: Exception) -> bool:
     return False
 
 
+def _parse_summary_output(raw: str) -> dict:
+    """Parse output model summarize menjadi dict {"narasi", "instruksi_aktif"}.
+
+    Model diinstruksikan (SUMMARIZE_SYSTEM) untuk mengembalikan JSON murni
+    dengan dua field. Tapi model kadang membungkusnya dengan ```fence``` atau
+    menambahkan teks di luar JSON. Fungsi ini mencoba beberapa strategi dan
+    selalu fallback ke teks mentah sebagai `narasi` (instruksi_aktif=[]) agar
+    tidak pernah kehilangan ringkasan.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return {"narasi": "", "instruksi_aktif": []}
+
+    candidates = [text]
+    # Strategi 1: ambil blok yang dibungkus ```json ... ``` / ``` ... ```
+    marker = "```"
+    if marker in text:
+        parts = text.split(marker)
+        for i in range(1, len(parts), 2):
+            block = parts[i].strip()
+            if block.startswith("json"):
+                block = block[4:].strip()
+            if block:
+                candidates.insert(0, block)
+
+    for cand in candidates:
+        try:
+            parsed = json.loads(cand)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        narasi = parsed.get("narasi")
+        instr = parsed.get("instruksi_aktif", [])
+        if not isinstance(instr, list):
+            instr = []
+        instr = [str(x) for x in instr if str(x).strip()]
+        if isinstance(narasi, str):
+            return {"narasi": narasi.strip(), "instruksi_aktif": instr}
+
+    # Fallback: bukan JSON valid -> perlakukan seluruh teks sebagai narasi.
+    return {"narasi": text, "instruksi_aktif": []}
+
+
 def _summarize_text(url: str, model: str, text_to_summarize: str, api_key: str = "",
-                    progress=None) -> str:
+                    progress=None) -> dict:
     payload = {
         "model": model,
         "messages": [
@@ -226,7 +293,8 @@ def _summarize_text(url: str, model: str, text_to_summarize: str, api_key: str =
             )
             resp.raise_for_status()
             data = resp.json()
-            return data["choices"][0]["message"]["content"].strip()
+            content = data["choices"][0]["message"]["content"]
+            return _parse_summary_output(content)
         except Exception as exc:  # noqa: BLE001 - tangkap semua, filter di bawah
             last_exc = exc
             if not _is_retryable_error(exc):
@@ -341,13 +409,36 @@ def maybe_summarize(db_path: str, session_id: str, url: str, model: str,
                     f"mengirim ke model {model} (percobaan {attempt + 1}/{total})"
                 )
 
-            new_summary_text = _summarize_text(
+            new_summary = _summarize_text(
                 url, model, chunk_text,
                 api_key=api_key, progress=_progress,
             )
         upto_id = to_summarize[-1]["id"]
-        dbmod.save_summary(db_path, session_id, upto_id, new_summary_text)
-        _print_summary_result(new_summary_text)
+        # Verifikasi: kalau model mengembalikan narasi kosong (JSON valid tapi
+        # field narasi tidak ada / kosong), jangan simpan summary kosong yang
+        # bisa menghilangkan konteks. Anggap gagal dan biarkan giliran
+        # berikutnya mencoba lagi.
+        if not (new_summary.get("narasi") or "").strip():
+            logger.warning(
+                "maybe_summarize: model mengembalikan narasi kosong untuk "
+                "session_id=%s; summary tidak disimpan", session_id,
+            )
+            return False
+        # Instruksi aktif: gabungkan yang baru dengan yang lama (yang masih
+        # berada di summary sebelumnya) supaya tidak ada instruksi yang hilang
+        # saat ringkasan bertumpuk.
+        active_instructions = list(new_summary.get("instruksi_aktif", []))
+        if prior_summary_text:
+            prior_instr = summary.get("active_instructions") or []
+            for s in prior_instr:
+                if s not in active_instructions:
+                    active_instructions.append(s)
+        dbmod.save_summary(
+            db_path, session_id, upto_id,
+            new_summary.get("narasi", ""),
+            active_instructions=active_instructions,
+        )
+        _print_summary_result(new_summary.get("narasi", ""))
     except Exception:
 
         logger.warning(
