@@ -57,6 +57,15 @@ EXT_LANG = {
     ".php": "php",
     ".cs": "c_sharp",
     ".sh": "bash",
+    ".sol": "solidity",
+    ".kt": "kotlin", ".kts": "kotlin",
+    ".swift": "swift",
+    ".dart": "dart",
+    ".lua": "lua",
+    ".scala": "scala",
+    ".ex": "elixir", ".exs": "elixir",
+    ".hs": "haskell",
+    ".r": "r", ".R": "r",
 }
 
 DEF_NODE_TYPES = {
@@ -66,7 +75,28 @@ DEF_NODE_TYPES = {
     "struct_item", "struct_specifier",
     "impl_item", "interface_declaration", "trait_item",
     "type_declaration", "enum_declaration", "enum_item",
+    # Solidity (tree-sitter-solidity via tree_sitter_language_pack):
+    "contract_declaration", "library_declaration",
+    "struct_declaration",
+    "event_definition", "modifier_definition", "constructor_definition",
+    # Kotlin:
+    "object_declaration",
+    # Swift:
+    "protocol_declaration", "protocol_function_declaration", "init_declaration",
+    # Dart:
+    "mixin_declaration", "extension_declaration", "function_signature",
+    # Scala:
+    "trait_definition", "object_definition", "type_definition",
+    # Lua:
+    # (function_declaration sudah ada; function_definition/assignment ditangani
+    #  oleh custom walker agar namanya akurat)
+    # Haskell:
+    "data_type", "type_synomym", "newtype", "signature",
 }
+
+# Bahasa yang diekstrak pakai walker khusus (bukan DEF_NODE_TYPES generik)
+# karena struktur AST-nya tidak punya field "name"/"identifier" langsung.
+CUSTOM_WALKER_LANGS = {"elixir", "haskell", "r", "lua"}
 NAME_FIELDS = ("name", "declarator")
 
 IGNORE_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist",
@@ -84,6 +114,57 @@ REGEX_DEFS = {
     "go": re.compile(r"^func\s+(?:\([^)]*\)\s*)?(\w+)\s*\(", re.MULTILINE),
     "rust": re.compile(r"^[ \t]*(?:pub\s+)?fn\s+(\w+)\s*\(|^[ \t]*(?:pub\s+)?struct\s+(\w+)\b", re.MULTILINE),
     "java": re.compile(r"^[ \t]*(?:public|private|protected|static|\s)*\w[\w<>\[\]]*\s+(\w+)\s*\([^;{]*\)\s*\{", re.MULTILINE),
+    # Fallback tanpa tree-sitter: tangkap unit & member utama Solidity.
+    "solidity": re.compile(
+        r"^[ \t]*(?:abstract\s+)?(?:contract|interface|library|struct|enum|event|modifier)\s+(\w+)\b|"
+        r"^[ \t]*(constructor)\s*\(|"
+        r"^[ \t]*function\s+(\w+)\s*\(",
+        re.MULTILINE,
+    ),
+    "kotlin": re.compile(
+        r"^[ \t]*(?:data\s+|enum\s+|sealed\s+|abstract\s+|open\s+)?(?:class|interface|object)\s+(\w+)\b|"
+        r"^[ \t]*(?:suspend\s+|private\s+|public\s+|internal\s+|inline\s+|override\s+)*fun\s+(?:[\w.<>?]+\.)?(\w+)\s*\(",
+        re.MULTILINE,
+    ),
+    "swift": re.compile(
+        r"^[ \t]*(?:open\s+|public\s+|final\s+|indirect\s+)?(?:class|struct|enum|protocol|extension)\s+(\w+)\b|"
+        r"^[ \t]*(?:static\s+|class\s+|mutating\s+|override\s+|public\s+|private\s+|fileprivate\s+)*func\s+(\w+)\s*\(|"
+        r"^[ \t]*(?:convenience\s+|override\s+|required\s+)*(init)\s*\(",
+        re.MULTILINE,
+    ),
+    "dart": re.compile(
+        r"^[ \t]*(?:abstract\s+|base\s+|sealed\s+)?(?:class|mixin|enum|extension)\s+(\w+)\b|"
+        r"^[ \t]*(?:static\s+|external\s+|factory\s+)*(?:[\w<>,?\s]+\s+)?(\w+)\s*\([^;{]*\)\s*(?:async\s*)?\{|"
+        r"^[ \t]*(?:void|int|double|num|bool|String|Future<[^>]*>|Stream<[^>]*>|List<[^>]*>|Map<[^>]*>|Set<[^>]*>|dynamic)\s+(\w+)\s*\(",
+        re.MULTILINE,
+    ),
+    "lua": re.compile(
+        r"^[ \t]*(?:local\s+)?function\s+([\w.:]+)\s*\(|"
+        r"^[ \t]*(?:local\s+)?(\w+)\s*=\s*function\s*\(",
+        re.MULTILINE,
+    ),
+    "scala": re.compile(
+        r"^[ \t]*(?:sealed\s+|abstract\s+|final\s+|case\s+)?(?:class|trait|object|enum)\s+(\w+)\b|"
+        r"^[ \t]*(?:override\s+|private\s*|protected\s*|final\s+|inline\s+)*def\s+(\w+)\s*[\[(=]|"
+        r"^[ \t]*(?:lazy\s+)?(?:val|var)\s+(\w+)\b",
+        re.MULTILINE,
+    ),
+    "elixir": re.compile(
+        r"^[ \t]*defmodule\s+([\w.]+)\b|"
+        r"^[ \t]*(?:def|defp|defmacro|defmacrop)\s+(\w+[!?]?)",
+        re.MULTILINE,
+    ),
+    "haskell": re.compile(
+        r"^data\s+(\w+)\b|^newtype\s+(\w+)\b|^type\s+(\w+)\b|^class\s+(\w+)\b|"
+        r"^(\w+)\s*::\s*|"                        # type signature:  name :: ...
+        r"^(\w+)[ \t]+[\w'()\[\]]*[ \t]*=|"       # function:        name args =
+        r"^(\w+)[ \t]*=[ \t]*\S",                # zero-arg bind:   name = expr
+        re.MULTILINE,
+    ),
+    "r": re.compile(
+        r"^[ \t]*(`?[\w.]+`?)\s*(?:<-|=|<<-)\s*function\s*\(",
+        re.MULTILINE,
+    ),
 }
 
 
@@ -127,17 +208,142 @@ def _extract_defs_treesitter(path: str, lang: str, source: bytes):
                 return src_text[child.start_byte:child.end_byte]
         return None
 
-    def walk(node):
+    def add_def(name, node, typ=None):
+        start_line = node.start_point[0]
+        sig_line = lines[start_line].strip() if start_line < len(lines) else ""
+        defs.append({"name": name, "line": start_line + 1, "type": typ or node.type, "sig": sig_line[:160]})
+
+    def node_text(n):
+        return src_text[n.start_byte:n.end_byte]
+
+    # ---- walker generik (bahasa dengan struktur AST standar) ----
+    def walk_generic(node):
         if node.type in DEF_NODE_TYPES:
             name = find_name(node)
             if name:
-                start_line = node.start_point[0]
-                sig_line = lines[start_line].strip() if start_line < len(lines) else ""
-                defs.append({"name": name, "line": start_line + 1, "type": node.type, "sig": sig_line[:160]})
+                add_def(name, node)
         for child in node.children:
-            walk(child)
+            walk_generic(child)
 
-    walk(tree.root_node)
+    # ---- custom walker: Elixir ----
+    # def/defp/defstruct muncul sebagai `call` dengan child pertama identifier
+    # `def`/dll. Nama simbol = elemen pertama di dalam `arguments`.
+    ELIXIR_DEF_TARGETS = {"def", "defp", "defmacro", "defmacrop", "defmodule",
+                          "defprotocol", "defimpl", "defstruct", "defexception"}
+
+    def walk_elixir(node, module_stack=()):
+        if node.type == "call" and node.children:
+            tgt = node.children[0]
+            if tgt.type == "identifier" and node_text(tgt) in ELIXIR_DEF_TARGETS:
+                keyword = node_text(tgt)
+                args = next((c for c in node.children if c.type == "arguments"), None)
+                if args is not None and args.children:
+                    first = args.children[0]
+                    if first.type == "call" and first.children:
+                        # "def foo(a, b)" -> arg pertama = call foo(...)
+                        name = node_text(first.children[0])
+                    else:
+                        # "def foo" / "defmodule Foo.Bar"
+                        name = node_text(first)
+                    if keyword == "defmodule":
+                        if name:
+                            add_def(name, node, typ="elixir_defmodule")
+                        # track enclosing module untuk defstruct/defexception
+                        for child in node.children:
+                            walk_elixir(child, module_stack + (name,))
+                        return
+                    if keyword in ("defstruct", "defexception"):
+                        # tak punya nama sendiri — pakai nama enclosing module
+                        suffix = " (struct)" if keyword == "defstruct" else " (exception)"
+                        name = (module_stack[-1] + suffix) if module_stack else None
+                    if name:
+                        add_def(name, node, typ="elixir_" + keyword)
+        for child in node.children:
+            walk_elixir(child, module_stack)
+
+    # ---- custom walker: Haskell ----
+    # Haskell AST: nama fungsi ada di child langsung `variable`; nama tipe di
+    # child langsung `name`. `function` yang bersarang di dalam `signature` adalah
+    # tipe RHS (bukan definisi) — jangan descend setelah match, dan jangan proses
+    # `function` tanpa child `match`.
+    def walk_haskell(node):
+        if node.type == "signature":
+            name = next((node_text(c) for c in node.children if c.type == "variable"), None)
+            if name:
+                add_def(name, node, typ="haskell_signature")
+            return
+        if node.type in ("function", "bind"):
+            # `function` = definisi dengan argumen; `bind` = definisi tanpa argumen
+            # (mis. `main = print x`). Keduanya punya child `match`.
+            # `function` tanpa `match` adalah tipe RHS di dalam signature — skip.
+            if not any(c.type == "match" for c in node.children):
+                return
+            name = next((node_text(c) for c in node.children if c.type == "variable"), None)
+            if name:
+                add_def(name, node, typ="haskell_" + node.type)
+            return
+        if node.type in ("data_type", "type_synomym", "newtype"):
+            name = next((node_text(c) for c in node.children if c.type == "name"), None)
+            if name:
+                add_def(name, node, typ="haskell_" + node.type)
+            return
+        for child in node.children:
+            walk_haskell(child)
+
+    # ---- custom walker: R ----
+    # Definisi = assignment dengan RHS `function`:
+    #   name <- function(a, b) ...   /   name = function(...)  /  `name` <- function(...)
+    def walk_r(node):
+        if node.type in ("binary_operator", "equals_assignment"):
+            lhs = node.child_by_field_name("lhs") or (node.children[0] if node.children else None)
+            rhs = node.child_by_field_name("rhs") or (node.children[-1] if node.children else None)
+            if lhs is not None and rhs is not None and rhs.type in ("function_definition", "function"):
+                name = node_text(lhs)
+                add_def(name, node, typ="r_function")
+        for child in node.children:
+            walk_r(child)
+
+    # ---- custom walker: Lua ----
+    # function foo.bar:baz(...) -> function_declaration/function_definition
+    #   dengan nama dot_index_expression / method_index_expression.
+    # local function f() -> sudah function_declaration.
+    # foo = function() -> assignment_statement dengan variable_list.
+    def lua_name_from(node):
+        if node.type in ("identifier",):
+            return node_text(node)
+        if node.type in ("dot_index_expression", "method_index_expression"):
+            return node_text(node)
+        return None
+
+    def walk_lua(node):
+        if node.type in ("function_declaration", "function_definition"):
+            name_node = (node.child_by_field_name("name") or
+                         next((c for c in node.children
+                               if c.type in ("identifier", "dot_index_expression",
+                                             "method_index_expression")), None))
+            if name_node is not None:
+                add_def(node_text(name_node), node, typ="lua_function")
+        elif node.type == "assignment_statement":
+            # foo = function() ... / local foo = function() ...
+            # (assignment_statement bisa berada di dalam variable_declaration)
+            expr_list = next((c for c in node.children if c.type == "expression_list"), None)
+            has_fn = any(c.type == "function_definition"
+                         for c in (expr_list.children if expr_list else node.children))
+            if has_fn:
+                var_list = next((c for c in node.children if c.type == "variable_list"), None)
+                if var_list is not None and var_list.children:
+                    add_def(node_text(var_list.children[0]), node, typ="lua_function")
+        for child in node.children:
+            walk_lua(child)
+
+    walkers = {
+        "elixir": walk_elixir,
+        "haskell": walk_haskell,
+        "r": walk_r,
+        "lua": walk_lua,
+    }
+    walker = walkers.get(lang, walk_generic)
+    walker(tree.root_node)
     return defs
 
 
@@ -154,6 +360,10 @@ def _extract_defs_regex(path: str, lang: str, source_text: str):
         patterns = [REGEX_DEFS["rust"]]
     elif lang == "java":
         patterns = [REGEX_DEFS["java"]]
+    elif lang == "solidity":
+        patterns = [REGEX_DEFS["solidity"]]
+    elif lang in ("kotlin", "swift", "dart", "lua", "scala", "elixir", "haskell", "r"):
+        patterns = [REGEX_DEFS[lang]]
     else:
         return defs
 

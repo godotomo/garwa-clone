@@ -143,17 +143,6 @@ def _resolve_schema(schema: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
     return props, req
 
 
-def _resolve_arguments(schema: Dict[str, Any]) -> Dict[str, Any]:
-    """(Deprecated) Ambil dict property {name: JSON-Schema} dari schema.
-
-    Dipertahankan agar pemanggil lama tetap berfungsi. Untuk kebutuhan
-    `required`, gunakan `_resolve_schema(schema)` yang mengembalikan
-    (properties, required).
-    """
-    props, _ = _resolve_schema(schema)
-    return props
-
-
 def build_openai_tools_payload(tools: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Bangun field 'tools' ala OpenAI function-calling dengan tipe AKURAT.
 

@@ -159,10 +159,17 @@ terisolasi di `garwa\.venv`, menginstall `requirements.txt`, memasang launcher
 `garwa.cmd` + `garwa.ps1` di `%USERPROFILE%\.local\bin` (default), dan otomatis
 menambahkan folder launcher ke `PATH` user.
 
-```powershell
-# Dari root repo, di PowerShell (buka sekali kalau kebijakan eksekusi menolak):
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+Dari root repo, jalankan di PowerShell:
 
+```powershell
+# 1. Izinkan skrip lokal ditandatangani (cukup sekali per user):
+Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+
+# 2. Hapus tanda "blocked" pada file hasil unduhan (zip/clone dari browser),
+#    kalau PowerShell masih menolak menjalankan skrip:
+Unblock-File .\install.ps1
+
+# 3. Jalankan installer:
 .\install.ps1                 # instal dengan pengaturan default
 .\install.ps1 -Prefix DIR     # pasang launcher ke DIR (default ~\.local\bin)
 .\install.ps1 -NoVenv         # pakai Python sistem, tanpa virtualenv

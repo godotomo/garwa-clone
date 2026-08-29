@@ -82,10 +82,6 @@ class MCPServerConfig:
     headers: Dict[str, str] = field(default_factory=dict)  # streamable_http: header HTTP
     enabled: bool = True
 
-    @property
-    def display_name(self) -> str:
-        return self.name
-
     def to_stdlib_params(self) -> "StdioServerParameters":
         """Bangun StdioServerParameters untuk transport stdio."""
         if StdioServerParameters is None:

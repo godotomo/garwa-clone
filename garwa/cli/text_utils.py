@@ -398,10 +398,9 @@ def _detect_repetition(text: str, strict: bool = True) -> bool:
     """Deteksi pola repetisi/degenerasi di dalam satu respon.
 
     Mengembalikan True kalau teks yang sudah terkumpul menunjukkan tanda
-    loop: baris yang sama muncul minimal REPEAT_MAX_OCCUR kali, ATAU segmen
-    terakhir (unit) muncul berkali-kali di seluruh teks, ATAU ada substring
-    berulang (n-gram) dengan panjang cukup di posisi mana pun, ATAU simbol
-    separator (---, ===, ***) berulang terus-menerus.
+    loop: simbol separator/fence/tabel yang bertumpuk berurutan tanpa
+    konten, ATAU baris yang sama muncul minimal REPEAT_MAX_OCCUR kali,
+    ATAU diversity n-gram (rasio unik) turun di bawah ambang.
 
     ``strict`` membedakan dua konteks pemakaian:
     - ``strict=True`` (default): untuk jawaban asli (content). Model tidak
@@ -412,17 +411,15 @@ def _detect_repetition(text: str, strict: bool = True) -> bool:
       berpikir, sehingga ambang line-repeat dilonggarkan
       (REPEAT_MAX_OCCUR_REASONING) untuk menekan false positive.
 
-    Perbaikan dari versi sebelumnya:
-    - Multi-scale n-gram (25, 60, 120 karakter) untuk menangkap repetisi
-      di berbagai ukuran.
-    - Near-duplicate detection: n-gram dibandingkan dengan toleransi
-      fuzzy (normalisasi whitespace + rasio kemiripan) sehingga variasi
-      kecil seperti spasi ganda tetap terdeteksi.
-    - Separator detection: simbol seperti "---", "===", "***" yang
-      berulang > SEPARATOR_REPEAT_THRESHOLD kali langsung terdeteksi.
-    - Baris pendek (< 3 karakter) yang berupa simbol repetitif tetap
-      diperiksa (kecuali benar-benar kosong).
-    - Minimal teks untuk n-gram check diturunkan ke 125 karakter.
+    Arsitektur (hasil penyederhanaan): hanya memakai
+    - run-detection (separator / fence / table-row) yang bertumpuk,
+    - line-repeat,
+    - diversity check (rolling n-gram stride 1 setelah normalisasi
+      whitespace).
+    Tahap unit-repeat dan multi-scale n-gram fuzzy dihapus karena terbukti
+    redundan: diversity check bebas asumsi alignment sudah menangkap semua
+    pola yang mereka tangani (interleaved, segmen non-aligned, unit overlap,
+    near-duplicate whitespace).
 
     Setel GARWA_DEBUG_REPETITION=1 untuk logging diagnostik real-time ke
     stderr setiap kali fungsi ini mencurigai adanya loop (termasuk yang
@@ -480,6 +477,14 @@ def _detect_repetition(text: str, strict: bool = True) -> bool:
     # LINE-REPEAT memicu false positive saat model sah menulis contoh JSON
     # atau kode dengan banyak kurung penutup bertingkat.
     structural_pattern = re.compile(r'^[\s]*[\[\]{}();,]+[\s]*$')
+    # Baris tabel markdown (dimulai & diakhiri pipe "|") adalah struktur
+    # markdown SAH yang sering muncul identik di banyak tabel berbeda
+    # (mis. header "| Tool | Fungsi |" di setiap tabel). Menghitungnya
+    # sebagai LINE-REPEAT memicu false positive saat model sah menyusun
+    # beberapa tabel dengan header kolom yang sama. Loop degenerate yang
+    # benar-benar mengulang baris tabel tetap tertangkap oleh tahap 3
+    # (n-gram) dan tahap 4 (diversity check).
+    table_row_pattern = re.compile(r'^\s*\|.*\|\s*$')
     fence_run = 0
     max_fence_run = 0
     for ln in text.split("\n"):
@@ -496,6 +501,41 @@ def _detect_repetition(text: str, strict: bool = True) -> bool:
             _warn_repetition(
                 "FENCE-REPEAT",
                 f"fence markdown muncul {max_fence_run}x berurutan (threshold={state.SEPARATOR_REPEAT_THRESHOLD})",
+                text[:200],
+            )
+        return True
+
+    # ------------------------------------------------------------------
+    # 0c. Table-row-run detection: baris tabel markdown ("| ... |") yang
+    #     IDENTIK muncul BERURUTAN tanpa konten lain di antaranya adalah
+    #     loop degenerate (mis. model macet mengulang "| Tool | Fungsi |").
+    #     Header tabel yang TERSebar di banyak tabel berbeda (konten di
+    #     antara) adalah markdown SAH dan tidak ditandai di sini -- itu
+    #     ditangani oleh pengecualian table_row di tahap LINE-REPEAT.
+    # ------------------------------------------------------------------
+    table_run = 0
+    max_table_run = 0
+    prev_table_row = None
+    for ln in text.split("\n"):
+        stripped = ln.strip()
+        if table_row_pattern.match(stripped):
+            if stripped == prev_table_row:
+                table_run += 1
+            else:
+                table_run = 1
+                prev_table_row = stripped
+            if table_run > max_table_run:
+                max_table_run = table_run
+        elif stripped == "":
+            continue  # baris kosong tidak memutus run
+        else:
+            table_run = 0
+            prev_table_row = None
+    if max_table_run >= state.SEPARATOR_REPEAT_THRESHOLD:
+        if _dbg:
+            _warn_repetition(
+                "TABLE-ROW-REPEAT",
+                f"baris tabel identik muncul {max_table_run}x berurutan (threshold={state.SEPARATOR_REPEAT_THRESHOLD})",
                 text[:200],
             )
         return True
@@ -534,6 +574,13 @@ def _detect_repetition(text: str, strict: bool = True) -> bool:
             # penutup objek "}" bisa muncul berkali-kali -- bukan loop.
             if structural_pattern.match(ln):
                 continue
+            # Baris tabel markdown ("| ... |") yang identik muncul di banyak
+            # tabel berbeda adalah struktur SAH (header kolom yang sama),
+            # bukan loop degenerate. Pengecualian di sini hanya menonaktifkan
+            # LINE-REPEAT untuk baris tabel; repetisi tabel yang SEBENARNYA
+            # tetap tertangkap oleh tahap 3 (n-gram) & tahap 4 (diversity).
+            if table_row_pattern.match(ln):
+                continue
             # Delimiter tool_call (<tool_call>, </tool_call>) SELALU muncul
             # di setiap tool_call, jadi bukan indikasi repetisi. Menghitungnya
             # sebagai LINE-REPEAT memicu false positive saat model sah
@@ -554,101 +601,9 @@ def _detect_repetition(text: str, strict: bool = True) -> bool:
                 return True
 
     # ------------------------------------------------------------------
-    # 2. Unit-repeat: segmen terakhir teks muncul berkali-kali.
-    #    Verifikasi konteks sekitar setiap kemunculan untuk mengurangi
-    #    false positive.
-    # ------------------------------------------------------------------
-    if len(text) >= state.REPEAT_MIN_UNIT_LEN:
-        unit = text[-state.REPEAT_MIN_UNIT_LEN:]
-        # Cari semua posisi kemunculan unit (non-overlapping).
-        pos = 0
-        occurrences = []
-        while True:
-            pos = text.find(unit, pos)
-            if pos == -1:
-                break
-            occurrences.append(pos)
-            pos += len(unit)
-
-        if len(occurrences) >= state.REPEAT_MAX_OCCUR:
-            # Verifikasi konteks sekitar.
-            ctx_len = state.REPEAT_MIN_UNIT_LEN * 2
-            windows = []
-            for occ in occurrences[:50]:
-                start = max(0, occ - ctx_len)
-                end = min(len(text), occ + len(unit) + ctx_len)
-                windows.append(text[start:end])
-
-            similar_count = 1
-            for w in windows[1:]:
-                if _similarity(windows[0], w) >= state.LOOP_SIMILARITY_THRESHOLD:
-                    similar_count += 1
-            if similar_count >= state.REPEAT_MAX_OCCUR:
-                if _dbg:
-                    _warn_repetition(
-                        "UNIT-REPEAT",
-                        f"unit muncul {len(occurrences)}x, {similar_count} window mirip (threshold={state.REPEAT_MAX_OCCUR})",
-                        unit[:200],
-                    )
-                return True
-
-    # ------------------------------------------------------------------
-    # 3. Multi-scale n-gram repeat dengan near-duplicate detection.
-    #    Scan di 3 ukuran (25, 60, 120) untuk menangkap repetisi di
-    #    berbagai skala. Setiap n-gram dibandingkan dengan toleransi
-    #    fuzzy (normalisasi whitespace + rasio kemiripan) sehingga
-    #    variasi kecil seperti spasi ganda tetap terdeteksi.
-    # ------------------------------------------------------------------
-    if len(text) >= state.REPEAT_NGRAM_MIN_TOTAL_LEN:
-        for ngram_size in state.REPEAT_NGRAM_SCALES:
-            if len(text) < ngram_size * state.REPEAT_NGRAM_MAX_OCCUR:
-                continue  # teks terlalu pendek untuk skala ini
-
-            # Normalisasi whitespace untuk perbandingan fuzzy
-            for i in range(0, len(text) - ngram_size + 1, ngram_size):
-                block = text[i:i + ngram_size]
-                block_norm = _normalize_ws(block)
-                count = 1
-                j = i + ngram_size
-                while j + ngram_size <= len(text):
-                    candidate = text[j:j + ngram_size]
-                    candidate_norm = _normalize_ws(candidate)
-
-                    # Exact match ATAU near-duplicate (fuzzy)
-                    if candidate == block:
-                        count += 1
-                    elif block_norm and candidate_norm:
-                        # Gunakan rasio sederhana: berapa persen karakter berbeda
-                        max_len = max(len(block_norm), len(candidate_norm))
-                        if max_len > 0:
-                            # Hitung perbedaan karakter
-                            diff = sum(
-                                1 for a, b in zip(block_norm, candidate_norm)
-                                if a != b
-                            ) + abs(len(block_norm) - len(candidate_norm))
-                            if diff / max_len <= state.REPEAT_NGRAM_FUZZY_THRESHOLD:
-                                count += 1
-                            else:
-                                break  # tidak mirip, hentikan
-                        else:
-                            break
-                    else:
-                        break  # tidak mirip, hentikan
-                    j += ngram_size
-
-                if count >= state.REPEAT_NGRAM_MAX_OCCUR:
-                    if _dbg:
-                        _warn_repetition(
-                            "NGRAM-REPEAT",
-                            f"n-gram ukuran {ngram_size} muncul {count}x (threshold={state.REPEAT_NGRAM_MAX_OCCUR})",
-                            block[:200],
-                        )
-                    return True
-
-    # ------------------------------------------------------------------
-    # 4. Diversity check: rasio n-gram unik terhadap total n-gram.
-    #    Tahap 1-3 semuanya bergantung pada blok yang aligned dan/atau
-    #    konsekutif, sehingga lolos untuk pola seperti:
+    # 2. Diversity check: rasio n-gram unik terhadap total n-gram.
+    #    Line-repeat & run-detection bergantung pada blok yang aligned
+    #    dan/atau konsekutif, sehingga lolos untuk pola seperti:
     #      - interleaved (A, B, A, B, A) -- counter reset tiap ketemu B
     #      - segmen pendek non-aligned ("Hello world! " 13 char)
     #      - unit overlap yang undercount karena str.find non-overlapping

@@ -662,7 +662,7 @@ class TestDetectRepetition:
         assert text_utils._detect_repetition("just a short response") is False
 
     def test_repeated_unit_detected(self):
-        unit = "x" * state.REPEAT_MIN_UNIT_LEN
+        unit = "x" * 100
         text = unit * state.REPEAT_MAX_OCCUR
         assert text_utils._detect_repetition(text) is True
 
@@ -742,9 +742,9 @@ class TestDetectRepetition:
         Sekarang: scan dari offset 0..39 memastikan setidaknya satu offset
         menghasilkan blok-blok aligned yang identik.
         """
-        block = "A" * state.REPEAT_NGRAM_MIN_LEN  # 40 'A'
+        block = "A" * 100  # 100 'A'
         prefix = "12345"  # 5 karakter offset
-        text = prefix + block * (state.REPEAT_NGRAM_MAX_OCCUR + 1)  # 6 blok
+        text = prefix + block * 6  # 6 blok
         # Multi-offset scan: offset 5 menghasilkan blok-blok "AAAA..."
         # yang aligned sempurna, 6 blok ≥ threshold → terdeteksi.
         assert text_utils._detect_repetition(text) is True  # FIXED: multi-offset
@@ -762,8 +762,8 @@ class TestDetectRepetition:
         (tahap 4) tidak punya asumsi alignment: rolling n-gram di teks ini
         hanya menghasilkan ~0.195 n-gram unik, jauh di bawah threshold.
         """
-        block_a = "A" * state.REPEAT_NGRAM_MIN_LEN
-        block_b = "B" * state.REPEAT_NGRAM_MIN_LEN
+        block_a = "A" * 100
+        block_b = "B" * 100
         # A, B, A, B, A, B, A = 4x A, 3x B, total 7 blok
         text = (block_a + block_b) * 3 + block_a
         assert text_utils._detect_repetition(text) is True  # FIXED: diversity
@@ -864,8 +864,8 @@ class TestDetectRepetition:
         """FIXED: teks pendek sekarang diperiksa line-check.
 
         Dulu: teks < 200 karakter tidak dicek n-gram sama sekali.
-        Sekarang: line check menangkap "OK" berulang 66x, dan
-        REPEAT_NGRAM_MIN_TOTAL_LEN = 125 karakter (jauh lebih rendah).
+        Sekarang: line check menangkap "OK" berulang 66x (66 baris identik
+        >= REPEAT_MAX_OCCUR), jauh di bawah batas minimal pengecekan lama.
         """
         # 198 karakter "OK\n" berulang = 66 baris "OK"
         text = "OK\n" * 66  # 198 karakter
@@ -879,12 +879,12 @@ class TestDetectRepetition:
         assert text_utils._detect_repetition("") is False
 
     # ------------------------------------------------------------------
-    # Edge case: teks tepat di batas threshold
+    # Edge case: blok panjang yang diulang-ulang
     # ------------------------------------------------------------------
-    def test_exactly_at_threshold(self):
-        """Teks tepat 200 karakter (batas minimal n-gram check)."""
-        block = "A" * state.REPEAT_NGRAM_MIN_LEN
-        text = block * state.REPEAT_NGRAM_MAX_OCCUR  # 200 karakter
+    def test_large_repeated_block_detected(self):
+        """Blok panjang yang diulang-ulang terdeteksi sebagai repetisi."""
+        block = "A" * 100
+        text = block * 5  # 500 karakter
         assert text_utils._detect_repetition(text) is True
 
     # ------------------------------------------------------------------
@@ -901,11 +901,10 @@ class TestDetectRepetition:
         """Unit check harusnya menangkap repetisi yang lolos dari
         line check dan n-gram check."""
         # Teks dengan 1 baris panjang yang diulang-ulang
-        unit = "Z" * state.REPEAT_MIN_UNIT_LEN
+        unit = "Z" * 100
         text = unit * state.REPEAT_MAX_OCCUR
         # Line check: hanya 1 baris, tidak ada duplikat
-        # N-gram check: aligned, akan mendeteksi juga
-        # Tapi ini memastikan unit check berfungsi
+        # Tapi ini memastikan unit check berfungsi sebagai last resort
         assert text_utils._detect_repetition(text) is True
 
     # ------------------------------------------------------------------
@@ -1012,6 +1011,48 @@ class TestDetectRepetition:
         # terdeteksi bahkan dengan ambang longgar (strict=False).
         text = "Kita perlu menambahkan fitur baru pada modul konfigurasi. " * 8
         assert text_utils._detect_repetition(text, strict=False) is True
+
+    # ------------------------------------------------------------------
+    # BUG FIX: Baris tabel markdown ("| Tool | Fungsi |") yang identik
+    # muncul di BANYAK tabel berbeda (header kolom yang sama) adalah
+    # markdown SAH, bukan loop degenerate. Sebelumnya LINE-REPEAT
+    # menghitung header "| Tool | Fungsi |" 5x (5 tabel) dan memicu
+    # false positive. Header tersebar tidak boleh ditandai sebagai loop.
+    # ------------------------------------------------------------------
+    def test_markdown_table_headers_spread_not_detected(self):
+        # 5 tabel berbeda, masing-masing dengan header "| Tool | Fungsi |"
+        # yang sama -- ini jawaban sah yang menyusun banyak tabel.
+        text = ""
+        for i in range(5):
+            text += f"{i}. Section {i}\n"
+            text += "| Tool | Fungsi |\n"
+            text += "|------|---------|\n"
+            text += "| ffuf | fuzzer  |\n"
+            text += "\n"
+        assert text_utils._detect_repetition(text) is False
+
+    def test_markdown_table_headers_many_spread_not_detected(self):
+        # 8 tabel berbeda (melebihi REPEAT_MAX_OCCUR=5) -- masih sah,
+        # header tersebar di antara konten tidak boleh jadi loop.
+        text = ""
+        for i in range(8):
+            text += f"Section {i}\n"
+            text += "| Tool | Fungsi |\n"
+            text += "|------|---------|\n"
+            text += "| nmap | scan   |\n"
+            text += "\n"
+        assert text_utils._detect_repetition(text) is False
+
+    # Loop degenerate tabel: baris tabel IDENTIK yang diulang BERURUTAN
+    # (tanpa konten lain) tetap harus terdeteksi sebagai loop.
+    def test_table_row_run_stacked_detected(self):
+        text = "| Tool | Fungsi |\n" * state.SEPARATOR_REPEAT_THRESHOLD
+        assert text_utils._detect_repetition(text) is True
+
+    def test_table_row_run_stacked_with_blank_lines_detected(self):
+        # Baris kosong di antara baris tabel tidak memutus run degenerate.
+        text = "| Tool | Fungsi |\n\n" * state.SEPARATOR_REPEAT_THRESHOLD
+        assert text_utils._detect_repetition(text) is True
 
 
 class TestTerminalWidth:

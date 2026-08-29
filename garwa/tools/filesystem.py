@@ -28,7 +28,6 @@ from . import _state as state
 from .bash_tool import _cap_output
 from .bash_tool import tool_bash
 from .sandbox import SandboxViolation
-from .sandbox import _resolve
 from .sandbox import _resolve_writable
 from .sandbox import _resolve_readonly
 from .sandbox import _touch

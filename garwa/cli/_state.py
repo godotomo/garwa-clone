@@ -85,7 +85,6 @@ LOOP_BREAK_COOLDOWN_SECONDS = 3
 TOOL_CALL_PACING_SECONDS = 1
 ERROR_REPEAT_WINDOW = 4
 ERROR_REPEAT_THRESHOLD = 2
-REPEAT_MIN_UNIT_LEN = 100
 REPEAT_MAX_OCCUR = 5
 REPEAT_CHECK_EVERY = 200
 LOOP_SIMILARITY_THRESHOLD = 0.95
@@ -94,27 +93,9 @@ LOOP_SIMILARITY_THRESHOLD = 0.95
 # deteksi yang terlalu agresif memicu false positive. Content (jawaban
 # asli) memakai ambang ketat (REPEAT_MAX_OCCUR).
 REPEAT_MAX_OCCUR_REASONING = 8
-# Fence markdown (```python, ~~~, ...) yang muncul berulang sebagai
-# pembuka banyak blok kode pendek adalah sintaks sah, bukan loop.
-# Baris yang hanya berisi fence diabaikan oleh LINE-REPEAT (seperti
-# separator), selama tidak bertumpuk tanpa konten.
-FENCE_REPEAT_MAX_OCCUR = 12
-REPEAT_NGRAM_MIN_LEN = 100
-REPEAT_NGRAM_MAX_OCCUR = 5
-# Multi-scale n-gram: cek repetisi di 3 ukuran berbeda (karakter).
-# Ukuran kecil (25) menangkap pola pendek seperti "---", "OK\n", dll.
-# Ukuran sedang (60) menangkap kalimat pendek berulang.
-# Ukuran besar (120) menangkap paragraf berulang (threshold asli ~100).
-REPEAT_NGRAM_SCALES = (25, 60, 120)
-# Threshold minimal karakter untuk memulai pengecekan n-gram (skala terkecil).
-REPEAT_NGRAM_MIN_TOTAL_LEN = 25 * 5  # 125 karakter
 # Threshold khusus untuk simbol separator berulang (---, ===, ***, ...).
 # Simbol separator biasanya pendek (1-5 karakter), jadi threshold lebih rendah.
 SEPARATOR_REPEAT_THRESHOLD = 3
-# Near-duplicate n-gram: setelah normalisasi whitespace, bandingkan n-gram
-# dengan toleransi kemiripan ini (0.0 = exact, 1.0 = apa saja dianggap sama).
-# Nilai 0.15 berarti n-gram dengan 85%+ karakter sama dianggap match.
-REPEAT_NGRAM_FUZZY_THRESHOLD = 0.15
 # Diversity check (rolling n-gram): rasio n-gram unik terhadap total n-gram
 # setelah normalisasi whitespace. Teks natural (prosa/kode/markdown) yang
 # diukur dari repo ini punya rasio >= 0.60; pola degenerate (interleaved
