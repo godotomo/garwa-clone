@@ -53,7 +53,8 @@ def _call_llama_server_nonstream(url: str, model: str, messages: list,
 
     response = None
     try:
-        response = requests.post(url, json=payload, headers=_auth_headers(api_key), timeout=300)
+        response = requests.post(url, json=payload, headers=_auth_headers(api_key),
+                                 timeout=state.NONSTREAM_TIMEOUT_SECONDS)
         if debug:
             _debug_log("HTTP-STATUS", f"{response.status_code} {response.reason}")
             raw_text = _resp_text_utf8(response)

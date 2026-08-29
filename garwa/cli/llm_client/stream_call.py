@@ -92,7 +92,7 @@ def _call_llama_server_stream(url: str, model: str, messages: list,
             url,
             json=payload,
             headers=_auth_headers(api_key),
-            timeout=300,
+            timeout=state.STREAM_TIMEOUT_SECONDS,
             stream=True,
         )
         if debug:

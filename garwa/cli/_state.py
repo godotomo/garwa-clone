@@ -294,6 +294,20 @@ AGENT_NAME = "Garwa"
 _DEBUG_EXTRA_SINK = [None]  # optional file-like object; run_overnight_mode
 RATE_LIMIT_RETRY_ATTEMPTS = 3
 RATE_LIMIT_BACKOFF_SECONDS = [15, 15, 15]
+# Concurrent limit (HTTP 429 dengan code "concurrent_limit"): server proxy
+# hanya mengizinkan sejumlah request aktif (mis. 1/1). Request yang masih
+# diproses server memblokir slot, jadi retry butuh backoff JAUH lebih panjang
+# daripada rate-limit biasa karena kita harus menunggu request sebelumnya
+# selesai (bisa sampai timeout stream). Lihat _is_concurrent_limit_error() di
+# dispatch.py.
+CONCURRENT_LIMIT_RETRY_ATTEMPTS = 5
+CONCURRENT_LIMIT_BACKOFF_SECONDS = [30, 60, 90, 120, 120]
+# Timeout HTTP untuk request ke server model. Diturunkan dari 300 ke 120 detik
+# supaya request yang menggantung tidak memblokir slot concurrent (1/1) terlalu
+# lama -- kalau server lambat, lebih baik timeout cepat lalu retry daripada
+# menahan slot sambil menunggu 5 menit.
+STREAM_TIMEOUT_SECONDS = 120
+NONSTREAM_TIMEOUT_SECONDS = 120
 # Error server (HTTP 5xx): server model/proxy sedang bermasalah (overload,
 # internal error, gateway timeout, dsb). Sama seperti rate limit, kita tunggu
 # 30 detik lalu coba ulang beberapa kali -- jangan langsung mematikan seluruh

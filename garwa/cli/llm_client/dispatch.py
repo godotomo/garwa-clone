@@ -51,6 +51,37 @@ def _is_rate_limit_error(e: Exception) -> bool:
     return False
 
 
+def _is_concurrent_limit_error(e: Exception) -> bool:
+    """Deteksi error batas konkurensi (HTTP 429 dengan code "concurrent_limit").
+
+    Beberapa server proxy (mis. openagentic.id) hanya mengizinkan sejumlah
+    request AKTIF dalam satu waktu (biasanya 1/1). Kalau request sebelumnya
+    masih diproses server, request berikut langsung ditolak 429 dengan body:
+
+        {"error":{"code":"concurrent_limit",
+                   "message":"Batas request bersamaan tercapai (1/1)...",
+                   "type":"rate_limit_error"}}
+
+    Ini BEDA dari rate-limit biasa ("terlalu banyak request per menit"): di
+    sini kita harus menunggu request sebelumnya SELESAI (bisa sampai timeout
+    stream), jadi backoff-nya harus jauh lebih panjang. Deteksi ini dipakai
+    call_llama_server() untuk memilih backoff concurrent khusus.
+
+    Return True kalau exception adalah HTTPError dengan status 429 DAN body
+    response-nya mengandung penanda "concurrent_limit" / "bersamaan".
+    """
+    if isinstance(e, requests.exceptions.HTTPError):
+        resp = e.response
+        if resp is not None and resp.status_code == 429:
+            try:
+                body = _resp_text_utf8(resp).lower()
+            except Exception:
+                body = ""
+            if "concurrent_limit" in body or "bersamaan" in body or "concurrent" in body:
+                return True
+    return False
+
+
 def _is_server_error(e: Exception) -> bool:
     """Deteksi error server (HTTP 5xx) dari exception yang dilempar
     _call_llama_server_stream()/_call_llama_server_nonstream().
@@ -146,7 +177,12 @@ def call_llama_server(url: str, model: str, messages: list,
     rate limit. Error 5xx sering bersifat sementara, jadi jangan langsung
     mematikan seluruh giliran.
     """
-    for attempt in range(1, state.RATE_LIMIT_RETRY_ATTEMPTS + 1):
+    max_loop_attempts = max(
+        state.RATE_LIMIT_RETRY_ATTEMPTS,
+        state.CONCURRENT_LIMIT_RETRY_ATTEMPTS,
+        state.SERVER_ERROR_RETRY_ATTEMPTS,
+    )
+    for attempt in range(1, max_loop_attempts + 1):
         try:
             if stream:
                 result = _call_llama_server_stream(url, model, messages, temperature,
@@ -158,15 +194,26 @@ def call_llama_server(url: str, model: str, messages: list,
                                                        debug=debug)
             return result
         except Exception as e:
+            is_concurrent = _is_concurrent_limit_error(e)
             is_rate_limit = _is_rate_limit_error(e)
             is_server_error = _is_server_error(e)
-            if not (is_rate_limit or is_server_error):
+            if not (is_concurrent or is_rate_limit or is_server_error):
                 raise
-            max_attempts = (state.RATE_LIMIT_RETRY_ATTEMPTS if is_rate_limit
-                            else state.SERVER_ERROR_RETRY_ATTEMPTS)
+            if is_concurrent:
+                max_attempts = state.CONCURRENT_LIMIT_RETRY_ATTEMPTS
+            elif is_rate_limit:
+                max_attempts = state.RATE_LIMIT_RETRY_ATTEMPTS
+            else:
+                max_attempts = state.SERVER_ERROR_RETRY_ATTEMPTS
             if attempt >= max_attempts:
 
-                if is_rate_limit:
+                if is_concurrent:
+                    print(c(
+                        f"[ERROR] Batas request bersamaan (concurrent limit) masih "
+                        f"berlanjut setelah {max_attempts} percobaan. Coba lagi nanti.",
+                        C.RED,
+                    ))
+                elif is_rate_limit:
                     print(c(
                         f"[ERROR] Rate limit (HTTP 429) masih berlanjut setelah "
                         f"{max_attempts} percobaan. Coba lagi nanti.",
@@ -179,10 +226,21 @@ def call_llama_server(url: str, model: str, messages: list,
                         C.RED,
                     ))
                 raise
-            backoff = (state.RATE_LIMIT_BACKOFF_SECONDS if is_rate_limit
-                       else state.SERVER_ERROR_BACKOFF_SECONDS)
+            if is_concurrent:
+                backoff = state.CONCURRENT_LIMIT_BACKOFF_SECONDS
+            elif is_rate_limit:
+                backoff = state.RATE_LIMIT_BACKOFF_SECONDS
+            else:
+                backoff = state.SERVER_ERROR_BACKOFF_SECONDS
             sleep_sec = backoff[attempt - 1]
-            if is_rate_limit:
+            if is_concurrent:
+                print(c(
+                    f"[CONCURRENT-LIMIT] Server hanya mengizinkan 1 request aktif "
+                    f"dan request sebelumnya masih berjalan. Menunggu {sleep_sec} "
+                    f"detik lalu mencoba ulang (percobaan {attempt + 1}/{max_attempts})...",
+                    C.YELLOW,
+                ))
+            elif is_rate_limit:
                 print(c(
                     f"[RATE-LIMIT] Server membalas 429 (terlalu banyak request). "
                     f"Menunggu {sleep_sec} detik lalu mencoba ulang "
