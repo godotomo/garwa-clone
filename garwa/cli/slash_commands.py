@@ -33,8 +33,8 @@ COMMANDS = {
     "clear": "Bersihkan layar terminal (Ctrl+L)",
     "new": "Mulai sesi baru (histori sesi lama tetap tersimpan)",
     "resume": "Lanjutkan sesi: /resume <session_id>, atau /resume untuk sesi terbuka terakhir",
-    "model": "Ganti model aktif: /model <nama> (mis. /model deepseek-v4-flash-0731)",
-    "url": "Ganti endpoint server model: /url <http://host:port>",
+    "api-model": "Ganti model aktif: /api-model <nama> (mis. /api-model deepseek-v4-flash-0731)",
+    "api-url": "Ganti endpoint server model: /api-url <http://host:port>",
     "api-key": "Ganti API key server model: /api-key <kunci> (kosongkan untuk menghapus)",
     "ctx": "Ubah context window (token): /ctx <angka>",
     "github-token": "Ganti token GitHub: /github-token <token> (kosongkan untuk menghapus)",
@@ -42,6 +42,10 @@ COMMANDS = {
     "firecrawl-key": "Ganti API key Firecrawl: /firecrawl-key <token> (kosongkan untuk menghapus)",
     "news-lang": "Bahasa hasil pencarian berita: /news-lang <kode> (mis. id, en, de, ja)",
     "approve": "Toggle auto-approve (lewati konfirmasi aksi destruktif) on/off",
+    "pin": "Pin pesan penting agar tidak ikut diringkas: /pin <id> [<id> ...] (lihat /messages)",
+    "unpin": "Lepas pin dari pesan: /unpin <id> [<id> ...]",
+    "pinned": "Tampilkan daftar pesan yang sedang di-pin",
+    "messages": "Tampilkan daftar pesan sesi ini beserta ID-nya (untuk /pin & /unpin)",
     "todos": "Cetak plan/todo list sesi ini ke layar",
     "tools": "Tampilkan daftar tool yang tersedia",
     "mcp-server": "Kelola server MCP: /mcp-server list | add <nama> <cmd> [args...] | remove <nama>",
@@ -52,7 +56,7 @@ COMMANDS = {
 }
 
 # Command yang butuh argumen tambahan.
-_COMMANDS_WITH_ARGS = {"resume", "model", "url", "api-key", "ctx", "github-token", "github-max", "firecrawl-key", "news-lang"}
+_COMMANDS_WITH_ARGS = {"resume", "api-model", "api-url", "api-key", "ctx", "github-token", "github-max", "firecrawl-key", "news-lang", "pin", "unpin"}
 
 
 def _print_help() -> None:
@@ -103,6 +107,19 @@ def _parse_int_arg(arg: str) -> int | None:
         return int(arg)
     except (TypeError, ValueError):
         return None
+
+
+def _parse_ids_arg(arg: str) -> list[int]:
+    """Parse satu/beberapa message_id dari argumen, dipisah spasi atau koma.
+
+    Contoh: "3", "3,5,8", "3 5 8" → [3, 5, 8]. Elemen non-angka diabaikan.
+    """
+    ids: list[int] = []
+    for token in arg.replace(",", " ").split():
+        mid = _parse_int_arg(token)
+        if mid is not None:
+            ids.append(mid)
+    return ids
 
 
 def _print_mcp_servers() -> None:
@@ -374,31 +391,31 @@ def handle_slash_command(cmd_line: str, args, session_id: str, system_content: s
                 f"(lewati konfirmasi aksi destruktif).", C.YELLOW))
         return {"action": "skip"}
 
-    if name == "model":
+    if name == "api-model":
         if not arg:
-            print(c(f"[model] model aktif saat ini: {args.model}", C.DIM))
-            print(c("Gunakan: /model <nama> untuk menggantinya.", C.DIM))
+            print(c(f"[api-model] model aktif saat ini: {args.model}", C.DIM))
+            print(c("Gunakan: /api-model <nama> untuk menggantinya.", C.DIM))
             return {"action": "skip"}
         args.model = arg
-        print(c(f"[model] model aktif diubah ke: {args.model}", C.GREEN))
+        print(c(f"[api-model] model aktif diubah ke: {args.model}", C.GREEN))
         return {"action": "skip"}
 
-    if name == "url":
+    if name == "api-url":
         if not arg:
-            print(c(f"[url] endpoint server model saat ini: {args.url}", C.DIM))
-            print(c("Gunakan: /url <http://host:port> untuk menggantinya.", C.DIM))
+            print(c(f"[api-url] endpoint server model saat ini: {args.url}", C.DIM))
+            print(c("Gunakan: /api-url <http://host:port> untuk menggantinya.", C.DIM))
             return {"action": "skip"}
         # Validasi ringan: endpoint harus berupa URL http(s).
         if not (arg.startswith("http://") or arg.startswith("https://")):
             print(c(
-                f"[url] nilai tidak valid: '{arg}'. Harus diawali http:// atau https://.",
+                f"[api-url] nilai tidak valid: '{arg}'. Harus diawali http:// atau https://.",
                 C.RED,
             ))
             return {"action": "skip"}
         args.url = arg.rstrip("/")
         config.save_user_config(url=args.url)
-        print(c(f"[url] endpoint server model diubah ke: {args.url}", C.GREEN))
-        print(c(f"[url] tersimpan di {config.USER_CONFIG_PATH} (lintas sesi).", C.DIM))
+        print(c(f"[api-url] endpoint server model diubah ke: {args.url}", C.GREEN))
+        print(c(f"[api-url] tersimpan di {config.USER_CONFIG_PATH} (lintas sesi).", C.DIM))
         return {"action": "skip"}
 
     if name == "api-key":
@@ -499,6 +516,54 @@ def handle_slash_command(cmd_line: str, args, session_id: str, system_content: s
 
     if name == "mcp-enable":
         return _handle_mcp_enable(arg, args)
+
+    if name in ("pin", "unpin"):
+        ids = _parse_ids_arg(arg)
+        if not ids:
+            print(c(f"[{name}] gunakan: /{name} <message_id> [<message_id> ...] "
+                    f"(pisahkan dengan spasi/koma; lihat /messages)", C.RED))
+            return {"action": "skip"}
+        target = name == "pin"
+        state = "di-pin" if target else "di-unpin"
+        ok, missing = 0, []
+        for mid in ids:
+            msg = dbmod.get_message(args.db_path, session_id, mid)
+            if not msg:
+                missing.append(mid)
+                continue
+            dbmod.set_message_pinned(args.db_path, session_id, mid, pinned=target)
+            ok += 1
+            print(c(f"[{name}] pesan #{mid} ({msg['role']}) sekarang {state}"
+                    + (" -> tidak ikut diringkas." if target else "."), C.GREEN))
+        if missing:
+            print(c(f"[{name}] tidak ditemukan di sesi ini: "
+                    + ", ".join(f"#{m}" for m in missing), C.RED))
+        if ok == 0:
+            return {"action": "skip"}
+        return {"action": "skip"}
+
+    if name == "pinned":
+        pinned = dbmod.get_pinned_messages(args.db_path, session_id)
+        if not pinned:
+            print(c("[pinned] tidak ada pesan yang di-pin. Gunakan /pin <message_id>.", C.DIM))
+            return {"action": "skip"}
+        print(c(f"[pinned] {len(pinned)} pesan di-pin (dikirim utuh tiap giliran):", C.BOLD))
+        for p in pinned:
+            preview = p["content"].replace("\n", " ")[:80]
+            print(c(f"  #{p['id']} [{p['role']}] {preview}", C.DIM))
+        return {"action": "skip"}
+
+    if name == "messages":
+        msgs = dbmod.get_all_messages(args.db_path, session_id)
+        if not msgs:
+            print(c("[messages] belum ada pesan di sesi ini.", C.DIM))
+            return {"action": "skip"}
+        print(c(f"[messages] {len(msgs)} pesan di sesi ini (pakai ID untuk /pin & /unpin):", C.BOLD))
+        for m in msgs:
+            preview = m["content"].replace("\n", " ")[:80]
+            pin_flag = " [PIN]" if m.get("pinned") else ""
+            print(c(f"  #{m['id']} [{m['role']}]{pin_flag} {preview}", C.DIM))
+        return {"action": "skip"}
 
     if name == "new":
         new_id = dbmod.create_session(args.db_path, args.workdir,

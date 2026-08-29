@@ -79,19 +79,63 @@ def _tools_payload_tokens(tools_payload) -> int:
 
 SUMMARIZE_SYSTEM = (
     "Anda adalah asisten yang meringkas riwayat percakapan dari sebuah coding-agent "
-    "CLI (mirip coding-agent CLI pada umumnya). Ringkas riwayat berikut sepadat mungkin, TAPI JANGAN "
-    "buang informasi penting berikut kalau ada: (1) keputusan/preferensi yang sudah "
-    "disepakati, (2) file-file yang sudah dibaca/ditulis/diedit beserta inti "
-    "perubahannya, (3) hasil penting dari perintah bash/tool (mis. error yang belum "
-    "selesai ditangani, output test), (4) task/plan yang masih berjalan atau belum "
-    "selesai. Tulis dalam poin-poin singkat berbahasa Indonesia. JANGAN menambahkan "
-    "opini, instruksi baru, atau tool_call baru -- ini murni ringkasan naratif."
+    "CLI (mirip coding-agent CLI pada umumnya). Ringkas riwayat berikut sepadat mungkin, "
+    "TAPI ikuti aturan berikut dengan TEPAT:\n\n"
+    "ATURAN 1 - SALIN VERBATIM (WAJIB, jangan diringkas/diparafrase):\n"
+    "  - Setiap INSTRUKSI, aturan, preferensi, atau permintaan dari user yang MASHI "
+    "    AKTIF / belum selesai dikerjakan. Salin kata-per-kata dalam tanda kutip.\n"
+    "  - Setiap keputusan arsitektur/desain yang sudah disepakati.\n"
+    "  - Setiap format/protokol/konvensi yang harus diikuti (mis. format output, "
+    "    aturan pemanggilan tool, struktur file).\n"
+    "  - Setiap catatan atau kesimpulan yang ditandai penting oleh model/asisten "
+    "    (mis. yang diawali 'CATATAN:', 'PENTING:', atau sejenisnya).\n\n"
+    "ATURAN 2 - RINGKAS (boleh dipadatkan, tapi inti wajib utuh):\n"
+    "  - File yang sudah dibaca/ditulis/diedit beserta inti perubahannya.\n"
+    "  - Hasil penting dari perintah bash/tool (mis. error yang belum selesai "
+    "    ditangani, output test yang relevan).\n"
+    "  - Task/plan yang masih berjalan atau belum selesai.\n\n"
+    "ATURAN 3 - LARANGAN:\n"
+    "  - JANGAN menambahkan opini, instruksi baru, atau tool_call baru -- ini murni "
+    "    ringkasan naratif.\n"
+    "  - JANGAN menghilangkan instruksi aktif walau terasa panjang; lebih baik "
+    "    ringkasan sedikit lebih panjang daripada kehilangan instruksi penting.\n\n"
+    "Tulis dalam poin-poin singkat berbahasa Indonesia. Untuk item ATURAN 1, tulis "
+    "persis sebagai: 'INSTRUKSI AKTIF: \"<teks verbatim>\"'."
 )
+
+
+def _project_notes_section(db_path: str, session_id: str) -> str:
+    """Bangun blok teks berisi catatan proyek persisten (tabel project_notes,
+    ditulis via tool `remember`) untuk workdir sesi ini.
+
+    Catatan ini persisten lintas sesi dan TIDAK ikut diringkas/dibuang oleh
+    summarization, jadi menyuntikkannya ke system prompt setiap giliran
+    menjamin instruksi/preferensi/keputusan yang disimpan via `remember`
+    tetap tampil utuh di konteks model -- tidak hilang walau riwayat
+    percakapan sudah diringkas berkali-kali.
+    """
+    try:
+        session = dbmod.get_session(db_path, session_id)
+        if not session:
+            return ""
+        notes = dbmod.get_notes(db_path, session.get("workdir") or "")
+    except Exception:
+        logger.warning("gagal membaca project_notes untuk session_id=%s", session_id, exc_info=True)
+        return ""
+    if not notes:
+        return ""
+    lines = [f"- {n['key']}: {n['value']}" for n in notes]
+    return (
+        "\n\nCATATAN PROYEK PERSISTEN (disimpan user/model via tool `remember`, "
+        "jangan dianggap usang walau riwayat sudah diringkas):\n"
+        + "\n".join(lines)
+    )
 
 
 def build_context_messages(db_path: str, session_id: str, system_prompt: str) -> list:
     """Bangun ulang list `messages` (format OpenAI chat: role/content) dari DB:
     system prompt + ringkasan terakhir (kalau ada) + pesan mentah setelah itu."""
+    system_prompt = system_prompt + _project_notes_section(db_path, session_id)
     out = [{"role": "system", "content": system_prompt}]
 
     summary = dbmod.get_latest_summary(db_path, session_id)
@@ -111,6 +155,17 @@ def build_context_messages(db_path: str, session_id: str, system_prompt: str) ->
         rows = dbmod.get_messages_after(db_path, session_id, summary["upto_message_id"])
     else:
         rows = dbmod.get_all_messages(db_path, session_id)
+
+    # Pesan yang di-pin harus selalu dikirim utuh, bahkan yang berada di
+    # bagian riwayat yang sudah diringkas (id <= upto_message_id). Ambil
+    # semua pesan pin, lalu gabungkan dengan rows yang sudah ada, urutkan
+    # berdasarkan id agar urutan kronologis tetap terjaga.
+    pinned = dbmod.get_pinned_messages(db_path, session_id)
+    seen_ids = {r["id"] for r in rows}
+    for p in pinned:
+        if p["id"] not in seen_ids:
+            rows.append(p)
+    rows.sort(key=lambda r: r["id"])
 
     for r in rows:
         if r["role"] in ("user", "assistant"):
@@ -239,10 +294,22 @@ def maybe_summarize(db_path: str, session_id: str, url: str, model: str,
     rows = [r for r in rows if r["role"] in ("user", "assistant")]
 
     budget = context_window_tokens - RESERVE_FOR_RESPONSE - _tools_payload_tokens(tools_payload)
-    total_tokens = token_utils.count_tokens(system_prompt)  # system prompt selalu terkirim
+    # system prompt selalu terkirim; sertakan juga catatan proyek persisten yang
+    # disuntikkan oleh build_context_messages() supaya budget konsisten.
+    total_tokens = token_utils.count_tokens(system_prompt + _project_notes_section(db_path, session_id))
     total_tokens += token_utils.count_messages_tokens(
         [{"content": r["content"]} for r in rows]
     )
+    # Pesan pinned yang berada di luar `rows` (mis. sebelum summary) tetap
+    # dikirim utuh oleh build_context_messages, jadi sertakan token-nya agar
+    # budget konsisten dengan request sungguhan.
+    pinned_extra = dbmod.get_pinned_messages(db_path, session_id)
+    seen_ids = {r["id"] for r in rows}
+    extra = [p for p in pinned_extra if p["id"] not in seen_ids]
+    if extra:
+        total_tokens += token_utils.count_messages_tokens(
+            [{"content": r["content"]} for r in extra]
+        )
     if prior_summary_text:
         total_tokens += token_utils.count_tokens(prior_summary_text)
 
@@ -253,6 +320,9 @@ def maybe_summarize(db_path: str, session_id: str, url: str, model: str,
 
     split_at = _pairing_safe_split(rows, len(rows) - KEEP_TAIL_MESSAGES)
     to_summarize = rows[:split_at]
+    # Pesan yang di-pin tidak boleh ikut diringkas: instruksi/aturan penting
+    # harus tetap utuh dikirim setiap giliran (lihat build_context_messages).
+    to_summarize = [r for r in to_summarize if not r.get("pinned")]
     if not to_summarize:
         return False
 

@@ -119,6 +119,56 @@ def test_add_message_updates_session_updated_at(db_path, session_id):
     assert after > before
 
 
+# ---------------------------------------------------------------- pinned
+
+def test_message_pinned_default_false(db_path, session_id):
+    i = dbmod.add_message(db_path, session_id, "user", "x")
+    assert dbmod.get_message(db_path, session_id, i)["pinned"] == 0
+
+
+def test_set_message_pinned_roundtrip(db_path, session_id):
+    i = dbmod.add_message(db_path, session_id, "user", "penting")
+    dbmod.set_message_pinned(db_path, session_id, i, True)
+    assert dbmod.get_message(db_path, session_id, i)["pinned"] == 1
+    dbmod.set_message_pinned(db_path, session_id, i, False)
+    assert dbmod.get_message(db_path, session_id, i)["pinned"] == 0
+
+
+def test_get_pinned_messages_ordered(db_path, session_id):
+    a = dbmod.add_message(db_path, session_id, "user", "a")
+    b = dbmod.add_message(db_path, session_id, "user", "b")
+    c = dbmod.add_message(db_path, session_id, "user", "c")
+    dbmod.set_message_pinned(db_path, session_id, b, True)
+    dbmod.set_message_pinned(db_path, session_id, a, True)
+    pinned = dbmod.get_pinned_messages(db_path, session_id)
+    assert [p["id"] for p in pinned] == [a, b]
+    assert [p["content"] for p in pinned] == ["a", "b"]
+
+
+def test_get_pinned_messages_empty(db_path, session_id):
+    dbmod.add_message(db_path, session_id, "user", "x")
+    assert dbmod.get_pinned_messages(db_path, session_id) == []
+
+
+def test_get_pinned_scoped_by_session(db_path):
+    s1 = dbmod.create_session(db_path, "/tmp/w")
+    s2 = dbmod.create_session(db_path, "/tmp/w")
+    i = dbmod.add_message(db_path, s1, "user", "x")
+    dbmod.set_message_pinned(db_path, s1, i, True)
+    assert dbmod.get_pinned_messages(db_path, s2) == []
+
+
+def test_get_message_missing_returns_none(db_path, session_id):
+    assert dbmod.get_message(db_path, session_id, 9999) is None
+
+
+def test_get_message_scoped_by_session(db_path):
+    s1 = dbmod.create_session(db_path, "/tmp/w")
+    s2 = dbmod.create_session(db_path, "/tmp/w")
+    i = dbmod.add_message(db_path, s1, "user", "x")
+    assert dbmod.get_message(db_path, s2, i) is None
+
+
 # ---------------------------------------------------------------- summary
 
 def test_summary_roundtrip(db_path, session_id):

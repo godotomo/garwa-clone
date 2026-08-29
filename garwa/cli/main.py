@@ -465,7 +465,7 @@ def main():
                     continue
 
                 if action == "skip":
-                    # Beberapa slash-command (/approve, /model, /ctx) mengubah
+                    # Beberapa slash-command (/approve, /api-model, /ctx) mengubah
                     # args -- rebuild label status bar supaya prompt ikut update.
                     prompt_label = _build_prompt_label(args, session_id, workdir_label)
                     continue

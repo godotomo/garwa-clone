@@ -1314,43 +1314,43 @@ class TestSlashCommands:
 
     def test_model_set(self, capsys):
         args = _Args()
-        r = slash_commands.handle_slash_command("/model llama3", args, "s1", "sys")
+        r = slash_commands.handle_slash_command("/api-model llama3", args, "s1", "sys")
         assert r["action"] == "skip"
         assert args.model == "llama3"
 
     def test_model_no_arg_shows_current(self, capsys):
         args = _Args()
-        r = slash_commands.handle_slash_command("/model", args, "s1", "sys")
+        r = slash_commands.handle_slash_command("/api-model", args, "s1", "sys")
         assert r["action"] == "skip"
         assert args.model == "deepseek-v4-flash-0731"
 
     def test_url_set(self, capsys):
         args = _Args()
-        r = slash_commands.handle_slash_command("/url http://localhost:8080/v1", args, "s1", "sys")
+        r = slash_commands.handle_slash_command("/api-url http://localhost:8080/v1", args, "s1", "sys")
         assert r["action"] == "skip"
         assert args.url == "http://localhost:8080/v1"
 
     def test_url_strips_trailing_slash(self, capsys):
         args = _Args()
-        r = slash_commands.handle_slash_command("/url http://localhost:8080/v1/", args, "s1", "sys")
+        r = slash_commands.handle_slash_command("/api-url http://localhost:8080/v1/", args, "s1", "sys")
         assert r["action"] == "skip"
         assert args.url == "http://localhost:8080/v1"
 
     def test_url_invalid_scheme_rejected(self, capsys):
         args = _Args()
-        r = slash_commands.handle_slash_command("/url localhost:8080", args, "s1", "sys")
+        r = slash_commands.handle_slash_command("/api-url localhost:8080", args, "s1", "sys")
         assert r["action"] == "skip"
         assert args.url == "http://localhost:11434/v1"  # tidak berubah
 
     def test_url_no_arg_shows_current(self, capsys):
         args = _Args()
-        r = slash_commands.handle_slash_command("/url", args, "s1", "sys")
+        r = slash_commands.handle_slash_command("/api-url", args, "s1", "sys")
         assert r["action"] == "skip"
         assert args.url == "http://localhost:11434/v1"
 
     def test_url_persists_to_config(self, capsys):
         args = _Args()
-        r = slash_commands.handle_slash_command("/url http://localhost:9090/v1", args, "s1", "sys")
+        r = slash_commands.handle_slash_command("/api-url http://localhost:9090/v1", args, "s1", "sys")
         assert r["action"] == "skip"
         assert args.url == "http://localhost:9090/v1"
         assert config.load_user_config().get("url") == "http://localhost:9090/v1"
@@ -1401,6 +1401,77 @@ class TestSlashCommands:
         r = slash_commands.handle_slash_command("/todos", args, "s1", "sys")
         assert r["action"] == "skip"
         assert "belum ada plan" in capsys.readouterr().out
+
+    def test_pin_single(self, capsys, tmp_path):
+        args = _Args(db_path=str(tmp_path / "test.db"))
+        state.DB_PATH = args.db_path
+        dbmod.init_db(args.db_path)
+        sid = dbmod.create_session(args.db_path, args.workdir)
+        dbmod.add_message(args.db_path, sid, "user", "pesan penting", kind="chat")
+        dbmod.add_message(args.db_path, sid, "assistant", "jawaban", kind="chat")
+        r = slash_commands.handle_slash_command("/pin 1", args, sid, "sys")
+        assert r["action"] == "skip"
+        assert dbmod.get_message(args.db_path, sid, 1)["pinned"] == 1
+        assert dbmod.get_message(args.db_path, sid, 2)["pinned"] == 0
+
+    def test_pin_multi_comma_and_space(self, capsys, tmp_path):
+        args = _Args(db_path=str(tmp_path / "test.db"))
+        state.DB_PATH = args.db_path
+        dbmod.init_db(args.db_path)
+        sid = dbmod.create_session(args.db_path, args.workdir)
+        for i in range(3):
+            dbmod.add_message(args.db_path, sid, "user", f"msg {i}", kind="chat")
+        r = slash_commands.handle_slash_command("/pin 1,3", args, sid, "sys")
+        assert r["action"] == "skip"
+        assert dbmod.get_message(args.db_path, sid, 1)["pinned"] == 1
+        assert dbmod.get_message(args.db_path, sid, 2)["pinned"] == 0
+        assert dbmod.get_message(args.db_path, sid, 3)["pinned"] == 1
+
+    def test_pin_missing_id_reported(self, capsys, tmp_path):
+        args = _Args(db_path=str(tmp_path / "test.db"))
+        state.DB_PATH = args.db_path
+        dbmod.init_db(args.db_path)
+        sid = dbmod.create_session(args.db_path, args.workdir)
+        dbmod.add_message(args.db_path, sid, "user", "satu", kind="chat")
+        r = slash_commands.handle_slash_command("/pin 2 99 999", args, sid, "sys")
+        assert r["action"] == "skip"
+        out = capsys.readouterr().out
+        assert "#99" in out and "#999" in out
+
+    def test_unpin(self, capsys, tmp_path):
+        args = _Args(db_path=str(tmp_path / "test.db"))
+        state.DB_PATH = args.db_path
+        dbmod.init_db(args.db_path)
+        sid = dbmod.create_session(args.db_path, args.workdir)
+        dbmod.add_message(args.db_path, sid, "user", "penting", kind="chat")
+        dbmod.set_message_pinned(args.db_path, sid, 1, pinned=1)
+        r = slash_commands.handle_slash_command("/unpin 1", args, sid, "sys")
+        assert r["action"] == "skip"
+        assert dbmod.get_message(args.db_path, sid, 1)["pinned"] == 0
+
+    def test_pinned_lists(self, capsys, tmp_path):
+        args = _Args(db_path=str(tmp_path / "test.db"))
+        state.DB_PATH = args.db_path
+        dbmod.init_db(args.db_path)
+        sid = dbmod.create_session(args.db_path, args.workdir)
+        dbmod.add_message(args.db_path, sid, "user", "konten rahasia", kind="chat")
+        dbmod.set_message_pinned(args.db_path, sid, 1, pinned=1)
+        r = slash_commands.handle_slash_command("/pinned", args, sid, "sys")
+        assert r["action"] == "skip"
+        out = capsys.readouterr().out
+        assert "konten rahasia" in out
+
+    def test_messages_shows_pin_flag(self, capsys, tmp_path):
+        args = _Args(db_path=str(tmp_path / "test.db"))
+        state.DB_PATH = args.db_path
+        dbmod.init_db(args.db_path)
+        sid = dbmod.create_session(args.db_path, args.workdir)
+        dbmod.add_message(args.db_path, sid, "user", "halo", kind="chat")
+        dbmod.set_message_pinned(args.db_path, sid, 1, pinned=1)
+        r = slash_commands.handle_slash_command("/messages", args, sid, "sys")
+        assert r["action"] == "skip"
+        out = capsys.readouterr().out
+        assert "[PIN]" in out
 
     def test_todos_with_items_shows_status(self, capsys, tmp_path):
         # Verifikasi perbaikan: status dibaca dari kolom `status`, bukan

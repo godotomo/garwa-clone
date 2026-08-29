@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS messages (
     role        TEXT NOT NULL,          -- system | user | assistant
     content     TEXT NOT NULL,
     kind        TEXT NOT NULL DEFAULT 'chat',  -- chat | tool_call | tool_result | summary
+    pinned      INTEGER NOT NULL DEFAULT 0,   -- 1 = pesan penting yg TIDAK ikut diringkas
     created_at  REAL NOT NULL,
     FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
@@ -111,6 +112,12 @@ def connect(db_path: str = DEFAULT_DB_PATH):
 def init_db(db_path: str = DEFAULT_DB_PATH):
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        # Migrasi ringan: DB lama (sebelum kolom `pinned` ada) tidak akan
+        # mendapat kolom itu dari CREATE TABLE IF NOT EXISTS. Tambahkan
+        # secara idempoten kalau belum ada.
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
+        if "pinned" not in cols:
+            conn.execute("ALTER TABLE messages ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
 
 
 
@@ -186,6 +193,40 @@ def add_message(db_path: str, session_id: str, role: str, content: str, kind: st
         )
         conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
         return cur.lastrowid
+
+
+def set_message_pinned(db_path: str, session_id: str, message_id: int, pinned: bool = True):
+    """Tandai/lepas tanda sebuah pesan sebagai 'penting' (pinned).
+
+    Pesan yang di-pin TIDAK akan ikut diringkas oleh summarization dan
+    selalu dikirim utuh ke model setiap giliran, sehingga instruksi/aturan
+    penting tidak hilang walau riwayat sudah diringkas.
+    """
+    with connect(db_path) as conn:
+        conn.execute(
+            "UPDATE messages SET pinned = ? WHERE session_id = ? AND id = ?",
+            (1 if pinned else 0, session_id, message_id),
+        )
+
+
+def get_pinned_messages(db_path: str, session_id: str):
+    """Ambil semua pesan yang di-pin (pinned = 1) untuk sesi ini, urut by id."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM messages WHERE session_id = ? AND pinned = 1 ORDER BY id ASC",
+            (session_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_message(db_path: str, session_id: str, message_id: int):
+    """Ambil satu pesan milik sesi ini, atau None kalau tidak ada."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM messages WHERE session_id = ? AND id = ?",
+            (session_id, message_id),
+        ).fetchone()
+        return dict(row) if row else None
 
 
 def get_all_messages(db_path: str, session_id: str):

@@ -17,7 +17,7 @@ Alternatif:
 import os
 
 # Path file konfigurasi pengguna (URL/API key yang dipersistenkan lintas sesi
-# lewat command slash /url dan /api-key).
+# lewat command slash /api-url dan /api-key).
 USER_CONFIG_PATH = os.path.expanduser("~/.config/garwa/config")
 
 
