@@ -7,7 +7,7 @@ mesin Anda, menjalankan perintah shell, mencari di GitHub, mencari berita,
 menjalankan audit keamanan, dan banyak lagi — semuanya lewat percakapan
 natural atau mode otomatis (auto / overnight) tanpa pengawasan.
 
-> Versi saat ini: **0.1.0**
+> Versi saat ini: **0.2.0**
 
 ![Garwa CLI](screenshot/sceenshot.png)
 
