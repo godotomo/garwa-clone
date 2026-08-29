@@ -223,8 +223,9 @@ Anda:
 garwa --model deepseek-v4-pro
 ```
 
-Jika tidak menyebutkan `--model`, Garwa memakai model default
-(`deepseek-v4-flash-0731`).
+Jika tidak menyebutkan `--model`, Garwa memakai model dari config
+(`~/.config/garwa/config`, disimpan via `/api-model`), lalu env `LLAMA_MODEL`,
+lalu default bawaan (`deepseek-v4-flash-0731`).
 
 Garwa akan mengecek koneksi ke server model, menampilkan banner, lalu
 memberikan prompt interaktif `You>`. Ketik permintaan dalam bahasa natural,
@@ -248,7 +249,8 @@ garwa [opsi]
   --url URL               Endpoint chat completions server model
                           (default: env LLAMA_URL)
   --api-key KEY           API key server model (header Authorization: Bearer)
-  --model NAME            Nama model (default: deepseek-v4-flash-0731)
+  --model NAME            Nama model (default: config.LLAMA_MODEL /
+                          env LLAMA_MODEL / deepseek-v4-flash-0731)
   --temperature FLOAT     Sampling temperature, default 0.6
                           (DeepSeek-R1 disarankan 0.5–0.7)
   --skills-dir DIR        Folder berisi paket skills (default: <repo>/skills)
@@ -298,9 +300,12 @@ Beberapa perilaku khusus di input:
 - **Tempel teks multi-baris** — teks yang mengandung baris baru dianggap
   sebagai paste/attachment, bukan perintah shell.
 - **Slash command** — `/exit`, `/quit` untuk keluar. Beberapa command
-  menerima argumen, mis. `/model deepseek-v4-flash-0731`, `/news-lang en`,
+  menerima argumen, mis. `/api-model deepseek-v4-flash-0731`, `/news-lang en`,
   `/github-token <token>`, dan `/firecrawl-key <token>` (API key Firecrawl,
   disimpan lintas sesi di `~/.config/garwa/config`).
+- **Persistensi model** — `/api-model <nama>` mengganti model aktif sekaligus
+  menyimpannya lintas sesi di `~/.config/garwa/config`. Prioritas tiap nilai:
+  env `LLAMA_MODEL` > config > default bawaan.
 - **Slash command MCP** — kelola server MCP langsung dari prompt:
   - `/mcp-server list` — tampilkan server yang terdaftar.
   - `/mcp-server add <nama> <cmd> [args...]` — daftarkan server stdio.

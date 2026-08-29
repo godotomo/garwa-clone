@@ -143,8 +143,10 @@ def main():
                               "Authorization: Bearer <key> (default dari "
                               "config.LLAMA_API_KEY / env LLAMA_API_KEY). "
                               "Kosongkan kalau server tidak pakai --api-key.")
-    parser.add_argument("--model", default="deepseek-v4-flash-0731",
-                         help="Nama model (server biasanya mengabaikan field ini, tapi tetap dikirim)")
+    parser.add_argument("--model", default=config.LLAMA_MODEL,
+                         help="Nama model (server biasanya mengabaikan field ini, tapi tetap dikirim). "
+                              "Default dari config.LLAMA_MODEL / env LLAMA_MODEL / nilai tersimpan "
+                              "di ~/.config/garwa/config (via /api-model).")
     parser.add_argument("--temperature", type=float, default=0.6,
                          help="Sampling temperature. Untuk model DeepSeek-R1 "
                               "disarankan 0.5-0.7 (default 0.6) untuk mencegah "

@@ -396,8 +396,10 @@ def handle_slash_command(cmd_line: str, args, session_id: str, system_content: s
             print(c(f"[api-model] model aktif saat ini: {args.model}", C.DIM))
             print(c("Gunakan: /api-model <nama> untuk menggantinya.", C.DIM))
             return {"action": "skip"}
-        args.model = arg
+        args.model = arg.strip()
+        config.save_user_config(model=args.model)
         print(c(f"[api-model] model aktif diubah ke: {args.model}", C.GREEN))
+        print(c(f"[api-model] tersimpan di {config.USER_CONFIG_PATH} (lintas sesi).", C.DIM))
         return {"action": "skip"}
 
     if name == "api-url":
@@ -420,9 +422,15 @@ def handle_slash_command(cmd_line: str, args, session_id: str, system_content: s
 
     if name == "api-key":
         if not arg:
-            masked = "****" + args.api_key[-4:] if args.api_key else "(kosong)"
-            print(c(f"[api-key] API key saat ini: {masked}", C.DIM))
-            print(c("Gunakan: /api-key <kunci> untuk menggantinya (kosongkan untuk menghapus).", C.DIM))
+            # Tanpa argumen: hapus API key dari config (sesuai teks help
+            # "kosongkan untuk menghapus"), lalu reset nilai aktif ke kosong.
+            removed = config.remove_user_config_key("api_key")
+            args.api_key = ""
+            if removed:
+                print(c("[api-key] API key dihapus dari konfigurasi.", C.GREEN))
+                print(c(f"[api-key] tersimpan di {config.USER_CONFIG_PATH} (lintas sesi).", C.DIM))
+            else:
+                print(c("[api-key] tidak ada API key tersimpan untuk dihapus.", C.DIM))
             return {"action": "skip"}
         args.api_key = arg
         config.save_user_config(api_key=args.api_key)

@@ -16,8 +16,8 @@ Alternatif:
 
 import os
 
-# Path file konfigurasi pengguna (URL/API key yang dipersistenkan lintas sesi
-# lewat command slash /api-url dan /api-key).
+# Path file konfigurasi pengguna (URL/API key/model yang dipersistenkan lintas
+# sesi lewat command slash /api-url, /api-key, dan /api-model).
 USER_CONFIG_PATH = os.path.expanduser("~/.config/garwa/config")
 
 
@@ -45,6 +45,7 @@ def load_user_config() -> dict:
 _USER_CONFIG_KEYS = (
     "url",
     "api_key",
+    "model",
     "github_token",
     "github_max",
     "news_lang",
@@ -55,6 +56,7 @@ _USER_CONFIG_KEYS = (
 def save_user_config(
     url: str | None = None,
     api_key: str | None = None,
+    model: str | None = None,
     github_token: str | None = None,
     github_max: int | None = None,
     news_lang: str | None = None,
@@ -70,6 +72,8 @@ def save_user_config(
         cfg["url"] = url
     if api_key is not None:
         cfg["api_key"] = api_key
+    if model is not None:
+        cfg["model"] = model
     if github_token is not None:
         cfg["github_token"] = github_token
     if github_max is not None:
@@ -86,6 +90,27 @@ def save_user_config(
                     f.write(f"{k}={cfg[k]}\n")
     except OSError:
         pass
+
+
+def remove_user_config_key(key: str) -> bool:
+    """Hapus satu kunci dari file konfigurasi pengguna.
+
+    Mengembalikan True jika kunci ada dan berhasil dihapus, False jika kunci
+    tidak ditemukan. Kegagalan I/O ditelan diam-diam (mengembalikan False).
+    """
+    cfg = load_user_config()
+    if key not in cfg:
+        return False
+    cfg.pop(key, None)
+    try:
+        os.makedirs(os.path.dirname(USER_CONFIG_PATH), exist_ok=True)
+        with open(USER_CONFIG_PATH, "w", encoding="utf-8") as f:
+            for k in _USER_CONFIG_KEYS:
+                if k in cfg:
+                    f.write(f"{k}={cfg[k]}\n")
+    except OSError:
+        return False
+    return True
 
 
 # Peta bahasa berita (nilai /news-lang) -> (hl, gl, ceid) untuk Google News.
@@ -117,6 +142,7 @@ def news_lang_to_params(lang: str) -> tuple[str, str, str]:
 _USER_CFG = load_user_config()
 
 _DEFAULT_URL = "https://coder.garwa.id/v1/chat/completions"
+_DEFAULT_MODEL = "deepseek-v4-flash-0731"
 
 
 def _reload_values() -> None:
@@ -127,7 +153,7 @@ def _reload_values() -> None:
     """
     global _USER_CFG, GITHUB_TOKEN
     global GOOGLE_NEWS_HL, GOOGLE_NEWS_GL, GOOGLE_NEWS_CEID
-    global GITHUB_MAX_CONTENT, LLAMA_URL, LLAMA_API_KEY
+    global GITHUB_MAX_CONTENT, LLAMA_URL, LLAMA_API_KEY, LLAMA_MODEL
     global FIRECRAWL_API_KEY, FIRECRAWL_API_URL
 
     _USER_CFG = load_user_config()
@@ -150,6 +176,9 @@ def _reload_values() -> None:
     # (~/.config/garwa/config) > default bawaan.
     LLAMA_URL = (os.environ.get("LLAMA_URL") or _USER_CFG.get("url") or _DEFAULT_URL).strip()
     LLAMA_API_KEY = (os.environ.get("LLAMA_API_KEY") or _USER_CFG.get("api_key") or "").strip()
+    # Model: prioritas env (LLAMA_MODEL) > config pengguna (disimpan via /api-model)
+    # > default bawaan CLI.
+    LLAMA_MODEL = (os.environ.get("LLAMA_MODEL") or _USER_CFG.get("model") or _DEFAULT_MODEL).strip()
 
     # Firecrawl: prioritas env > config pengguna > default API endpoint.
     FIRECRAWL_API_KEY = (

@@ -1365,6 +1365,35 @@ class TestSlashCommands:
         assert r["action"] == "skip"
         assert args.model == "deepseek-v4-flash-0731"
 
+    def test_model_persists_to_config(self, capsys):
+        args = _Args()
+        r = slash_commands.handle_slash_command("/api-model gpt-4o-mini", args, "s1", "sys")
+        assert r["action"] == "skip"
+        assert args.model == "gpt-4o-mini"
+        assert config.load_user_config().get("model") == "gpt-4o-mini"
+
+    def test_model_strips_whitespace(self, capsys):
+        args = _Args()
+        slash_commands.handle_slash_command("/api-model   llama3.1  ", args, "s1", "sys")
+        assert args.model == "llama3.1"
+        assert config.load_user_config().get("model") == "llama3.1"
+
+    def test_model_reload_from_config(self, monkeypatch):
+        # Simulasi sesi baru: nilai model dibaca ulang dari file config.
+        monkeypatch.delenv("LLAMA_MODEL", raising=False)
+        config.save_user_config(model="qwen2.5-coder")
+        config._reload_values()
+        assert config.LLAMA_MODEL == "qwen2.5-coder"
+
+    def test_model_env_overrides_config(self, monkeypatch):
+        monkeypatch.setenv("LLAMA_MODEL", "env-model")
+        config.save_user_config(model="cfg-model")
+        config._reload_values()
+        assert config.LLAMA_MODEL == "env-model"
+        monkeypatch.delenv("LLAMA_MODEL", raising=False)
+        config._reload_values()
+        assert config.LLAMA_MODEL == "cfg-model"
+
     def test_url_set(self, capsys):
         args = _Args()
         r = slash_commands.handle_slash_command("/api-url http://localhost:8080/v1", args, "s1", "sys")
@@ -1409,13 +1438,26 @@ class TestSlashCommands:
         assert r["action"] == "skip"
         assert args.api_key == "sk-abc123"
 
-    def test_api_key_no_arg_shows_masked(self, capsys):
-        args = _Args(api_key="sk-secret1234")
+    def test_api_key_no_arg_removes_key(self, capsys):
+        # Tanpa argumen: /api-key harus benar-benar menghapus key dari config.
+        args = _Args()
+        slash_commands.handle_slash_command("/api-key sk-secret1234", args, "s1", "sys")
+        assert config.load_user_config().get("api_key") == "sk-secret1234"
         r = slash_commands.handle_slash_command("/api-key", args, "s1", "sys")
         assert r["action"] == "skip"
+        assert args.api_key == ""  # nilai aktif ikut direset
+        assert "api_key" not in config.load_user_config()  # hilang dari file
         out = capsys.readouterr().out
         assert "sk-secret1234" not in out  # key tidak boleh bocor penuh
-        assert "1234" in out  # hanya 4 karakter terakhir yang ditampilkan
+
+    def test_api_key_no_arg_when_empty(self, capsys):
+        # Tanpa argumen saat memang tidak ada key: laporkan, tidak error.
+        args = _Args(api_key="")
+        r = slash_commands.handle_slash_command("/api-key", args, "s1", "sys")
+        assert r["action"] == "skip"
+        assert args.api_key == ""
+        out = capsys.readouterr().out
+        assert "tidak ada API key" in out
 
     def test_ctx_set_valid(self, capsys):
         args = _Args()
