@@ -104,3 +104,26 @@ def test_github_max_default(tmp_path, monkeypatch):
     monkeypatch.delenv("GITHUB_MAX_CONTENT", raising=False)
     config._reload_values()
     assert config.GITHUB_MAX_CONTENT == 12000
+
+
+def test_github_max_invalid_config_does_not_crash(tmp_path, monkeypatch):
+    """BUG REGRESI: nilai `github_max` non-numerik di config pengguna tidak
+    boleh membuat _reload_values() (dan import config) melempar ValueError.
+    Sebelumnya int() langsung dijalankan pada nilai config -> crash seluruh CLI.
+    """
+    config.USER_CONFIG_PATH = str(tmp_path / "cfg")
+    with open(config.USER_CONFIG_PATH, "w", encoding="utf-8") as f:
+        f.write("github_max=abc\n")
+    monkeypatch.delenv("GITHUB_MAX_CONTENT", raising=False)
+    # Tidak boleh melempar exception; harus jatuh ke default 12000.
+    config._reload_values()
+    assert config.GITHUB_MAX_CONTENT == 12000
+
+
+def test_github_max_empty_config_uses_default(tmp_path, monkeypatch):
+    config.USER_CONFIG_PATH = str(tmp_path / "cfg")
+    with open(config.USER_CONFIG_PATH, "w", encoding="utf-8") as f:
+        f.write("github_max=\n")
+    monkeypatch.delenv("GITHUB_MAX_CONTENT", raising=False)
+    config._reload_values()
+    assert config.GITHUB_MAX_CONTENT == 12000

@@ -329,7 +329,10 @@ def _print_summary_result(summary_text: str, max_chars: int = 400) -> None:
 
 def maybe_summarize(db_path: str, session_id: str, url: str, model: str,
                      context_window_tokens: int, api_key: str = "",
-                     tools_payload=None, system_prompt: str = "") -> bool:
+                     tools_payload=None, system_prompt: str = "",
+                     reserve_for_response: int = RESERVE_FOR_RESPONSE,
+                     summarize_threshold_ratio: float = SUMMARIZE_THRESHOLD_RATIO,
+                     keep_tail_messages: int = KEEP_TAIL_MESSAGES) -> bool:
     """Cek apakah riwayat mentah (yang belum tercakup summary) sudah melewati
     threshold token. Kalau iya, ringkas semua pesan lama (kecuali
     KEEP_TAIL_MESSAGES terakhir) jadi satu summary baru dan simpan ke DB.
@@ -361,7 +364,7 @@ def maybe_summarize(db_path: str, session_id: str, url: str, model: str,
 
     rows = [r for r in rows if r["role"] in ("user", "assistant")]
 
-    budget = context_window_tokens - RESERVE_FOR_RESPONSE - _tools_payload_tokens(tools_payload)
+    budget = context_window_tokens - reserve_for_response - _tools_payload_tokens(tools_payload)
     # system prompt selalu terkirim; sertakan juga catatan proyek persisten yang
     # disuntikkan oleh build_context_messages() supaya budget konsisten.
     total_tokens = token_utils.count_tokens(system_prompt + _project_notes_section(db_path, session_id))
@@ -381,12 +384,12 @@ def maybe_summarize(db_path: str, session_id: str, url: str, model: str,
     if prior_summary_text:
         total_tokens += token_utils.count_tokens(prior_summary_text)
 
-    if total_tokens <= budget * SUMMARIZE_THRESHOLD_RATIO:
+    if total_tokens <= budget * summarize_threshold_ratio:
         return False
-    if len(rows) < MIN_MESSAGES_TO_SUMMARIZE:
+    if len(rows) < keep_tail_messages + 4:
         return False  # riwayat masih terlalu pendek, tidak worth diringkas
 
-    split_at = _pairing_safe_split(rows, len(rows) - KEEP_TAIL_MESSAGES)
+    split_at = _pairing_safe_split(rows, len(rows) - keep_tail_messages)
     to_summarize = rows[:split_at]
     # Pesan yang di-pin tidak boleh ikut diringkas: instruksi/aturan penting
     # harus tetap utuh dikirim setiap giliran (lihat build_context_messages).
@@ -459,6 +462,9 @@ def prepare_context_messages(
     context_window_tokens: int,
     api_key: str = "",
     tools_payload=None,
+    reserve_for_response: int = RESERVE_FOR_RESPONSE,
+    summarize_threshold_ratio: float = SUMMARIZE_THRESHOLD_RATIO,
+    keep_tail_messages: int = KEEP_TAIL_MESSAGES,
 ) -> list:
     """Summarize if needed, rebuild context from DB, then enforce a hard budget.
 
@@ -473,10 +479,10 @@ def prepare_context_messages(
     _tools_payload_tokens() untuk detail. Dengan parameter ini, token
     tools ikut direservasi di hard_budget SEBELUM messages dipangkas.
     """
-    if context_window_tokens <= RESERVE_FOR_RESPONSE + 128:
+    if context_window_tokens <= reserve_for_response + 128:
         raise ValueError(
             f"context_window_tokens terlalu kecil: {context_window_tokens}. "
-            f"Harus lebih besar dari RESERVE_FOR_RESPONSE ({RESERVE_FOR_RESPONSE}) + 128."
+            f"Harus lebih besar dari reserve_for_response ({reserve_for_response}) + 128."
         )
 
     tools_tokens = _tools_payload_tokens(tools_payload)
@@ -490,6 +496,9 @@ def prepare_context_messages(
         api_key=api_key,
         tools_payload=tools_payload,
         system_prompt=system_prompt,
+        reserve_for_response=reserve_for_response,
+        summarize_threshold_ratio=summarize_threshold_ratio,
+        keep_tail_messages=keep_tail_messages,
     )
 
     messages = build_context_messages(
@@ -498,7 +507,7 @@ def prepare_context_messages(
         system_prompt=system_prompt,
     )
 
-    hard_budget = context_window_tokens - RESERVE_FOR_RESPONSE - tools_tokens
+    hard_budget = context_window_tokens - reserve_for_response - tools_tokens
 
     hard_budget = max(hard_budget, MIN_CONTEXT_WINDOW_HISTORY_FLOOR)
     if token_utils.count_messages_tokens(messages) <= hard_budget:

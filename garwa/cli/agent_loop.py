@@ -126,6 +126,13 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
 
                 tools_payload=build_openai_tools_payload(),
             )
+            # Hanya teruskan parameter tuning kalau benar-benar diset user
+            # (melalui flag CLI atau config); kalau None, biarkan context_manager
+            # memakai defaultnya sendiri supaya tidak menimpa dengan None.
+            for _key in ("reserve_for_response", "summarize_threshold_ratio", "keep_tail_messages"):
+                _val = getattr(args, _key, None)
+                if _val is not None:
+                    kwargs[_key] = _val
             while True:
                 try:
                     return context_manager.prepare_context_messages(**kwargs)

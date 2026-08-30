@@ -50,6 +50,10 @@ _USER_CONFIG_KEYS = (
     "github_max",
     "news_lang",
     "firecrawl_token",
+    "context_window",
+    "reserve_for_response",
+    "summarize_threshold_ratio",
+    "keep_tail_messages",
 )
 
 
@@ -61,6 +65,10 @@ def save_user_config(
     github_max: int | None = None,
     news_lang: str | None = None,
     firecrawl_token: str | None = None,
+    context_window: int | None = None,
+    reserve_for_response: int | None = None,
+    summarize_threshold_ratio: float | None = None,
+    keep_tail_messages: int | None = None,
 ) -> None:
     """Tulis nilai konfigurasi ke file konfigurasi pengguna.
 
@@ -82,6 +90,14 @@ def save_user_config(
         cfg["news_lang"] = news_lang
     if firecrawl_token is not None:
         cfg["firecrawl_token"] = firecrawl_token
+    if context_window is not None:
+        cfg["context_window"] = str(int(context_window))
+    if reserve_for_response is not None:
+        cfg["reserve_for_response"] = str(int(reserve_for_response))
+    if summarize_threshold_ratio is not None:
+        cfg["summarize_threshold_ratio"] = str(float(summarize_threshold_ratio))
+    if keep_tail_messages is not None:
+        cfg["keep_tail_messages"] = str(int(keep_tail_messages))
     try:
         os.makedirs(os.path.dirname(USER_CONFIG_PATH), exist_ok=True)
         with open(USER_CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -144,6 +160,15 @@ _USER_CFG = load_user_config()
 _DEFAULT_URL = "https://coder.garwa.id/v1/chat/completions"
 _DEFAULT_MODEL = "deepseek-v4-flash-0731"
 
+# Default context-window & summarization tuning (bisa diubah user via
+# slash-command /ctx, /reserve, /summarize-threshold, /keep-tail dan
+# dipersistenkan ke ~/.config/garwa/config). Nilai awal menyamai konstanta
+# module-level lama di context_manager.py / _state.py.
+DEFAULT_CONTEXT_WINDOW = 131072
+DEFAULT_RESERVE_FOR_RESPONSE = 2048
+DEFAULT_SUMMARIZE_THRESHOLD_RATIO = 0.2
+DEFAULT_KEEP_TAIL_MESSAGES = 8
+
 
 def _reload_values() -> None:
     """Hitung ulang semua nilai module-level dari env + file config pengguna.
@@ -155,6 +180,8 @@ def _reload_values() -> None:
     global GOOGLE_NEWS_HL, GOOGLE_NEWS_GL, GOOGLE_NEWS_CEID
     global GITHUB_MAX_CONTENT, LLAMA_URL, LLAMA_API_KEY, LLAMA_MODEL
     global FIRECRAWL_API_KEY, FIRECRAWL_API_URL
+    global CONTEXT_WINDOW, RESERVE_FOR_RESPONSE
+    global SUMMARIZE_THRESHOLD_RATIO, KEEP_TAIL_MESSAGES
 
     _USER_CFG = load_user_config()
 
@@ -168,9 +195,15 @@ def _reload_values() -> None:
     GOOGLE_NEWS_GL = os.environ.get("GOOGLE_NEWS_GL") or _news_gl
     GOOGLE_NEWS_CEID = os.environ.get("GOOGLE_NEWS_CEID") or _news_ceid
 
-    GITHUB_MAX_CONTENT = int(
-        os.environ.get("GITHUB_MAX_CONTENT") or _USER_CFG.get("github_max") or "12000"
-    )
+    # Nilai non-numerik (mis. config pengguna diedit manual) tidak boleh
+    # membuat import config crash; jatuh ke default 12000.
+    _github_max_raw = os.environ.get("GITHUB_MAX_CONTENT") or _USER_CFG.get("github_max") or "12000"
+    try:
+        GITHUB_MAX_CONTENT = int(_github_max_raw)
+    except (TypeError, ValueError):
+        GITHUB_MAX_CONTENT = 12000
+    if GITHUB_MAX_CONTENT <= 0:
+        GITHUB_MAX_CONTENT = 12000
 
     # Prioritas nilai: env (LLAMA_URL / LLAMA_API_KEY) > file konfigurasi pengguna
     # (~/.config/garwa/config) > default bawaan.
@@ -187,6 +220,53 @@ def _reload_values() -> None:
     FIRECRAWL_API_URL = (
         os.environ.get("FIRECRAWL_API_URL") or "https://api.firecrawl.dev/v1"
     ).rstrip("/")
+
+    # Context-window & summarization tuning. Nilai non-numerik / tidak valid
+    # (mis. config pengguna diedit manual) tidak boleh membuat import crash;
+    # jatuh ke default masing-masing. Prioritas: env > config > default.
+    CONTEXT_WINDOW = _read_int_env_or_cfg(
+        "GARWA_CONTEXT_WINDOW", _USER_CFG.get("context_window"), DEFAULT_CONTEXT_WINDOW
+    )
+    RESERVE_FOR_RESPONSE = _read_int_env_or_cfg(
+        "GARWA_RESERVE_FOR_RESPONSE", _USER_CFG.get("reserve_for_response"),
+        DEFAULT_RESERVE_FOR_RESPONSE,
+    )
+    SUMMARIZE_THRESHOLD_RATIO = _read_float_env_or_cfg(
+        "GARWA_SUMMARIZE_THRESHOLD_RATIO", _USER_CFG.get("summarize_threshold_ratio"),
+        DEFAULT_SUMMARIZE_THRESHOLD_RATIO,
+    )
+    KEEP_TAIL_MESSAGES = _read_int_env_or_cfg(
+        "GARWA_KEEP_TAIL_MESSAGES", _USER_CFG.get("keep_tail_messages"),
+        DEFAULT_KEEP_TAIL_MESSAGES,
+    )
+
+
+def _read_int_env_or_cfg(env_name: str, cfg_value, default: int) -> int:
+    """Baca integer dari env > config > default; nilai invalid jatuh ke default."""
+    raw = os.environ.get(env_name) or cfg_value
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if value <= 0:
+        return default
+    return value
+
+
+def _read_float_env_or_cfg(env_name: str, cfg_value, default: float) -> float:
+    """Baca float dari env > config > default; nilai invalid jatuh ke default."""
+    raw = os.environ.get(env_name) or cfg_value
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if value <= 0 or value > 1:
+        return default
+    return value
 
 
 _reload_values()

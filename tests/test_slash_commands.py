@@ -22,6 +22,12 @@ def _run(cmd_line, **args_kw):
     return sc.handle_slash_command(cmd_line, args, session_id="s1", system_content="")
 
 
+def _run_with_args(cmd_line, **args_kw):
+    args = _Args(**args_kw)
+    res = sc.handle_slash_command(cmd_line, args, session_id="s1", system_content="")
+    return res, args
+
+
 def test_github_token_unknown_returns_skip():
     res = _run("/github-token")
     assert res["action"] == "skip"
@@ -134,3 +140,73 @@ def test_commands_registered():
     assert "github-token" in sc._COMMANDS_WITH_ARGS
     assert "github-max" in sc._COMMANDS_WITH_ARGS
     assert "news-lang" in sc._COMMANDS_WITH_ARGS
+
+
+# --- Context-window & summarization params ---
+
+def test_ctx_mutates_and_persists(tmp_path):
+    config.USER_CONFIG_PATH = str(tmp_path / "cfg")
+    res, args = _run_with_args("/ctx 65536", context_window=131072)
+    assert res["action"] == "skip"
+    assert args.context_window == 65536
+    cfg = config.load_user_config()
+    assert cfg["context_window"] == "65536"
+
+
+def test_ctx_invalid_rejected(tmp_path, capsys):
+    config.USER_CONFIG_PATH = str(tmp_path / "cfg")
+    res = _run("/ctx abc", context_window=131072)
+    assert res["action"] == "skip"
+    out = capsys.readouterr().out
+    assert "tidak valid" in out
+
+
+def test_reserve_mutates_and_persists(tmp_path):
+    config.USER_CONFIG_PATH = str(tmp_path / "cfg")
+    res, args = _run_with_args("/reserve 4096", reserve_for_response=2048)
+    assert res["action"] == "skip"
+    assert args.reserve_for_response == 4096
+    cfg = config.load_user_config()
+    assert cfg["reserve_for_response"] == "4096"
+
+
+def test_reserve_invalid_rejected(tmp_path, capsys):
+    config.USER_CONFIG_PATH = str(tmp_path / "cfg")
+    res = _run("/reserve 0", reserve_for_response=2048)
+    assert res["action"] == "skip"
+    out = capsys.readouterr().out
+    assert "tidak valid" in out
+
+
+def test_summarize_threshold_mutates_and_persists(tmp_path):
+    config.USER_CONFIG_PATH = str(tmp_path / "cfg")
+    res, args = _run_with_args("/summarize-threshold 0.5", summarize_threshold_ratio=0.2)
+    assert res["action"] == "skip"
+    assert args.summarize_threshold_ratio == 0.5
+    cfg = config.load_user_config()
+    assert cfg["summarize_threshold_ratio"] == "0.5"
+
+
+def test_summarize_threshold_invalid_rejected(tmp_path, capsys):
+    config.USER_CONFIG_PATH = str(tmp_path / "cfg")
+    res = _run("/summarize-threshold 1.5", summarize_threshold_ratio=0.2)
+    assert res["action"] == "skip"
+    out = capsys.readouterr().out
+    assert "tidak valid" in out
+
+
+def test_keep_tail_mutates_and_persists(tmp_path):
+    config.USER_CONFIG_PATH = str(tmp_path / "cfg")
+    res, args = _run_with_args("/keep-tail 12", keep_tail_messages=8)
+    assert res["action"] == "skip"
+    assert args.keep_tail_messages == 12
+    cfg = config.load_user_config()
+    assert cfg["keep_tail_messages"] == "12"
+
+
+def test_keep_tail_invalid_rejected(tmp_path, capsys):
+    config.USER_CONFIG_PATH = str(tmp_path / "cfg")
+    res = _run("/keep-tail -1", keep_tail_messages=8)
+    assert res["action"] == "skip"
+    out = capsys.readouterr().out
+    assert "tidak valid" in out

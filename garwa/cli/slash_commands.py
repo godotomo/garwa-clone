@@ -37,6 +37,9 @@ COMMANDS = {
     "api-url": "Ganti endpoint server model: /api-url <http://host:port>",
     "api-key": "Ganti API key server model: /api-key <kunci> (kosongkan untuk menghapus)",
     "ctx": "Ubah context window (token): /ctx <angka>",
+    "reserve": "Token cadangan untuk respons (token): /reserve <angka>",
+    "summarize-threshold": "Rasio ambang ringkasan (0.0-1.0): /summarize-threshold <rasio>",
+    "keep-tail": "Jumlah pesan terakhir yang dipertahankan saat ringkas: /keep-tail <angka>",
     "github-token": "Ganti token GitHub: /github-token <token> (kosongkan untuk menghapus)",
     "github-max": "Batas konten file yang dibaca GitHub (karakter): /github-max <angka>",
     "firecrawl-key": "Ganti API key Firecrawl: /firecrawl-key <token> (kosongkan untuk menghapus)",
@@ -56,7 +59,7 @@ COMMANDS = {
 }
 
 # Command yang butuh argumen tambahan.
-_COMMANDS_WITH_ARGS = {"resume", "api-model", "api-url", "api-key", "ctx", "github-token", "github-max", "firecrawl-key", "news-lang", "pin", "unpin"}
+_COMMANDS_WITH_ARGS = {"resume", "api-model", "api-url", "api-key", "ctx", "reserve", "summarize-threshold", "keep-tail", "github-token", "github-max", "firecrawl-key", "news-lang", "pin", "unpin"}
 
 
 def _print_help() -> None:
@@ -105,6 +108,13 @@ def _print_tools() -> None:
 def _parse_int_arg(arg: str) -> int | None:
     try:
         return int(arg)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_float_arg(arg: str) -> float | None:
+    try:
+        return float(arg)
     except (TypeError, ValueError):
         return None
 
@@ -449,7 +459,54 @@ def handle_slash_command(cmd_line: str, args, session_id: str, system_content: s
             print(c(f"[ctx] nilai tidak valid: '{arg}'. Gunakan angka positif.", C.RED))
             return {"action": "skip"}
         args.context_window = n
+        config.save_user_config(context_window=n)
         print(c(f"[ctx] context window diubah ke: {args.context_window} token", C.GREEN))
+        print(c(f"[ctx] tersimpan di {config.USER_CONFIG_PATH} (lintas sesi).", C.DIM))
+        return {"action": "skip"}
+
+    if name == "reserve":
+        if not arg:
+            print(c(f"[reserve] token cadangan untuk respons saat ini: {args.reserve_for_response} token", C.DIM))
+            print(c("Gunakan: /reserve <angka> untuk mengubahnya.", C.DIM))
+            return {"action": "skip"}
+        n = _parse_int_arg(arg)
+        if n is None or n <= 0:
+            print(c(f"[reserve] nilai tidak valid: '{arg}'. Gunakan angka positif.", C.RED))
+            return {"action": "skip"}
+        args.reserve_for_response = n
+        config.save_user_config(reserve_for_response=n)
+        print(c(f"[reserve] token cadangan respons diubah ke: {n} token", C.GREEN))
+        print(c(f"[reserve] tersimpan di {config.USER_CONFIG_PATH} (lintas sesi).", C.DIM))
+        return {"action": "skip"}
+
+    if name == "summarize-threshold":
+        if not arg:
+            print(c(f"[summarize-threshold] rasio ambang ringkasan saat ini: {args.summarize_threshold_ratio}", C.DIM))
+            print(c("Gunakan: /summarize-threshold <0.0-1.0> untuk mengubahnya.", C.DIM))
+            return {"action": "skip"}
+        v = _parse_float_arg(arg)
+        if v is None or not (0.0 < v <= 1.0):
+            print(c(f"[summarize-threshold] nilai tidak valid: '{arg}'. Gunakan angka 0.0-1.0.", C.RED))
+            return {"action": "skip"}
+        args.summarize_threshold_ratio = v
+        config.save_user_config(summarize_threshold_ratio=v)
+        print(c(f"[summarize-threshold] rasio ambang ringkasan diubah ke: {v}", C.GREEN))
+        print(c(f"[summarize-threshold] tersimpan di {config.USER_CONFIG_PATH} (lintas sesi).", C.DIM))
+        return {"action": "skip"}
+
+    if name == "keep-tail":
+        if not arg:
+            print(c(f"[keep-tail] jumlah pesan terakhir yang dipertahankan saat ini: {args.keep_tail_messages}", C.DIM))
+            print(c("Gunakan: /keep-tail <angka> untuk mengubahnya.", C.DIM))
+            return {"action": "skip"}
+        n = _parse_int_arg(arg)
+        if n is None or n < 0:
+            print(c(f"[keep-tail] nilai tidak valid: '{arg}'. Gunakan angka >= 0.", C.RED))
+            return {"action": "skip"}
+        args.keep_tail_messages = n
+        config.save_user_config(keep_tail_messages=n)
+        print(c(f"[keep-tail] jumlah pesan ekor diubah ke: {n}", C.GREEN))
+        print(c(f"[keep-tail] tersimpan di {config.USER_CONFIG_PATH} (lintas sesi).", C.DIM))
         return {"action": "skip"}
 
     if name == "github-token":

@@ -169,8 +169,21 @@ def main():
                               "yang mau dikirim sebagai vision input ke model. Gambar di atas "
                               "batas ini tetap dilampirkan sebagai tag metadata seperti biasa, "
                               "tapi TIDAK ikut isi visualnya (default: 8)")
-    parser.add_argument("--context-window", type=int, default=131072,
-                         help="Ukuran context window server model dalam token")
+    parser.add_argument("--context-window", type=int, default=config.CONTEXT_WINDOW,
+                         help="Ukuran context window server model dalam token "
+                              "(default dari config.CONTEXT_WINDOW / env GARWA_CONTEXT_WINDOW)")
+    parser.add_argument("--reserve-for-response", type=int, default=config.RESERVE_FOR_RESPONSE,
+                         help="Token yang disisakan untuk jawaban model + tool_result "
+                              "berikutnya (default dari config.RESERVE_FOR_RESPONSE / env "
+                              "GARWA_RESERVE_FOR_RESPONSE)")
+    parser.add_argument("--summarize-threshold-ratio", type=float, default=config.SUMMARIZE_THRESHOLD_RATIO,
+                         help="Rasio pemakaian budget context yang memicu summarization "
+                              "riwayat lama, 0.0-1.0 (default dari config / env "
+                              "GARWA_SUMMARIZE_THRESHOLD_RATIO)")
+    parser.add_argument("--keep-tail-messages", type=int, default=config.KEEP_TAIL_MESSAGES,
+                         help="Jumlah pesan mentah terbaru yang selalu dipertahankan utuh "
+                              "saat summarization (default dari config / env "
+                              "GARWA_KEEP_TAIL_MESSAGES)")
     parser.add_argument("--no-stream", action="store_true",
                          help="Matikan SSE streaming dan gunakan response JSON biasa")
     parser.add_argument("--full-tool-schema-text", action="store_true",
@@ -566,6 +579,15 @@ def _build_status_info(args, session_id):
     parts = [f"[{model}]"]
     if ctx:
         parts.append(f"ctx:{ctx}")
+    reserve = getattr(args, "reserve_for_response", None)
+    if reserve:
+        parts.append(f"res:{reserve}")
+    threshold = getattr(args, "summarize_threshold_ratio", None)
+    if threshold:
+        parts.append(f"sum:{threshold}")
+    keep_tail = getattr(args, "keep_tail_messages", None)
+    if keep_tail:
+        parts.append(f"tail:{keep_tail}")
     parts.append(f"ses:{session_id[:8]}")
     parts.append(f"tools:{tools_count}")
     # Pemakaian token global (akumulasi lintas giliran dalam sesi ini).
