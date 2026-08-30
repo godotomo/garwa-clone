@@ -154,6 +154,60 @@ EOF
 chmod +x "$LAUNCHER_PATH"
 echo "  [ok] Launcher dibuat: $LAUNCHER_PATH"
 
+# --- Pastikan PREFIX ada di PATH (persisten) ----------------------------------
+# Menambahkan '$PREFIX' ke PATH sesi berjalan DAN ke file profile shell
+# (mis. ~/.zshrc di macOS) supaya tetap berlaku setelah terminal di-restart.
+ensure_prefix_in_path() {
+    # 1) PATH sesi berjalan
+    if [[ ":$PATH:" != *":$PREFIX:"* ]]; then
+        export PATH="$PREFIX:$PATH"
+        echo "  [ok] '$PREFIX' ditambahkan ke PATH sesi ini."
+    fi
+
+    # 2) Deteksi file profile shell yang tepat.
+    local profile_file=""
+    local shell_name
+    shell_name="$(basename "${SHELL:-}")"
+    case "$shell_name" in
+        zsh)
+            profile_file="${ZDOTDIR:-$HOME}/.zshrc"
+            ;;
+        bash)
+            if [[ -f "$HOME/.bash_profile" ]]; then
+                profile_file="$HOME/.bash_profile"
+            else
+                profile_file="$HOME/.bashrc"
+            fi
+            ;;
+        *)
+            profile_file="$HOME/.profile"
+            ;;
+    esac
+
+    if [[ -z "$profile_file" ]]; then
+        echo "  [..] Tidak dapat mendeteksi shell profile. Tambahkan manual ke shell profile Anda:"
+        echo "       export PATH=\"$PREFIX:\$PATH\""
+        return 0
+    fi
+
+    # 3) Tambahkan baris export bila belum ada di profile.
+    if grep -qF "$PREFIX" "$profile_file" 2>/dev/null; then
+        echo "  [ok] '$PREFIX' sudah terdaftar di $profile_file"
+    else
+        # Pastikan file profile ada (buat bila belum).
+        if [[ ! -f "$profile_file" ]]; then
+            touch "$profile_file" 2>/dev/null || { echo "  [..] Tidak bisa membuat $profile_file."; return 0; }
+        fi
+        if printf '\n# Ditambahkan oleh install.sh Garwa\n%s\n' "export PATH=\"$PREFIX:\$PATH\"" >> "$profile_file" 2>/dev/null; then
+            echo "  [ok] Menambahkan 'export PATH=\"$PREFIX:\$PATH\"' ke $profile_file"
+            echo "       (berlaku penuh setelah Anda membuka terminal baru)"
+        else
+            echo "  [..] Gagal menulis ke $profile_file. Tambahkan manual:"
+            echo "       export PATH=\"$PREFIX:\$PATH\""
+        fi
+    fi
+}
+
 # --- Verifikasi ---------------------------------------------------------------
 echo ""
 echo "==> Verifikasi instalasi"
@@ -163,15 +217,10 @@ else
     echo "  (impor garwa gagal -- mungkin dependency belum lengkap, tapi launcher tetap dibuat.)"
 fi
 
-if [[ ":$PATH:" == *":$PREFIX:"* ]]; then
-    echo ""
-    echo "Instalasi selesai. Coba jalankan dari folder mana pun:"
-    echo "    garwa --help"
-    echo "    garwa --workdir \"\$PWD\""
-else
-    echo ""
-    echo "Instalasi selesai, tapi '$PREFIX' belum ada di PATH."
-    echo "Tambahkan ke shell profile Anda, misalnya di ~/.zshrc:"
-    echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
-    echo "lalu buka terminal baru dan jalankan: garwa --help"
-fi
+echo ""
+echo "Instalasi selesai. Memastikan '$PREFIX' ada di PATH..."
+ensure_prefix_in_path
+echo ""
+echo "Coba jalankan dari folder mana pun:"
+echo "    garwa --help"
+echo "    garwa --workdir \"\$PWD\""
