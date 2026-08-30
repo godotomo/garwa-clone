@@ -19,4 +19,4 @@ tanggung jawab -- lihat README_REFACTOR.md di root repo untuk detail):
 Jalankan lewat:  python -m garwa
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

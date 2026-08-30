@@ -7,7 +7,7 @@ mesin Anda, menjalankan perintah shell, mencari di GitHub, mencari berita,
 menjalankan audit keamanan, dan banyak lagi — semuanya lewat percakapan
 natural atau mode otomatis (auto / overnight) tanpa pengawasan.
 
-> Versi saat ini: **0.2.0**
+> Versi saat ini: **0.3.0**
 
 ![Garwa CLI](screenshot/sceenshot.png)
 
@@ -55,7 +55,13 @@ natural atau mode otomatis (auto / overnight) tanpa pengawasan.
 - **Vision input** — drop gambar (atau tempel path gambar) untuk dikirim
   sebagai input visual ke model.
 - **Manajemen konteks** — estimasi token, deteksi batas context window,
-  retry otomatis saat request ditolak karena melampaui konteks.
+  retry otomatis saat request ditolak karena melampaui konteks. Parameter
+  context-window & summarization dapat dikonfigurasi via flag CLI, env
+  variable, atau slash-command (lihat [Konfigurasi](#konfigurasi-environment-variable)).
+- **Ringkasan konteks cerdas** — saat konteks mendekati batas, pesan lama
+  diringkas secara otomatis; **instruksi aktif** dari ringkasan disimpan dan
+  disuntikkan kembali setiap giliran agar konteks tidak hilang. Pesan penting
+  bisa di-pin (`/pin`) agar tidak ikut diringkas.
 - **Native tool-calling** — skema tool dikirim lewat field `tools` ala
   OpenAI di tiap request, dengan fallback ke skema teks penuh.
 - **Integrasi MCP (Model Context Protocol)** — Garwa bertindak sebagai **MCP
@@ -114,11 +120,20 @@ pun** (workdir otomatis = folder tempat Anda memanggilnya).
 ./install.sh --help          # lihat semua opsi
 ```
 
-Setelah instalasi, pastikan `~/.local/bin` ada di `PATH`:
+Installer kini **otomatis menambahkan folder launcher ke `PATH`** secara
+persisten (mendeteksi shell profile aktif — `.zshrc`, `.bash_profile`/`.bashrc`,
+fallback `.profile`). Setelah instalasi, buka terminal baru (agar perubahan
+PATH berlaku) lalu:
+
+```bash
+garwa --help
+```
+
+Jika Anda menginstal manual tanpa `install.sh`, pastikan folder launcher ada
+di `PATH`:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"   # tambahkan ke ~/.bashrc / ~/.zshrc
-garwa --help
 ```
 
 > **Catatan:** launcher dibuat agar workdir otomatis mengikuti folder tempat
@@ -261,6 +276,9 @@ garwa [opsi]
   --max-tool-iters N      Batas pemanggilan tool per giliran (default: 100)
   --max-image-mb FLOAT    Batas ukuran gambar vision (MB, default: 8)
   --context-window N      Ukuran context window server (token, default: 131072)
+  --reserve-for-response N  Token cadangan untuk respons (default: 2048)
+  --summarize-threshold-ratio F  Rasio ambang ringkasan 0.0-1.0 (default: 0.2)
+  --keep-tail-messages N   Jumlah pesan akhir yang dipertahankan saat ringkas (default: 8)
   --no-stream             Pakai response JSON biasa, bukan SSE streaming
   --full-tool-schema-text Tulis skema tool LENGKAP sebagai teks di system prompt
   --skip-server-check     Lewati pengecekan koneksi server saat startup
@@ -299,13 +317,28 @@ Beberapa perilaku khusus di input:
   melampirkan file tersebut sebagai input (termasuk gambar sebagai vision).
 - **Tempel teks multi-baris** — teks yang mengandung baris baru dianggap
   sebagai paste/attachment, bukan perintah shell.
-- **Slash command** — `/exit`, `/quit` untuk keluar. Beberapa command
-  menerima argumen, mis. `/api-model deepseek-v4-flash-0731`, `/news-lang en`,
-  `/github-token <token>`, dan `/firecrawl-key <token>` (API key Firecrawl,
-  disimpan lintas sesi di `~/.config/garwa/config`).
-- **Persistensi model** — `/api-model <nama>` mengganti model aktif sekaligus
-  menyimpannya lintas sesi di `~/.config/garwa/config`. Prioritas tiap nilai:
-  env `LLAMA_MODEL` > config > default bawaan.
+- **Slash command** — `/exit`, `/quit` untuk keluar, `/help` untuk daftar
+  lengkap. Beberapa command menerima argumen, mis. `/api-model deepseek-v4-flash-0731`,
+  `/news-lang en`, `/github-token <token>`, `/github-max <angka>`, dan
+  `/firecrawl-key <token>` (API key Firecrawl, disimpan lintas sesi di
+  `~/.config/garwa/config`).
+- **Persistensi model & endpoint** — `/api-model <nama>` mengganti model aktif,
+  `/api-url <url>` mengganti endpoint server, dan `/api-key <kunci>` mengganti
+  API key — semuanya disimpan lintas sesi di `~/.config/garwa/config`.
+  Prioritas tiap nilai: env (`LLAMA_MODEL` / `LLAMA_URL` / `LLAMA_API_KEY`) >
+  config > default bawaan. `/api-key` tanpa argumen **menghapus** key dari config.
+- **Slash command manajemen konteks** — atur parameter context-window dan
+  summarization secara runtime, tersimpan lintas sesi:
+  - `/ctx <angka>` — ubah ukuran context window (token).
+  - `/reserve <angka>` — token cadangan untuk respons.
+  - `/summarize-threshold <rasio>` — rasio ambang ringkasan (0.0–1.0).
+  - `/keep-tail <angka>` — jumlah pesan akhir yang dipertahankan saat ringkas.
+- **Slash command pin pesan** — kunci pesan penting agar tidak ikut diringkas:
+  - `/messages` — tampilkan daftar pesan beserta ID-nya.
+  - `/pin <id> [<id> ...]` — pin pesan; `/unpin <id> [...]` — lepas pin;
+    `/pinned` — lihat pesan yang sedang di-pin.
+- **Slash command lain** — `/new` (sesi baru), `/resume`, `/clear`, `/todos`,
+  `/tools`, `/approve` (toggle auto-approve).
 - **Slash command MCP** — kelola server MCP langsung dari prompt:
   - `/mcp-server list` — tampilkan server yang terdaftar.
   - `/mcp-server add <nama> <cmd> [args...]` — daftarkan server stdio.
@@ -506,6 +539,9 @@ bisa diganti dengan `--db-path`). Yang disimpan:
 - **Plan/todo** per sesi (tool `todo_write` / `todo_read`).
 - **Catatan proyek** key-value persisten lintas sesi per workdir
   (tool `remember` / `recall`).
+- **Instruksi aktif & pin** — instruksi aktif dari ringkasan konteks disimpan
+  di kolom `summaries.active_instructions` dan disuntikkan kembali tiap
+  giliran; pesan yang di-pin (`/pin`) dipertahankan agar tidak ikut diringkas.
 
 Melihat sesi tersimpan untuk workdir saat ini:
 
@@ -537,6 +573,17 @@ Semua variabel dibaca dari environment (lihat `garwa/config.py`):
 | `GITHUB_MAX_CONTENT` | `12000` | Batas konten file yang dibaca dari GitHub |
 | `FIRECRAWL_API_KEY` | *(kosong)* | API key Firecrawl (wajib untuk tool `firecrawl_*`) |
 | `FIRECRAWL_API_URL` | `https://api.firecrawl.dev/v1` | Endpoint API Firecrawl |
+| `GARWA_CONTEXT_WINDOW` | `131072` | Ukuran context window server (token) |
+| `GARWA_RESERVE_FOR_RESPONSE` | `2048` | Token cadangan untuk respons |
+| `GARWA_SUMMARIZE_THRESHOLD_RATIO` | `0.2` | Rasio ambang ringkasan (0.0–1.0) |
+| `GARWA_KEEP_TAIL_MESSAGES` | `8` | Jumlah pesan akhir yang dipertahankan saat ringkas |
+
+> **Prioritas nilai:** environment variable > file config pengguna
+> (`~/.config/garwa/config`, diatur lewat slash-command `/api-model`, `/api-url`,
+> `/api-key`, `/ctx`, `/reserve`, `/summarize-threshold`, `/keep-tail`,
+> `/github-token`, `/github-max`, `/news-lang`, `/firecrawl-key`) > default
+> bawaan. Nilai yang tidak valid (mis. diedit manual) jatuh ke default tanpa
+> membuat proses crash.
 
 Contoh:
 
@@ -570,7 +617,7 @@ garwa/
     scanners/                satu file per scanner (semgrep, osv, pip_audit, dll.)
 
   tool_runtime/              runtime eksekusi tool
-  tools/                     definisi & implementasi 20 tool
+  tools/                     definisi & implementasi 23 tool
   cli/                       logika CLI
     markdown_render/         render markdown (latex, inline, tables, dll.)
     tool_schema/             skema tool (native calls, alt syntax)
@@ -589,7 +636,7 @@ skills/                      folder skill
 tests/                       test suite (pytest)
 ```
 
-**Total ~86 file `.py`.** File yang masih besar secara struktural adalah
+**Total ~93 file `.py`.** File yang masih besar secara struktural adalah
 satu fungsi tunggal (`cli/agent_loop.py` — `run_agent_loop`, `cli/main.py` —
 `main`), yang tidak dipecah agar tidak mengubah perilaku.
 
@@ -644,7 +691,7 @@ kode yang ditulis manual oleh manusia.
 
 - Semua file `garwa/*.py`, `garwa_cli.py`, `install.sh`, `uninstall.sh`,
   `requirements.txt`, dan `tests/` dihasilkan oleh AI.
-- Dokumentasi (`README.md`, `README_REFACTOR.md`) juga ditulis oleh AI.
+- Dokumentasi (`README.md`, `CHANGELOG.md`) juga ditulis oleh AI.
 - Proses refactor dari CLI monolitik menjadi package `garwa/` dilakukan
   secara mekanis berbasis AST oleh AI.
 
@@ -673,6 +720,18 @@ Buat folder `skills/<nama>/SKILL.md` dengan frontmatter `name` dan
 `--auto` menjalankan **satu** task lalu keluar. `--overnight` menjalankan
 **banyak** task berurutan tanpa pengawasan, tiap task di sesi baru, dengan
 file log dan opsi checklist/`--repeat-until-done`.
+
+**Bagaimana mengatur context-window / summarization?**
+Lewat flag CLI (`--context-window`, `--reserve-for-response`,
+`--summarize-threshold-ratio`, `--keep-tail-messages`), env variable
+(`GARWA_*`), atau slash-command saat runtime (`/ctx`, `/reserve`,
+`/summarize-threshold`, `/keep-tail`) yang tersimpan lintas sesi. Prioritas:
+env > config pengguna > default.
+
+**Bagaimana cara menyimpan / menghapus API key secara persisten?**
+Gunakan `/api-key <kunci>` untuk menyimpan, atau `/api-key` tanpa argumen
+untuk menghapusnya dari `~/.config/garwa/config`. Model (`/api-model`) dan
+endpoint (`/api-url`) juga tersimpan lintas sesi di file yang sama.
 
 ---
 
