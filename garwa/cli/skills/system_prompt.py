@@ -22,9 +22,14 @@ def build_system_prompt(workdir: str, skills_dir: str = state.DEFAULT_SKILLS_DIR
     if full_tool_schema:
         tool_list = build_tool_schema_text(full=True)
     else:
-
+        # Hanya daftar NAMA tool di system prompt. Deskripsi + skema argumen
+        # lengkap dikirim lewat field "tools" ala OpenAI di tiap request
+        # (lihat cli/llm_client/stream_call.py & nonstream_call.py), jadi
+        # mengulang deskripsi di sini hanya membuang ~988 token/giliran.
+        # Nama tool tetap dicantumkan supaya model sadar tool apa yang ada
+        # walau server tidak menyuntikkan field "tools" ke konteks.
         tool_list = "\n".join(
-            f"- {s['schema']['name']}: {s['schema']['description']}"
+            f"- {s['schema']['name']}"
             for _, s in TOOLS.items()
         )
     skills_section = _build_skills_section(skills_dir)
