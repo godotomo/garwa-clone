@@ -56,10 +56,10 @@ def _render_table(lines: list) -> str:
     separator = _split_table_row(lines[1])
     rows = [_split_table_row(x) for x in lines[2:]]
 
-    ncols = min(max(len(header), *(len(r) for r in rows)), state.TABLE_MAX_COLUMNS)
-    header = header[:ncols]
+    ncols = min(max([len(header)] + [len(r) for r in rows]), state.TABLE_MAX_COLUMNS)
+    header = header[:ncols] + [""] * max(0, ncols - len(header))
     rows = [r[:ncols] + [""] * max(0, ncols - len(r)) for r in rows]
-    separator = separator[:ncols]
+    separator = separator[:ncols] + [""] * max(0, ncols - len(separator))
 
     def cell_text(value):
         return _render_inline_markdown(value).replace("\n", " ")
