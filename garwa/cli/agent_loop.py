@@ -78,15 +78,20 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
     _t_start = time.monotonic()          # awal giliran (untuk durasi total)
     _iteration_count = 0                 # jumlah iterasi loop (putaran model)
     _error_count = 0                     # jumlah tool_call yang menghasilkan error
+    # Snapshot akumulasi token global di awal giliran; selisihnya di akhir
+    # memberi total token (in + out) yang dihabiskan giliran ini saja.
+    _token_start = state.TOKEN_USAGE_TOTAL.get("total", 0)
 
     def _emit_summary():
         """Cetak ringkasan akhir giliran: jumlah tool call, sukses/error,
-        durasi total, dan jumlah iterasi. Dipanggil di setiap titik return
-        (termasuk jalur berhenti paksa karena loop/truncation/error-loop)
-        supaya pengguna selalu mendapat gambaran singkat aktivitas giliran.
+        durasi total, jumlah iterasi, dan total token (in+out) yang dipakai
+        giliran ini. Dipanggil di setiap titik return (termasuk jalur berhenti
+        paksa karena loop/truncation/error-loop) supaya pengguna selalu
+        mendapat gambaran singkat aktivitas giliran.
         """
         _t_total = time.monotonic() - _t_start
         _success = _tool_call_seq - _error_count
+        _tokens = state.TOKEN_USAGE_TOTAL.get("total", 0) - _token_start
         print(c("─" * 60, C.DIM))
         print(c("  Ringkasan giliran", C.BOLD))
         print(c(
@@ -95,6 +100,7 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
         ))
         print(c(f"  durasi     : {_t_total:.1f}s", C.DIM))
         print(c(f"  iterasi    : {_iteration_count}", C.DIM))
+        print(c(f"  token      : {_tokens:,}", C.DIM))
         if _truncation_count:
             print(c(f"  truncasi   : {_truncation_count}x", C.YELLOW))
         if _loop_count:

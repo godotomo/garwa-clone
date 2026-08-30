@@ -1743,6 +1743,7 @@ class TestTurnSummary:
         assert "Ringkasan giliran" in text
         assert "tool calls : 0  (✓0 ✗0)" in text
         assert "iterasi    : 1" in text
+        assert "token      : 0" in text
         assert out == "Ini jawaban akhir."
 
     def test_one_successful_tool(self, monkeypatch, capsys):
@@ -1768,6 +1769,64 @@ class TestTurnSummary:
                               tool_results=["[ERROR] sama"] * 10)
         assert "Ringkasan giliran" in text
         assert "tool calls :" in text
+
+    def test_token_total_reflects_turn_usage(self, monkeypatch, capsys):
+        # Verifikasi baris token = selisih akumulasi TOKEN_USAGE_TOTAL antara
+        # awal dan akhir giliran (in+out), bukan nilai global kumulatif.
+        import argparse
+        from garwa.cli import agent_loop
+        from garwa.cli import _state as state
+
+        # Seed nilai global sebelum giliran (meniru sesi yang sudah berjalan).
+        state.TOKEN_USAGE_TOTAL["prompt_tokens"] = 5000
+        state.TOKEN_USAGE_TOTAL["completion_tokens"] = 3000
+        state.TOKEN_USAGE_TOTAL["total"] = 8000
+
+        # fake_call menambah usage tiap iterasi agar selisih terukur.
+        calls = {"n": 0}
+
+        def fake_call(url, model, messages, **kw):
+            calls["n"] += 1
+            state._accumulate_usage({"prompt_tokens": 100, "completion_tokens": 50})
+            if calls["n"] <= 1:
+                return "toolcall-1"
+            return "Ini jawaban akhir."
+
+        monkeypatch.setattr(agent_loop, "call_llama_server", fake_call)
+        monkeypatch.setattr(agent_loop, "_render_markdown_once", lambda t: None)
+        monkeypatch.setattr(
+            agent_loop.context_manager, "prepare_context_messages", lambda **kw: [],
+        )
+        monkeypatch.setattr(agent_loop, "build_openai_tools_payload", lambda: [])
+        monkeypatch.setattr(agent_loop.dbmod, "add_message", lambda *a, **k: None)
+
+        tc = {"n": 0}
+
+        def fake_extract(text):
+            tc["n"] += 1
+            if tc["n"] <= 1:
+                return ("read_file", {"path": "x1"})
+            return (None, None)
+
+        monkeypatch.setattr(agent_loop, "extract_tool_call", fake_extract)
+        monkeypatch.setattr(
+            agent_loop, "execute_tool",
+            lambda name, args, aa: "hasil sukses",
+        )
+
+        args = argparse.Namespace(
+            max_tool_iters=10, context_window=131072, url="http://x",
+            model="m", no_stream=True, api_key=None, debug=False,
+            temperature=0.7, db_path=":memory:", auto_approve=False,
+        )
+        agent_loop.run_agent_loop(args, "sess1", "sys")
+        text = capsys.readouterr().out
+
+        assert "Ringkasan giliran" in text
+        # 2 iterasi model -> 2x (100 prompt + 50 completion) = 300 token.
+        assert "token      : 300" in text
+        # Nilai global tetap terakumulasi (bukan di-reset oleh ringkasan).
+        assert state.TOKEN_USAGE_TOTAL["total"] == 8300
 
 
 
