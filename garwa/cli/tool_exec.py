@@ -23,6 +23,52 @@ from .text_utils import confirm
 
 
 
+def _tool_may_prompt(name: str, arguments: dict, auto_approve: bool) -> bool:
+    """Apakah pemanggilan tool ini berpotensi memunculkan prompt konfirmasi
+    ke stdin (sehingga spinner harus ditiadakan)?
+
+    Meskipun auto_approve aktif, ada dua kategori yang TETAP meminta konfirmasi
+    eksplisit dan tidak dilewati:
+      1. Tool tulis (write_file/edit_file) dengan path target di luar workdir
+         saat sandbox aktif -> prompt [SANDBOX] di execute_tool().
+      2. Tool bash yang cocok pola berbahaya (destructive "force") -> prompt
+         konfirmasi destructive di execute_tool().
+
+    Dipanggil oleh agent_loop.py untuk memutuskan apakah aman menyalakan
+    Spinner. Kalau fungsi ini mengembalikan True, spinner ditiadakan agar
+    prompt konfirmasi tidak tertutup karakter spinner.
+    """
+    if not auto_approve:
+        # Tanpa auto-approve, tool destruktif apa pun bisa memunculkan prompt.
+        return True
+
+    # 1) Tool tulis ke path eksternal (sandbox aktif).
+    if name in ("write_file", "edit_file") and isinstance(arguments, dict):
+        target = arguments.get("path")
+        if isinstance(target, str) and target:
+            candidate = target if os.path.isabs(target) else os.path.join(
+                tools_module.state.WORKDIR, target)
+            real_candidate = os.path.realpath(candidate)
+            real_workdir = os.path.realpath(tools_module.state.WORKDIR)
+            try:
+                _outside = os.path.commonpath([real_candidate, real_workdir]) != real_workdir
+            except ValueError:
+                _outside = True
+            if _outside and tools_module.state.SANDBOX_ENABLED:
+                return True
+
+    # 2) Tool bash berbahaya (destructive "force").
+    if name == "bash":
+        spec = TOOLS.get("bash")
+        destructive = spec["destructive"] if spec else False
+        if callable(destructive):
+            destructive = destructive(arguments)
+        if destructive == "force":
+            return True
+
+    return False
+
+
 def execute_tool(name: str, arguments: dict, auto_approve: bool) -> str:
 
     resolved_name = tool_runtime.REGISTRY.resolve(name)

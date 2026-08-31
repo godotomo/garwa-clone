@@ -1223,6 +1223,87 @@ class TestSpinner:
         assert len(raw) <= 8
 
 
+class TestSpinnerPauseResume:
+    """Regresi: spinner harus bisa di-pause sementara dari thread lain (mis.
+    confirm()) supaya prompt konfirmasi tidak tertutup karakter spinner."""
+
+    def test_pause_clears_line_and_resume_clears_flag(self, monkeypatch):
+        fake = _FakeStream(isatty=True)
+        monkeypatch.setattr(sys, "stdout", fake)
+        monkeypatch.setattr(spinner_mod, "_term_width", lambda: 20)
+        sp = spinner_mod.Spinner("halo", stderr=False)
+        assert not sp._paused.is_set()
+        sp.pause()
+        assert sp._paused.is_set()
+        # pause() menghapus baris spinner (carriage-return + spasi selebar terminal).
+        assert fake.value.endswith("\r" + " " * 20 + "\r")
+        sp.resume()
+        assert not sp._paused.is_set()
+
+    def test_spin_skips_writes_while_paused(self, monkeypatch):
+        fake = _FakeStream(isatty=True)
+        monkeypatch.setattr(sys, "stdout", fake)
+        monkeypatch.setattr(spinner_mod, "_term_width", lambda: 20)
+        monkeypatch.setattr(spinner_mod, "time", _FakeTime())
+        sp = spinner_mod.Spinner("halo", stderr=False)
+        sp._paused.set()  # mulai dalam keadaan di-pause
+        sp._stop = _FakeStop(stop_after=5)
+        sp._spin()
+        # Tidak ada karakter frame yang ditulis selama di-pause (hanya
+        # mungkin baris bersih dari pause(), yang tidak memakai frame).
+        assert "⠋" not in fake.value
+
+    def test_active_registry_tracks_and_discards(self, monkeypatch):
+        fake = _FakeStream(isatty=True)
+        monkeypatch.setattr(sys, "stdout", fake)
+        sp = spinner_mod.Spinner("halo", stderr=False)
+        with sp:
+            assert sp in spinner_mod._ACTIVE_SPINNERS
+        assert sp not in spinner_mod._ACTIVE_SPINNERS
+
+
+class TestToolMayPrompt:
+    """Regresi: _tool_may_prompt() harus menebak tool yang berpotensi
+    memunculkan prompt konfirmasi walau auto-approve aktif, supaya spinner
+    tidak menutupi prompt di agent_loop.py."""
+
+    def _make(self):
+        from garwa.cli import tool_exec
+        return tool_exec._tool_may_prompt
+
+    def test_non_destructive_safe_with_approve(self):
+        fn = self._make()
+        assert fn("read_file", {"path": "x.py"}, True) is False
+
+    def test_any_tool_prompts_without_approve(self):
+        fn = self._make()
+        assert fn("read_file", {"path": "x.py"}, False) is True
+
+    def test_write_external_path_prompts_with_approve(self, monkeypatch):
+        from garwa import tools as tools_module
+        monkeypatch.setattr(tools_module.state, "SANDBOX_ENABLED", True)
+        monkeypatch.setattr(tools_module.state, "WORKDIR", "/workdir/proyek")
+        fn = self._make()
+        assert fn("write_file", {"path": "/tmp/luar.py"}, True) is True
+
+    def test_write_internal_path_safe_with_approve(self, monkeypatch):
+        from garwa import tools as tools_module
+        monkeypatch.setattr(tools_module.state, "SANDBOX_ENABLED", True)
+        monkeypatch.setattr(tools_module.state, "WORKDIR", "/workdir/proyek")
+        fn = self._make()
+        assert fn("write_file", {"path": "dalam.py"}, True) is False
+
+    def test_risky_bash_prompts_with_approve(self, monkeypatch):
+        from garwa import tools as tools_module
+        monkeypatch.setattr(tools_module.state, "SANDBOX_ENABLED", True)
+        fn = self._make()
+        assert fn("bash", {"command": "rm -rf /tmp/x"}, True) is True
+
+    def test_safe_bash_no_prompt_with_approve(self):
+        fn = self._make()
+        assert fn("bash", {"command": "ls -la"}, True) is False
+
+
 # ---------------------------------------------------------------------------
 # llm_errors
 # ---------------------------------------------------------------------------

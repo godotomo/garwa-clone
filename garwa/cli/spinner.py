@@ -21,6 +21,15 @@ import sys
 import threading
 import time
 
+# Registry spinner yang sedang aktif (thread-safe). Dipakai oleh
+# text_utils.confirm() untuk menghentikan sementara spinner sebelum membaca
+# input stdin, supaya prompt konfirmasi tidak tertutup karakter spinner.
+# Ini pengaman ganda: agent_loop.py sudah mencegah spinner menyala untuk tool
+# yang berpotensi prompt, tapi kalau ada jalur lain yang memunculkan prompt
+# saat spinner aktif, hook ini tetap melindungi.
+_ACTIVE_SPINNERS = set()
+_ACTIVE_LOCK = threading.Lock()
+
 # Karakter spinner klasik.
 _FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 _FALLBACK_FRAMES = ("|", "/", "-", "\\")
@@ -35,6 +44,26 @@ def _term_width() -> int:
         return shutil.get_terminal_size().columns
     except Exception:
         return 80
+
+
+def pause_all_spinners():
+    """Hentikan sementara semua spinner yang sedang aktif (dipanggil sebelum
+    membaca input stdin dari prompt konfirmasi). Spinner yang di-pause berhenti
+    menulis karakter dan menghapus barisnya, lalu bisa dilanjutkan lagi dengan
+    resume_all_spinners() setelah input selesai dibaca."""
+    with _ACTIVE_LOCK:
+        spinners = list(_ACTIVE_SPINNERS)
+    for sp in spinners:
+        sp.pause()
+
+
+def resume_all_spinners():
+    """Lanjutkan kembali semua spinner yang sedang aktif setelah input stdin
+    selesai dibaca. No-op kalau tidak ada spinner yang di-pause."""
+    with _ACTIVE_LOCK:
+        spinners = list(_ACTIVE_SPINNERS)
+    for sp in spinners:
+        sp.resume()
 
 
 class Spinner:
@@ -53,10 +82,18 @@ class Spinner:
         self._stream = sys.stderr if stderr else sys.stdout
         self._thread = None
         self._stop = threading.Event()
+        self._paused = threading.Event()
         self._frames = _FRAMES if self._stream.isatty() else _FALLBACK_FRAMES
 
     def _spin(self):
         for frame in itertools.cycle(self._frames):
+            # Kalau sedang di-pause (menunggu input stdin), tunggu sampai
+            # di-resume -- jangan menulis karakter yang bisa menimpa prompt.
+            # Berhenti total kalau spinner di-stop saat menunggu.
+            while self._paused.is_set():
+                if self._stop.is_set():
+                    return
+                time.sleep(0.05)
             if self._stop.is_set():
                 break
             line = f"{frame} {self._message}"
@@ -69,6 +106,19 @@ class Spinner:
             self._stream.flush()
             time.sleep(_FRAME_INTERVAL)
 
+    def pause(self):
+        """Hentikan sementara penulisan karakter spinner dan hapus barisnya.
+        Dipanggil dari thread lain (mis. confirm()) sebelum membaca stdin."""
+        self._paused.set()
+        # Hapus baris spinner supaya prompt konfirmasi tampil bersih.
+        term_w = _term_width()
+        self._stream.write("\r" + " " * term_w + "\r")
+        self._stream.flush()
+
+    def resume(self):
+        """Lanjutkan kembali penulisan karakter spinner setelah input selesai."""
+        self._paused.clear()
+
     def __enter__(self):
         # Hanya tampilkan spinner kalau stream-nya terminal interaktif.
         # Kalau stdout/stdin di-redirect (mis. test otomatis), lewati saja
@@ -78,11 +128,16 @@ class Spinner:
                 target=self._spin, daemon=True, name="garwa-spinner"
             )
             self._thread.start()
+            with _ACTIVE_LOCK:
+                _ACTIVE_SPINNERS.add(self)
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        with _ACTIVE_LOCK:
+            _ACTIVE_SPINNERS.discard(self)
         if self._thread is not None:
             self._stop.set()
+            self._paused.clear()
             self._thread.join(timeout=_FRAME_INTERVAL * 2)
             # Hapus seluruh baris spinner (carriage-return + spasi selebar terminal).
             term_w = _term_width()

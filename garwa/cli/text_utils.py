@@ -20,6 +20,8 @@ from . import _state as state
 from .colors import C
 from .colors import c
 from .colors import c_prompt
+from .spinner import pause_all_spinners
+from .spinner import resume_all_spinners
 
 
 
@@ -697,6 +699,11 @@ def confirm(prompt: str) -> bool:
     workdir) TETAP wajib diminta walau --auto-approve aktif; pada mode
     non-interaktif yang tanpa stdin, jawaban otomatis yang aman adalah tolak.
     """
+    # Hentikan sementara spinner yang mungkin aktif sebelum membaca stdin,
+    # supaya prompt konfirmasi tidak tertutup karakter spinner. Ini pengaman
+    # ganda (agent_loop.py sudah mencegah spinner untuk tool yang berpotensi
+    # prompt). Spinner dilanjutkan lagi setelah input selesai dibaca.
+    pause_all_spinners()
     try:
         ans = input(c_prompt(f"  {prompt} [y/N] ", C.YELLOW)).strip().lower()
     except (EOFError, KeyboardInterrupt):
@@ -706,4 +713,6 @@ def confirm(prompt: str) -> bool:
             C.YELLOW,
         ))
         return False
+    finally:
+        resume_all_spinners()
     return ans in ("y", "yes")

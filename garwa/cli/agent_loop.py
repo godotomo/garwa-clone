@@ -25,6 +25,7 @@ from .markdown_render import _render_markdown_once
 from .spinner import Spinner
 from .text_utils import _find_repeated_text
 from .text_utils import _loop_similarity
+from .tool_exec import _tool_may_prompt
 from .tool_exec import execute_tool
 from .tool_schema import _convert_alt_tool_call_syntax
 from .tool_schema import build_openai_tools_payload
@@ -626,15 +627,15 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
         _tool_call_seq += 1
         state._tool_call_index.set(_tool_call_seq)
         _t0 = time.monotonic()
-        if args.auto_approve:
-            # Mode non-interaktif: tidak ada prompt konfirmasi stdin, jadi
-            # aman menampilkan spinner selama tool berjalan.
+        # Nyalakan spinner HANYA kalau tool ini tidak berpotensi memunculkan
+        # prompt konfirmasi ke stdin. Meskipun auto_approve aktif, beberapa
+        # tool TETAP meminta konfirmasi (path eksternal saat sandbox aktif,
+        # bash berbahaya/"force"). Kalau spinner menyala saat prompt muncul,
+        # karakter spinner menimpa prompt sehingga user tidak melihatnya.
+        if not _tool_may_prompt(name, arguments, args.auto_approve):
             with Spinner(f"menjalankan {name}"):
                 result = execute_tool(name, arguments, args.auto_approve)
         else:
-            # Mode interaktif: tool yang destruktif/force bisa memunculkan
-            # prompt konfirmasi lewat stdin. Spinner ditiadakan agar prompt
-            # tidak bertabrakan dengan karakter spinner di terminal.
             result = execute_tool(name, arguments, args.auto_approve)
         _elapsed = time.monotonic() - _t0
         _is_error = result.strip().startswith("[ERROR]") or result.strip().startswith("[DITOLAK]")
