@@ -99,6 +99,8 @@ Di luar kondisi tersebut, dataset biner ini **dapat digunakan kembali secara ter
    FILENAME = "Ornith-1.5-35B-Q4_K_M.gguf"   # Sesuaikan dengan kebutuhan
    ```
 
+   > 🔗 **Model:** [Ornith-1.5-35B-A3B](https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B) — halaman resmi model di Hugging Face.
+
    | Kuantisasi | Ukuran Berkas | Kesesuaian untuk 2× T4 16GB (Total 32GB) |
    |---|---|---|
    | BF16 | 71.1 GB | ❌ Tidak Muat |
