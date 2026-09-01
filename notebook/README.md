@@ -138,11 +138,11 @@ Setelah berhasil, dataset akan tersedia pada URL:
 
 Berikut ilustrasi yang menggambarkan alur pembuatan dan penggunaan dataset pada *notebook* ini:
 
-![Dataset yang berhasil dibuat untuk verifikasi](dataset.png)
-*`dataset.png` — Dataset yang berhasil dibuat untuk verifikasi.*
+![Dataset yang diinput sebelum menjalankan notebook 3](dataset.png)
+*`dataset.png` — Gambar dataset yang diinput sebelum menjalankan notebook 3.*
 
-![Dataset yang diinput sebelum menjalankan notebook 3](add-dataset.png)
-*`add-dataset.png` — Gambar dataset yang diinput sebelum menjalankan notebook 3.*
+![Dataset yang berhasil dibuat untuk verifikasi](add-dataset.png)
+*`add-dataset.png` — Dataset yang berhasil dibuat untuk verifikasi.*
 
 ### Alur Kerja Sel (*Cell*)
 
