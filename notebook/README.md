@@ -134,6 +134,16 @@ Setelah berhasil, dataset akan tersedia pada URL:
 3. *(Sangat Direkomendasikan)* Atur Kaggle Secret `llama_server_api_key` agar kunci API tidak berubah setiap kali sesi dijalankan ulang.
 4. *(Opsional)* Atur Kaggle Secret `cf_tunnel_token` untuk menggunakan URL tetap (lihat bagian [Named Tunnel](#named-tunnel-url-tetap)).
 
+### Ilustrasi Alur Dataset
+
+Berikut ilustrasi yang menggambarkan alur pembuatan dan penggunaan dataset pada *notebook* ini:
+
+![Dataset yang berhasil dibuat untuk verifikasi](dataset.png)
+*`dataset.png` — Dataset yang berhasil dibuat untuk verifikasi.*
+
+![Dataset yang diinput sebelum menjalankan notebook 3](add-dataset.png)
+*`add-dataset.png` — Gambar dataset yang diinput sebelum menjalankan notebook 3.*
+
 ### Alur Kerja Sel (*Cell*)
 
 | Sel | Fungsi Utama |
