@@ -295,7 +295,31 @@ Kemudian arahkan aplikasi klien (Claude Code, Cline, Cursor, OpenClaw, dll.) ke 
 
 ---
 
-## 7. Penanganan Masalah (Troubleshooting)
+## 7. Integrasi dengan garwa-coder
+
+[garwa-coder](https://github.com/kriptobuz/garwa-coder-v2) adalah CLI coding agent yang kompatibel dengan endpoint OpenAI. Anda bisa langsung mengarahkannya ke server Ornith (baik langsung ke tunnel Kaggle maupun melalui 9Router) dengan mengatur tiga slash-command di dalam sesi garwa-coder:
+
+```bash
+/api-url https://xxxxxxx.trycloudflare.com/v1/chat/completions
+/api-model Ornith-1.5-35B-Q4_K_M.gguf
+/api-key xxxxx
+```
+
+Penjelasan tiap perintah:
+
+- **`/api-url <URL>`** — mengatur *endpoint chat completions* server model. Nilai ini harus berupa URL **lengkap** yang berakhiran `/v1/chat/completions` (bukan hanya host-nya). Contoh:
+  - Langsung ke tunnel Kaggle: `https://xxxxxxx.trycloudflare.com/v1/chat/completions`
+  - Melalui 9Router: `http://localhost:20128/v1/chat/completions`
+- **`/api-model <nama>`** — mengatur nama model aktif. Untuk Ornith gunakan nama berkas model yang di-load, mis. `Ornith-1.5-35B-Q4_K_M.gguf`.
+- **`/api-key <kunci>`** — mengatur API key server model (nilai dari sel B2b/C5 pada notebook 3). Kosongkan argumen (`/api-key`) untuk menghapusnya bila server tidak memakai autentikasi.
+
+Ketiga nilai ini **tersimpan lintas sesi** di `~/.config/garwa/config`, jadi Anda cukup mengaturnya sekali. Setelah itu, setiap permintaan garwa-coder akan dikirim ke endpoint Ornith dengan header `Authorization: Bearer <API_KEY>`.
+
+> 💡 **Catatan:** Nilai-nilai di atas juga bisa diatur lewat variabel lingkungan `LLAMA_URL`, `LLAMA_MODEL`, dan `LLAMA_API_KEY`, atau lewat argumen CLI `--api-url`, `--api-model`, dan `--api-key`. Prioritasnya: env > config pengguna (slash-command) > default bawaan.
+
+---
+
+## 8. Penanganan Masalah (Troubleshooting)
 
 | Masalah | Penyebab Utama | Solusi |
 |---|---|---|
@@ -309,7 +333,7 @@ Kemudian arahkan aplikasi klien (Claude Code, Cline, Cursor, OpenClaw, dll.) ke 
 
 ---
 
-## 8. Referensi Cepat Konfigurasi
+## 9. Referensi Cepat Konfigurasi
 
 ```python
 # Pengaturan Model
