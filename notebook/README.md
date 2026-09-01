@@ -231,6 +231,27 @@ Jika Anda berencana menggunakan **beberapa model sekaligus** (misalnya Ornith un
 
 ### Panduan Instalasi Singkat (di Perangkat Lokal)
 
+**Cara termudah — install global via npm** (memerlukan Node.js 20+):
+
+```bash
+npm install -g 9router
+9router
+```
+
+Dashboard otomatis terbuka di `http://localhost:20128` (API OpenAI-compatible di `http://localhost:20128/v1`).
+
+**Alternatif — jalankan dari source (untuk pengembangan):**
+
+```bash
+git clone https://github.com/decolua/9router.git
+cd 9router
+cp .env.example .env
+npm install
+PORT=20128 NEXT_PUBLIC_BASE_URL=http://localhost:20128 npm run dev
+```
+
+**Alternatif — mode produksi (VPS/Cloud):**
+
 ```bash
 git clone https://github.com/decolua/9router.git
 cd 9router
@@ -243,11 +264,32 @@ export DATA_DIR="/var/lib/9router"
 export PORT="20128"
 export HOSTNAME="0.0.0.0"
 export NODE_ENV="production"
+export NEXT_PUBLIC_BASE_URL="http://localhost:20128"
+
+npm run start
+# Atau jalankan sebagai daemon dengan PM2:
+# npm install -g pm2 && pm2 start npm --name 9router -- start
 ```
 
-Setelah layanan 9Router aktif, buka panel kontrol (*dashboard*) dan tambahkan penyedia baru dengan parameter:
+**Alternatif — Docker (publikasi resmi):**
+
+```bash
+docker run -d \
+  --name 9router \
+  -p 20128:20128 \
+  -v "$HOME/.9router:/app/data" \
+  -e DATA_DIR=/app/data \
+  decolua/9router:latest
+```
+
+Setelah layanan 9Router aktif, buka panel kontrol (*dashboard*) di `http://localhost:20128`, lalu tambahkan Ornith sebagai **provider** dengan parameter:
 - **Base URL:** `https://<PUBLIC_URL_dari_tunnel_anda>/v1`
 - **API Key:** `<API_KEY>` (diperoleh dari sel B2b/C5 pada notebook 3)
+
+Kemudian arahkan aplikasi klien (Claude Code, Cline, Cursor, OpenClaw, dll.) ke endpoint 9Router:
+- **Endpoint:** `http://localhost:20128/v1`
+- **API Key:** salin dari dashboard 9Router
+- **Model:** nama model Ornith yang Anda daftarkan
 
 > ⚠️ **Catatan:** Mengingat sesi GPU Kaggle tidak beroperasi 24/7, skenario penggunaan terbaik adalah memanfaatkan Ornith melalui 9Router selama jam kerja aktif, dan mengandalkan fitur *auto-fallback* 9Router saat server Kaggle dalam kondisi tidak aktif.
 
