@@ -82,7 +82,7 @@ LOOP_BREAK_COOLDOWN_SECONDS = 3
 # jendela waktu; tanpa pacing, deretan tool_call cepat (bash/read_file/grep)
 # bisa membanjiri server dan memicu 429. Jeda 1 detik cukup untuk menurunkan
 # volume request tanpa memperlambat alur kerja secara signifikan.
-TOOL_CALL_PACING_SECONDS = 1
+TOOL_CALL_PACING_SECONDS = 0
 ERROR_REPEAT_WINDOW = 4
 ERROR_REPEAT_THRESHOLD = 2
 REPEAT_MAX_OCCUR = 5
