@@ -1236,8 +1236,9 @@ class TestSpinnerPauseResume:
         assert not sp._paused.is_set()
         sp.pause()
         assert sp._paused.is_set()
-        # pause() menghapus baris spinner (carriage-return + spasi selebar terminal).
-        assert fake.value.endswith("\r" + " " * 20 + "\r")
+        # Spinner no-op: pause() tidak menulis karakter apa pun ke stream
+        # (tidak ada carriage-return/spasi) karena thread tidak pernah jalan.
+        assert fake.value == ""
         sp.resume()
         assert not sp._paused.is_set()
 

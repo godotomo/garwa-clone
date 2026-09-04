@@ -83,7 +83,11 @@ class Spinner:
         self._thread = None
         self._stop = threading.Event()
         self._paused = threading.Event()
-        self._frames = _FRAMES if self._stream.isatty() else _FALLBACK_FRAMES
+        try:
+            _is_tty = self._stream.isatty()
+        except Exception:
+            _is_tty = False
+        self._frames = _FRAMES if _is_tty else _FALLBACK_FRAMES
 
     def _spin(self):
         for frame in itertools.cycle(self._frames):
@@ -107,16 +111,20 @@ class Spinner:
             time.sleep(_FRAME_INTERVAL)
 
     def pause(self):
-        """Hentikan sementara penulisan karakter spinner dan hapus barisnya.
-        Dipanggil dari thread lain (mis. confirm()) sebelum membaca stdin."""
+        """Hentikan sementara penulisan karakter spinner.
+
+        Spinner saat ini no-op (thread tidak pernah dijalankan), jadi tidak
+        ada frame yang perlu dihentikan. Method ini tetap ada sebagai no-op
+        untuk kompatibilitas dengan pause_all_spinners()/confirm() -- tidak
+        menulis apa pun ke stream agar tidak memunculkan karakter `\\r` spam.
+        """
         self._paused.set()
-        # Hapus baris spinner supaya prompt konfirmasi tampil bersih.
-        term_w = _term_width()
-        self._stream.write("\r" + " " * term_w + "\r")
-        self._stream.flush()
 
     def resume(self):
-        """Lanjutkan kembali penulisan karakter spinner setelah input selesai."""
+        """Lanjutkan kembali penulisan karakter spinner setelah input selesai.
+
+        No-op: thread spinner tidak pernah dijalankan (lihat __enter__).
+        """
         self._paused.clear()
 
     def __enter__(self):
