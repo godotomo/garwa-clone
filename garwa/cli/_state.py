@@ -21,6 +21,15 @@ except ImportError:
 
 import contextvars
 
+
+def _env_int(name: str, default: int) -> int:
+    """Baca env var integer, fallback ke default bila tidak ada/invalid."""
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 _tool_call_index: contextvars.ContextVar[int] = contextvars.ContextVar("tool_call_index", default=0)
 # Akumulasi jumlah tool call yang benar-benar dieksekusi selama sesi interaktif
 # berjalan (di-increment di execute_tool, di-reset saat new_session/resume).
@@ -76,7 +85,10 @@ _WARNED_CONTEXT_MANAGER_NO_AUTH = [False]
 _WARNED_CONTEXT_MANAGER_NO_TOOLS_BUDGET = [False]
 LOOP_REPEAT_WINDOW = 4
 LOOP_REPEAT_THRESHOLD = 2
-LOOP_BREAK_COOLDOWN_SECONDS = 3
+# Cooldown saat error-loop/parse-loop terdeteksi. Bukan jeda normal antar tool
+# call (itu TOOL_CALL_PACING_SECONDS), hanya dipicu saat loop terdeteksi.
+# Bisa di-override via env var GARWA_LOOP_BREAK_COOLDOWN.
+LOOP_BREAK_COOLDOWN_SECONDS = _env_int("GARWA_LOOP_BREAK_COOLDOWN", 3)
 # Jeda minimum antar request ke server model setelah setiap tool call sukses.
 # Proxy publik (mis. 9inference.cloud) menerapkan rate limit (HTTP 429) per
 # jendela waktu; tanpa pacing, deretan tool_call cepat (bash/read_file/grep)
@@ -273,7 +285,7 @@ OPENROUTER_MAX_CACHE_BREAKPOINTS = 4
 OPENROUTER_CACHE_TAIL_BREAKPOINTS = 3
 AGENT_NAME = "Garwa"
 _DEBUG_EXTRA_SINK = [None]  # optional file-like object; run_overnight_mode
-RATE_LIMIT_RETRY_ATTEMPTS = 3
+RATE_LIMIT_RETRY_ATTEMPTS = _env_int("GARWA_RATE_LIMIT_RETRY", 3)
 RATE_LIMIT_BACKOFF_SECONDS = [15, 15, 15]
 # Concurrent limit (HTTP 429 dengan code "concurrent_limit"): server proxy
 # hanya mengizinkan sejumlah request aktif (mis. 1/1). Request yang masih
@@ -281,14 +293,21 @@ RATE_LIMIT_BACKOFF_SECONDS = [15, 15, 15]
 # daripada rate-limit biasa karena kita harus menunggu request sebelumnya
 # selesai (bisa sampai timeout stream). Lihat _is_concurrent_limit_error() di
 # dispatch.py.
-CONCURRENT_LIMIT_RETRY_ATTEMPTS = 5
+CONCURRENT_LIMIT_RETRY_ATTEMPTS = _env_int("GARWA_CONCURRENT_RETRY", 5)
 CONCURRENT_LIMIT_BACKOFF_SECONDS = [30, 60, 90, 120, 120]
 # Timeout HTTP untuk request ke server model. Diturunkan dari 300 ke 120 detik
 # supaya request yang menggantung tidak memblokir slot concurrent (1/1) terlalu
 # lama -- kalau server lambat, lebih baik timeout cepat lalu retry daripada
 # menahan slot sambil menunggu 5 menit.
-STREAM_TIMEOUT_SECONDS = 120
-NONSTREAM_TIMEOUT_SECONDS = 120
+#
+# CATATAN Kaggle+Cloudflare Tunnel: tunnel punya idle timeout default 100 detik.
+# Kalau client menunggu lebih lama dari itu (mis. 120 detik) sementara server
+# model sedang reasoning tanpa mengirim byte, tunnel akan memutus koneksi lebih
+# dulu (HTTP 499/524) dan client menggantung. Karena itu default diturunkan ke
+# 90 detik (< 100s idle tunnel) supaya client timeout duluan dan retry bersih.
+# Bisa di-override lewat env var GARWA_STREAM_TIMEOUT / GARWA_NONSTREAM_TIMEOUT.
+STREAM_TIMEOUT_SECONDS = _env_int("GARWA_STREAM_TIMEOUT", 90)
+NONSTREAM_TIMEOUT_SECONDS = _env_int("GARWA_NONSTREAM_TIMEOUT", 90)
 # Error server (HTTP 5xx): server model/proxy sedang bermasalah (overload,
 # internal error, gateway timeout, dsb). Sama seperti rate limit, kita tunggu
 # 30 detik lalu coba ulang beberapa kali -- jangan langsung mematikan seluruh
