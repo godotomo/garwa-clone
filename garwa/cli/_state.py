@@ -304,10 +304,11 @@ CONCURRENT_LIMIT_BACKOFF_SECONDS = [30, 60, 90, 120, 120]
 # Kalau client menunggu lebih lama dari itu (mis. 120 detik) sementara server
 # model sedang reasoning tanpa mengirim byte, tunnel akan memutus koneksi lebih
 # dulu (HTTP 499/524) dan client menggantung. Karena itu default diturunkan ke
-# 90 detik (< 100s idle tunnel) supaya client timeout duluan dan retry bersih.
+# 45 detik (jauh di bawah 100s idle tunnel) supaya client timeout duluan dan
+# retry bersih.
 # Bisa di-override lewat env var GARWA_STREAM_TIMEOUT / GARWA_NONSTREAM_TIMEOUT.
-STREAM_TIMEOUT_SECONDS = _env_int("GARWA_STREAM_TIMEOUT", 90)
-NONSTREAM_TIMEOUT_SECONDS = _env_int("GARWA_NONSTREAM_TIMEOUT", 90)
+STREAM_TIMEOUT_SECONDS = _env_int("GARWA_STREAM_TIMEOUT", 45)
+NONSTREAM_TIMEOUT_SECONDS = _env_int("GARWA_NONSTREAM_TIMEOUT", 45)
 # Error server (HTTP 5xx): server model/proxy sedang bermasalah (overload,
 # internal error, gateway timeout, dsb). Sama seperti rate limit, kita tunggu
 # 30 detik lalu coba ulang beberapa kali -- jangan langsung mematikan seluruh
