@@ -225,7 +225,11 @@ def tool_webfetch(url: str, format: str = "markdown", timeout: int = None) -> st
     }
 
     try:
-        resp = requests.get(url, headers=headers, timeout=timeout, stream=True, allow_redirects=False)
+        # Tuple (connect, read): read-timeout berlaku antar chunk saat
+        # iter_content() di bawah membaca body. Tanpa read-timeout, server
+        # yang diam tanpa menutup koneksi bisa membuat iter_content block
+        # tanpa batas.
+        resp = requests.get(url, headers=headers, timeout=(timeout, timeout), stream=True, allow_redirects=False)
 
         # Ikuti redirect manual supaya tiap hop bisa divalidasi terhadap
         # host internal (anti-SSRF lewat redirect). Batasi jumlah hop.
@@ -241,7 +245,7 @@ def tool_webfetch(url: str, format: str = "markdown", timeout: int = None) -> st
                 if _webfetch_is_private_host(nparsed.hostname):
                     return f"[ERROR] Redirect ke host internal ditolak: {nparsed.hostname!r}"
                 url = next_url
-                resp = requests.get(url, headers=headers, timeout=timeout, stream=True, allow_redirects=False)
+                resp = requests.get(url, headers=headers, timeout=(timeout, timeout), stream=True, allow_redirects=False)
             else:
                 break
 
