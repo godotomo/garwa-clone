@@ -97,6 +97,18 @@ class ProgressBar:
         self._message = message
         self._render()
 
+    def update(self, fraction: float, message: str | None = None) -> None:
+        """Perbarui fraksi DAN pesan sekaligus, lalu render SEKALI.
+
+        Pengganti memanggil set_progress() lalu set_status() berurutan --
+        dua pemanggilan itu masing-masing merender sehingga menghasilkan
+        render ganda (flicker di TTY / dua baris di non-TTY).
+        """
+        self._fraction = max(0.0, min(1.0, float(fraction)))
+        if message is not None:
+            self._message = message
+        self._render()
+
     # -- Rendering --------------------------------------------------------
 
     def _clear(self) -> None:
@@ -115,7 +127,12 @@ class ProgressBar:
         pct = int(self._fraction * 100)
         line = f"[{bar}] {pct:>3}%  {self._message}"
         if _is_tty(self._stream):
-            self._stream.write("\r" + line)
+            # Tulis ulang baris via `\r`, lalu padding trailing untuk menimpa
+            # sisa karakter dari baris sebelumnya yang lebih panjang (tanpa
+            # ini, sisa teks lama bisa tertinggal di ujung baris).
+            prev_len = len(self._last_rendered) if self._last_rendered else 0
+            pad = " " * max(0, prev_len - len(line))
+            self._stream.write("\r" + line + pad)
             self._stream.flush()
             self._last_rendered = line
         else:
