@@ -92,7 +92,11 @@ def _call_llama_server_stream(url: str, model: str, messages: list,
             url,
             json=payload,
             headers=_auth_headers(api_key),
-            timeout=state.STREAM_TIMEOUT_SECONDS,
+            # Tuple (connect_timeout, read_timeout): read_timeout berlaku juga
+            # antar-chunk. Ini penting saat server (mis. Kaggle di balik
+            # Cloudflare Tunnel) diam tanpa menutup koneksi -- tanpa read
+            # timeout, iter_lines() di bawah bisa block tanpa batas.
+            timeout=(state.STREAM_TIMEOUT_SECONDS, state.STREAM_TIMEOUT_SECONDS),
             stream=True,
         )
         if debug:

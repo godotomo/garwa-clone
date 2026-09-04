@@ -176,7 +176,10 @@ class TestTimeoutConstants:
 
         monkeypatch.setattr(stream_call.requests, "post", fake_post)
         stream_call._call_llama_server_stream("http://x", "m", [])
-        assert captured["timeout"] == state.STREAM_TIMEOUT_SECONDS
+        # timeout sekarang tuple (connect, read) agar read-timeout berlaku antar
+        # chunk -- keduanya memakai STREAM_TIMEOUT_SECONDS.
+        assert captured["timeout"] == (state.STREAM_TIMEOUT_SECONDS,
+                                       state.STREAM_TIMEOUT_SECONDS)
         assert state.STREAM_TIMEOUT_SECONDS < 300  # diturunkan dari 300
 
     def test_nonstream_timeout_uses_constant(self, monkeypatch):
