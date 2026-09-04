@@ -1,7 +1,6 @@
 """cli/llm_client/dispatch.py
 Dipecah lebih lanjut dari cli/llm_client.py.
 """
-import shutil
 import sys
 import time
 
@@ -104,44 +103,20 @@ def _is_server_error(e: Exception) -> bool:
 
 
 def _countdown_sleep(seconds: float, label: str) -> None:
-    """Tidur `seconds` detik sambil menampilkan animasi hitung mundur
-    (spinner + angka mundur + bilah progress) di satu baris yang di-rewrite
-    via carriage return.
+    """Tidur `seconds` detik sambil menampilkan pesan hitung mundur.
 
-    Aman untuk non-TTY: kalau stdout bukan terminal (pipe/file, mode
-    --auto/--overnight), langsung time.sleep() polos tanpa output apa pun
-    supaya tidak mengotori log.
+    Versi ini TIDAK memakai spinner/animasi carriage-return karena di
+    sebagian lingkungan (pipe, redirect, atau terminal tertentu) `\\r`
+    tidak diproses dengan benar sehingga setiap frame menumpuk menjadi
+    satu baris spam yang panjang. Untuk menghindari bug itu, cukup
+    tampilkan satu baris statis lalu `time.sleep()` polos.
+
+    Kalau stdout bukan TTY (pipe/file, mode --auto/--overnight), langsung
+    sleep tanpa output apa pun supaya tidak mengotori log.
     """
-    if not sys.stdout.isatty():
-        time.sleep(seconds)
-        return
-    frames = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
-    term_w = shutil.get_terminal_size().columns or 80
-    start = time.monotonic()
-    idx = 0
-    while True:
-        elapsed = time.monotonic() - start
-        if elapsed >= seconds:
-            break
-        remaining = max(0, seconds - elapsed)
-        fraction = elapsed / seconds
-        # Bilah progress 20 kolom.
-        filled = int(round(fraction * 20))
-        bar = "█" * filled + "░" * (20 - filled)
-        frame = frames[idx % len(frames)]
-        line = (
-            c(f"{frame} {label} ", C.BOLD_CYAN)
-            + c(f"[{bar}]", C.BOLD_CYAN)
-            + c(f" {remaining:4.0f}s ", C.BOLD_WHITE)
-            + c("menunggu...", C.DIM)
-        )
-        sys.stdout.write("\r" + line)
-        sys.stdout.flush()
-        idx += 1
-        time.sleep(0.1)
-    # Bersihkan baris.
-    sys.stdout.write("\r" + " " * term_w + "\r")
-    sys.stdout.flush()
+    if sys.stdout.isatty():
+        print(c(f"  Menunggu {seconds:g} detik ({label})...", C.DIM))
+    time.sleep(seconds)
 
 
 def call_llama_server(url: str, model: str, messages: list,

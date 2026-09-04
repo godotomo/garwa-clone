@@ -1160,14 +1160,15 @@ class TestSpinner:
         assert sp._thread is None
 
     def test_thread_started_when_tty(self, monkeypatch):
-        """Kalau stream terminal interaktif, thread daemon spinner dijalankan."""
+        """Kalaupun stream terminal interaktif, spinner no-op TIDAK boleh
+        menyalakan thread -- ini sengaja agar tidak menulis karakter kontrol
+        (`\\r`) yang bisa menjadi spam frame di lingkungan tertentu."""
         fake = _FakeStream(isatty=True)
         monkeypatch.setattr(sys, "stdout", fake)
         sp = spinner_mod.Spinner("pesan", stderr=False)
         with sp:
-            assert sp._thread is not None
-            assert sp._thread.daemon is True
-        assert sp._thread is not None
+            assert sp._thread is None  # no-op: tidak ada thread daemon
+        assert sp._thread is None
 
     def test_exit_returns_false_without_thread(self, monkeypatch):
         """__exit__ harus mengembalikan False (tidak menelan exception)

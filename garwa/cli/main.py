@@ -33,6 +33,9 @@ from .paste_input import _describe_paste
 from .paste_input import _format_pasted_attachment
 from .prompt_ui import prompt_with_status
 from .skills import build_system_prompt
+from .system_warning import extract_system_warnings
+from .system_warning import inject_system_warning
+from .system_warning import strip_system_warnings
 from .slash_commands import handle_slash_command
 from .text_utils import confirm
 from .tool_schema import _init_tool_registry
@@ -514,6 +517,26 @@ def main():
                 message_to_store = _format_pasted_attachment(user_input)
             else:
                 message_to_store = user_input
+
+            # --- Pemrosesan tag <systemwarning> dari input user ---
+            # Kalau user menyertakan tag <systemwarning>...</systemwarning>,
+            # ekstrak kontennya dan suntikkan sebagai pesan `system_warning`
+            # (di-pin, prioritas tinggi) alih-alih memperlakukannya sebagai
+            # pertanyaan user biasa. Tag tersebut TIDAK boleh bocor ke pesan
+            # user yang disimpan/dikirim ke model sebagai teks biasa.
+            extracted_warnings = extract_system_warnings(message_to_store)
+            if extracted_warnings:
+                for w in extracted_warnings:
+                    inject_system_warning(args.db_path, session_id, w)
+                # Bersihkan tag dari teks yang akan disimpan sebagai pesan user.
+                cleaned = strip_system_warnings(message_to_store)
+                if cleaned:
+                    message_to_store = cleaned
+                else:
+                    # Tidak ada teks user tersisa selain warning -- jangan simpan
+                    # pesan user kosong; cukup warning yang sudah disuntikkan.
+                    dbmod.touch_session(args.db_path, session_id)
+                    continue
 
             dbmod.add_message(args.db_path, session_id, "user", message_to_store, kind="chat")
 

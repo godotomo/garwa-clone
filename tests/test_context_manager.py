@@ -315,10 +315,17 @@ def test_prepare_context_messages_returns_messages(db_path, session_id):
     assert msgs[0]["content"] == "SYS"
 
 
-def test_prepare_context_messages_enforces_hard_budget(db_path, session_id):
-    # Banyak pesan panjang dengan window kecil -> harus dipangkas.
+def test_prepare_context_messages_summarizes_instead_of_trim(db_path, session_id, monkeypatch):
+    # Banyak pesan panjang + window kecil -> harus DIRINGKAS (summarize),
+    # BUKAN dipotong/trim pesan mentah. Semua pesan lama harus lewat jalur
+    # summarize supaya tidak ada konteks yang hilang diam-diam.
     for i in range(50):
         dbmod.add_message(db_path, session_id, "user", "kata " * 100)
+
+    def fake_summarize(url, model, text, api_key="", progress=None):
+        return {"narasi": "RINGKASAN", "instruksi_aktif": []}
+
+    monkeypatch.setattr(cm, "_summarize_text", fake_summarize)
     msgs = cm.prepare_context_messages(
         db_path, session_id, "SYS", "http://x", "model", context_window_tokens=3000
     )
@@ -326,3 +333,30 @@ def test_prepare_context_messages_enforces_hard_budget(db_path, session_id):
     assert total <= 3000 - cm.RESERVE_FOR_RESPONSE
     # system message selalu dipertahankan.
     assert msgs[0]["role"] == "system"
+    # Harus ada ringkasan tersimpan (bukti pesan di-summarize, bukan di-trim).
+    summary = dbmod.get_latest_summary(db_path, session_id)
+    assert summary is not None
+    assert summary["summary_text"] == "RINGKASAN"
+
+
+def test_prepare_context_messages_no_trim_when_summarize_fails(db_path, session_id, monkeypatch):
+    # Kalau server ringkasan GAGAL (tidak bisa dijangkau), context TIDAK
+    # boleh di-trim diam-diam: pesan mentah harus tetap dikirim apa adanya
+    # (biarkan server/agent_loop menangani ContextExceededError), bukan
+    # dibuang.
+    for i in range(50):
+        dbmod.add_message(db_path, session_id, "user", "kata " * 100)
+
+    def boom(url, model, text, api_key="", progress=None):
+        raise requests.Timeout("server ringkasan tidak terjangkau")
+
+    monkeypatch.setattr(cm, "_summarize_text", boom)
+    msgs = cm.prepare_context_messages(
+        db_path, session_id, "SYS", "http://x", "model", context_window_tokens=3000
+    )
+    # Semua pesan mentah harus tetap ada (tidak ada yang di-trim).
+    contents = [m["content"] for m in msgs]
+    assert "kata kata kata" in contents[1]
+    assert len(msgs) == 51  # system + 50 pesan mentah, tidak ada yang dibuang
+    # Tidak boleh ada summary tersimpan (summarize gagal).
+    assert dbmod.get_latest_summary(db_path, session_id) is None

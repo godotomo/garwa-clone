@@ -26,7 +26,7 @@ from . import db as dbmod
 from . import token_utils
 from .cli.colors import C
 from .cli.colors import c
-from .cli.progress import Spinner
+from .cli.progress import ProgressBar
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,14 @@ SUMMARIZE_REQUEST_TIMEOUT_SECONDS = 60
 SUMMARIZE_MAX_RETRIES = 3          # total percobaan = 1 + SUMMARIZE_MAX_RETRIES
 SUMMARIZE_RETRY_BASE_DELAY = 2.0   # detik, delay pertama; digandakan tiap retry
 SUMMARIZE_RETRY_MAX_DELAY = 15.0   # batas atas delay antar-retry (detik)
+
+# Batas input (karakter) untuk model ringkasan. Model ringkasan sama dengan
+# model utama, jadi batas ini dipatok agar chunk ringkasan TIDAK overflow
+# context window server -> error 400 -> ringkasan gagal total (bad-request
+# BUKAN retryable). Default 100k karakter sebagai pengaman.
+SUMMARIZE_MAX_INPUT_CHARS = 100_000
+# Rasio warning: log ke.debug kalau chunk mendekati/lewati batas input.
+SUMMARIZE_WARN_RATIO = 0.9
 
 
 def _pairing_safe_split(rows: list, split_at: int) -> int:
@@ -270,6 +278,30 @@ def _parse_summary_output(raw: str) -> dict:
 
 def _summarize_text(url: str, model: str, text_to_summarize: str, api_key: str = "",
                     progress=None) -> dict:
+    # --- Guard token/character input (pencegahan overflow context window) ---
+    # Model ringkasan = model utama; chunk yang terlalu besar akan overflow
+    # context window server -> HTTP 400 -> ringkasan gagal total. Karena
+    # instruksi/pesan terbaru adalah yang paling penting, potong ke tail.
+    n_chars = len(text_to_summarize)
+    if n_chars > SUMMARIZE_MAX_INPUT_CHARS:
+        cut_at = n_chars - SUMMARIZE_MAX_INPUT_CHARS
+        logger.warning(
+            "chunk ringkasan %.1fM karakter > batas %.0f karakter; "
+            "memotong %d karakter dari HEAD (menyimpan tail).",
+            n_chars / 1e6, SUMMARIZE_MAX_INPUT_CHARS, cut_at,
+        )
+        text_to_summarize = text_to_summarize[-SUMMARIZE_MAX_INPUT_CHARS:]
+
+    logger.debug(
+        "summarization input: %d karakter, %.1f token; "
+        "batas %d karakter (%.1f token), rasio %.2f.",
+        n_chars,
+        token_utils.count_tokens(text_to_summarize),
+        SUMMARIZE_MAX_INPUT_CHARS,
+        SUMMARIZE_MAX_INPUT_CHARS // 4,
+        n_chars / SUMMARIZE_MAX_INPUT_CHARS,
+    )
+
     payload = {
         "model": model,
         "messages": [
@@ -404,7 +436,7 @@ def maybe_summarize(db_path: str, session_id: str, url: str, model: str,
         chunk_text = f"[RINGKASAN SEBELUMNYA]\n{prior_summary_text}\n\n{chunk_text}"
 
     try:
-        with Spinner("Meringkas riwayat percakapan...") as spinner:
+        with ProgressBar("Meringkas riwayat percakapan...") as spinner:
             def _progress(attempt: int, total: int) -> None:
                 fraction = (attempt + 1) / total
                 spinner.set_progress(fraction)
@@ -487,7 +519,7 @@ def prepare_context_messages(
 
     tools_tokens = _tools_payload_tokens(tools_payload)
 
-    maybe_summarize(
+    summarized = maybe_summarize(
         db_path=db_path,
         session_id=session_id,
         url=url,
@@ -508,12 +540,20 @@ def prepare_context_messages(
     )
 
     hard_budget = context_window_tokens - reserve_for_response - tools_tokens
-
     hard_budget = max(hard_budget, MIN_CONTEXT_WINDOW_HISTORY_FLOOR)
     if token_utils.count_messages_tokens(messages) <= hard_budget:
         return messages
 
     if len(messages) <= 1:
+        return messages
+
+    # Hanya potong TAIL (pesan terbaru) bila ringkasan BERHASIL. Kalau
+    # summarize gagal, pesan mentah tetap dikirim apa adanya agar
+    # server/agent_loop yang menangani ContextExceededError -- bukan
+    # dibuang diam-diam. Konteks lama yang sudah tercakup summary aman
+    # tersimpan di summary, jadi memotong tail terbaru tidak menghilangkan
+    # konteks yang belum terangkum.
+    if not summarized:
         return messages
 
     system_message = messages[0]

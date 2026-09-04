@@ -172,10 +172,13 @@ def _rebuild_tools_and_registry() -> None:
 
 
 def _require_mcp_registry() -> "MCPToolRegistry | None":
-    """Kembalikan registry global, atau cetak pesan & None bila MCP tak aktif."""
-    if not mcp_available():
-        print(c("[mcp] Modul 'mcp' tidak terinstall. Install: pip install 'mcp>=2.0'", C.YELLOW))
-        return None
+    """Kembalikan registry global, atau cetak pesan & None bila belum ada.
+
+    Operasi konfigurasi (add/remove/api-key/enable off) hanya memanipulasi
+    file konfigurasi JSON dan TIDAK memerlukan SDK MCP terinstall. Jadi di
+    sini tidak lagi menolak saat `mcp` belum terinstall; koneksi nyata tetap
+    mengecek SDK di dalam MCPToolRegistry.connect_all/connect_server.
+    """
     registry = get_global_registry()
     if registry is None:
         print(c("[mcp] MCP belum aktif. Tambahkan server dulu via /mcp-server add, "
@@ -200,10 +203,13 @@ def _persist_mcp(registry: "MCPToolRegistry", args) -> None:
 
 
 def _get_or_create_registry() -> "MCPToolRegistry | None":
-    """Kembalikan registry global; buat baru bila belum ada (untuk /mcp-server add)."""
-    if not mcp_available():
-        print(c("[mcp] Modul 'mcp' tidak terinstall. Install: pip install 'mcp>=2.0'", C.YELLOW))
-        return None
+    """Kembalikan registry global; buat baru bila belum ada (untuk /mcp-server add).
+
+    Tidak menolak saat SDK `mcp` belum terinstall: penambahan server hanya
+    memanipulasi konfigurasi (file JSON), dan koneksi nyata tetap best-effort
+    (dicek SDK-nya di dalam MCPToolRegistry). Jadi user bisa mengonfigurasi
+    server lebih dulu, lalu install SDK dan sambungkan via /mcp-enable on.
+    """
     registry = get_global_registry()
     if registry is None:
         registry = MCPToolRegistry([])

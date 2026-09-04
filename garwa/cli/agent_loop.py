@@ -22,7 +22,9 @@ from .llm_errors import ContextExceededError
 from .llm_errors import RepetitionLoopError
 from .llm_errors import TruncatedGenerationError
 from .markdown_render import _render_markdown_once
+from .reasoning_strip import strip_reasoning_tags
 from .spinner import Spinner
+from .system_warning import strip_system_warnings
 from .text_utils import _find_repeated_text
 from .text_utils import _loop_similarity
 from .tool_exec import _tool_may_prompt
@@ -380,6 +382,13 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
         _loop_count = 0
 
         assistant_text = _convert_alt_tool_call_syntax(assistant_text)
+        # Bersihkan reasoning/chain-of-thought yang bocor sebagai teks biasa
+        # di dalam field `content` (mis. <thinking>...</thinking>). Field
+        # reasoning terpisah (reasoning_content) sudah dipisah di
+        # stream_call/nonstream_call; yang ini adalah tag yang ditulis model
+        # langsung di dalam content. Dibersihkan SEBELUM disimpan ke DB dan
+        # ditampilkan, supaya tidak bocor ke respon pengguna.
+        assistant_text = strip_reasoning_tags(assistant_text)
 
         _loop_history.append(assistant_text)
         if len(_loop_history) > state.LOOP_REPEAT_WINDOW:
@@ -511,7 +520,11 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
             kind="chat",
         )
 
-        visible_text = state.TOOL_CALL_RE.sub("", assistant_text).strip()
+        visible_text = strip_system_warnings(
+            strip_reasoning_tags(
+                state.TOOL_CALL_RE.sub("", assistant_text)
+            )
+        ).strip()
         if visible_text:
             last_visible = visible_text
         if args.no_stream and visible_text:

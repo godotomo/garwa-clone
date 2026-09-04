@@ -197,7 +197,9 @@ def save_mcp_config(configs: List[MCPServerConfig], path: Optional[str] = None) 
         servers[cfg.name] = entry
 
     payload = {"mcpServers": servers}
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
         f.write("\n")
@@ -325,20 +327,29 @@ class _MCPBridge:
         self._thread: Optional[threading.Thread] = None
         self._sessions: Dict[str, _MCPSession] = {}
         self._lock = threading.Lock()
+        self._started = threading.Event()
 
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
-        if self._loop is not None and self._loop.is_running():
-            return self._loop
-        loop = asyncio.new_event_loop()
-        self._loop = loop
-        self._thread = threading.Thread(
-            target=self._run_loop, args=(loop,), name="garwa-mcp-loop", daemon=True
-        )
-        self._thread.start()
-        return loop
+        with self._lock:
+            if self._loop is not None and self._loop.is_running():
+                return self._loop
+            loop = asyncio.new_event_loop()
+            self._loop = loop
+            self._started.clear()
+            self._thread = threading.Thread(
+                target=self._run_loop, args=(loop,), name="garwa-mcp-loop", daemon=True
+            )
+            self._thread.start()
+            # Tunggu hingga runner benar-benar menjalankan loop (run_forever)
+            # sebelum melepaskan lock. Tanpa ini, thread lain bisa melihat
+            # is_running() == False (runner belum masuk run_forever) dan
+            # membuat loop kedua -- race condition.
+            self._started.wait(timeout=10)
+            return loop
 
     def _run_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         asyncio.set_event_loop(loop)
+        self._started.set()
         loop.run_forever()
 
     def run_coro(self, coro: Any, timeout: float = 60.0) -> Any:
@@ -535,13 +546,21 @@ class MCPToolRegistry:
         return True
 
     def add_server(self, config: MCPServerConfig, connect: bool = True) -> bool:
-        """Tambah server baru ke daftar config. Bila `connect`, langsung sambungkan."""
+        """Tambah server baru ke daftar config.
+
+        Config SELALU ditambahkan (return True) selama nama belum dipakai --
+        operasi konfigurasi tidak bergantung pada SDK MCP terinstall. Bila
+        `connect=True`, koneksi dicoba BEST-EFFORT: kegagalan koneksi (SDK
+        belum terinstall, command tak ada, server offline) TIDAK menggagalkan
+        penambahan config, supaya user bisa mengonfigurasi server lebih dulu
+        dan menyambungkannya nanti lewat /mcp-enable on.
+        """
         if self._find_config(config.name) is not None:
             return False
         self.configs.append(config)
-        if not connect:
-            return True
-        return self.connect_server(config.name)
+        if connect and mcp_available():
+            self.connect_server(config.name)
+        return True
 
     def remove_server(self, name: str) -> bool:
         """Hapus server dari config + tutup koneksi + buang tool-nya."""

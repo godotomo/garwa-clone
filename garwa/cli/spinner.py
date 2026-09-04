@@ -120,27 +120,24 @@ class Spinner:
         self._paused.clear()
 
     def __enter__(self):
-        # Hanya tampilkan spinner kalau stream-nya terminal interaktif.
-        # Kalau stdout/stdin di-redirect (mis. test otomatis), lewati saja
-        # supaya tidak menulis karakter kontrol ke output yang bukan tty.
-        if self._stream.isatty():
-            self._thread = threading.Thread(
-                target=self._spin, daemon=True, name="garwa-spinner"
-            )
-            self._thread.start()
-            with _ACTIVE_LOCK:
-                _ACTIVE_SPINNERS.add(self)
+        # Spinner sengaja DINONAKTIFKAN (no-op). Sebelumnya spinner berjalan
+        # di thread latar dan menulis ulang baris via carriage-return (`\r`).
+        # Di sebagian lingkungan (pipe, redirect, atau terminal tertentu)
+        # `\r` tidak diproses dengan benar sehingga setiap frame menumpuk
+        # menjadi satu baris spam yang panjang. Untuk menghindari bug itu,
+        # spinner tidak pernah dijalankan -- context manager ini hanya
+        # mengembalikan self tanpa memulai thread apa pun.
+        #
+        # Tetap mendaftarkan ke registry agar hook pause/resume (confirm())
+        # berfungsi normal; tidak masalah karena thread tidak berjalan.
+        with _ACTIVE_LOCK:
+            _ACTIVE_SPINNERS.add(self)
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        # Tidak ada thread yang dijalankan, jadi tidak ada yang perlu
+        # dihentikan atau dibersihkan. Tetap discard dari registry untuk
+        # keamanan kalau ada sisa dari versi lama.
         with _ACTIVE_LOCK:
             _ACTIVE_SPINNERS.discard(self)
-        if self._thread is not None:
-            self._stop.set()
-            self._paused.clear()
-            self._thread.join(timeout=_FRAME_INTERVAL * 2)
-            # Hapus seluruh baris spinner (carriage-return + spasi selebar terminal).
-            term_w = _term_width()
-            self._stream.write("\r" + " " * term_w + "\r")
-            self._stream.flush()
         return False  # jangan menelan exception

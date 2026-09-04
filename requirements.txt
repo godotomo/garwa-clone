@@ -1,22 +1,44 @@
 # Wajib
 requests>=2.31
+# tiktoken: tokenizer BPE OpenAI untuk perhitungan token/context yang AKURAT
+# di token_utils.py. Dipakai untuk memutuskan "kapan summarize" dan "berapa
+# yang boleh masuk context window" -- menjaga request tidak melebihi context
+# server. Tanpa ini, estimasi jatuh ke heuristik kasar (kurang presisi).
+tiktoken>=0.7
 
 # Integrasi MCP (Model Context Protocol) -- Garwa sebagai MCP client.
 # Opsional: kalau tidak terinstall, CLI tetap berjalan tanpa tool MCP
-# (fallback otomatis; lihat garwa/mcp/client.py).
+# (fallback otomatis; lihat garwa/mcp/client.py). Operasi konfigurasi
+# (/mcp-server add/remove, /mcp-api-key, /mcp-enable off) TIDAK butuh SDK;
+# hanya koneksi nyata yang butuh paket ini.
+#
+# CATATAN INSTALL (penting): `mcp` menarik `jsonschema` -> `rpds-py`. Di
+# platform yang tidak punya wheel prebuilt (mis. Android/Termux, aarch64),
+# `rpds-py` akan dikompilasi dari source dan butuh toolchain Rust penuh
+# (cargo/rustc) -- proses ini lambat (bisa 10-30 menit). Kalau hanya ingin
+# mengonfigurasi MCP tanpa koneksi, paket ini boleh dilewati.
 mcp>=2.0
+# httpx: dipakai garwa/mcp/client.py untuk membawa header HTTP kustom
+# (mis. Authorization) saat connect ke server MCP streamable_http. Sudah
+# menjadi dependensi transitif `mcp`, tapi ditulis eksplisit agar jelas.
+httpx>=0.27
 
 # Opsional -- dipakai kalau terinstall, ada fallback otomatis kalau tidak:
 # - beautifulsoup4: parsing HTML lebih akurat di tools/webfetch.py
 #   (fallback: strip tag pakai regex sederhana)
-# - tiktoken: estimasi jumlah token lebih presisi di token_utils.py
-#   (fallback: estimasi ~3.5 char/token)
 # - tree-sitter + tree-sitter-language-pack: outline simbol lebih akurat
 #   di repo_map.py (fallback: ekstraksi definisi berbasis regex per bahasa)
 # - prompt_toolkit: status bar menempel di dasar terminal + paste multi-baris
 #   native di CLI (fallback: baris status redup di atas prompt via input()/readline)
 beautifulsoup4>=4.12
-tiktoken>=0.7
 tree-sitter>=0.21
 tree-sitter-language-pack>=0.2
 prompt_toolkit>=3.0
+
+# Testing -- hanya untuk pengembangan, TIDAK dipakai saat runtime:
+# - pytest: framework test suite (tests/). Tanpa ini test tidak bisa dijalankan.
+# - pytest-cov: pelaporan cakupan kode (`pytest --cov`) saat profiling fix.
+# - coverage: engine inti di balik pytest-cov; dipakai CLI `coverage`.
+pytest>=7.0
+pytest-cov>=4.0
+coverage>=7.0

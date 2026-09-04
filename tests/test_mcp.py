@@ -6,6 +6,7 @@ Fokus pada logika yang bisa diuji deterministik tanpa server MCP eksternal:
 - slash-command /mcp-server, /mcp-api-key, /mcp-enable (dengan mock bridge)
 """
 
+import asyncio
 import json
 import os
 import types
@@ -284,3 +285,64 @@ def test_slash_mcp_commands_registered():
     assert "mcp-server" in sc.COMMANDS
     assert "mcp-api-key" in sc.COMMANDS
     assert "mcp-enable" in sc.COMMANDS
+
+
+# ---------------------------------------------------------------------------
+# Regression: bug fix
+# ---------------------------------------------------------------------------
+def test_save_mcp_config_without_parent_dir(tmp_path, monkeypatch):
+    """save_mcp_config tidak crash saat path tidak punya komponen direktori.
+
+    Dulu `os.makedirs(os.path.dirname(path))` memanggil `makedirs("")` yang
+    melempar FileNotFoundError. Path tanpa direktori disimulasikan dengan
+    monkeypatch `os.path.dirname` agar mengembalikan string kosong.
+    """
+    import os as _os
+
+    monkeypatch.setattr(_os.path, "dirname", lambda p: "")
+    cfg = MCPServerConfig(name="x", transport=MCPTransport.STDIO, command="true")
+    # path relatif tanpa direktori; dijalankan di tmp_path (cwd test)
+    monkeypatch.chdir(tmp_path)
+    saved = save_mcp_config([cfg], "mcp_noparent.json")
+    assert os.path.exists(saved)
+    loaded = load_mcp_config(saved)
+    assert len(loaded) == 1 and loaded[0].name == "x"
+
+
+def test_ensure_loop_is_thread_safe(monkeypatch):
+    """_ensure_loop hanya boleh membuat satu loop meski dipanggil concurrent.
+
+    _bridge._lock menjamin inisialisasi loop terjadi sekali saja. Banyak
+    thread memanggil _ensure_loop serentak; hasil harus loop yang sama dan
+    _thread dibuat tepat satu kali.
+    """
+    import threading
+
+    bridge = mcp_client._MCPBridge()
+    created = []
+    _orig_new_event_loop = asyncio.new_event_loop
+
+    def make_loop():
+        loop = _orig_new_event_loop()
+        created.append(loop)
+        return loop
+
+    monkeypatch.setattr(asyncio, "new_event_loop", make_loop)
+
+    results = []
+
+    def worker():
+        results.append(bridge._ensure_loop())
+
+    threads = [threading.Thread(target=worker) for _ in range(16)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Semua thread mendapatkan loop yang sama, loop dibuat tepat satu kali.
+    assert len(set(id(r) for r in results)) == 1
+    assert len(created) == 1
+    assert bridge._loop is not None
+    assert bridge._thread is not None
+    assert bridge._thread.is_alive()
