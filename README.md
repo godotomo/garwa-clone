@@ -510,6 +510,8 @@ Ganti lokasi default dengan `--skills-dir /path/lain` saat menjalankan.
 
 Repositori ini sudah membawa beberapa skill siap pakai:
 
+- `browser-automation` — automasi browser (Playwright/CDP) untuk registrasi, form filling, OTP
+- `captcha-solver` — penanganan CAPTCHA (reCAPTCHA/hCaptcha/Turnstile/image)
 - `crypto-data-fetcher` — ambil data pasar & on-chain kripto
 - `crypto-smart-contract-auditor` — audit keamanan smart contract (Slither/Aderyn)
 - `crypto-trading-analyst` — analisis trading kripto
