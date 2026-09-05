@@ -40,6 +40,35 @@ from .openrouter_cache import _apply_openrouter_cache_control
 from .openrouter_cache import _wants_openrouter_cache_control
 
 
+def _extract_timings_usage(obj: dict):
+    """Ekstrak usage dari field 'timings' (llama.cpp stream trailer).
+
+    llama.cpp streaming TIDAK mengirim field 'usage' di chunk apapun -- bahkan
+    chunk trailer -- tapi chunk trailer punya field 'timings':
+        {"cache_n": 0, "prompt_n": 18, "predicted_n": 39,
+         "prompt_per_token_ms": ..., "predicted_per_token_ms": ...}
+    Mapping ke format usage yang diharapkan _accumulate_usage():
+        prompt_tokens      -> prompt_n   (total prompt tokens, termasuk cached)
+        completion_tokens  -> predicted_n (token yang diprediksi model)
+        cached_tokens      -> cache_n    (opsional, hanya untuk info/debug)
+    Mengembalikan None bila 'timings' tidak ada/tidak valid.
+    """
+    timings = obj.get("timings")
+    if not isinstance(timings, dict):
+        return None
+    prompt = timings.get("prompt_n")
+    predicted = timings.get("predicted_n")
+    if not (isinstance(prompt, int) or isinstance(predicted, int)):
+        return None
+    usage = {
+        "prompt_tokens": prompt if isinstance(prompt, int) else 0,
+        "completion_tokens": predicted if isinstance(predicted, int) else 0,
+    }
+    cache = timings.get("cache_n")
+    if isinstance(cache, int):
+        usage["cached_tokens"] = cache
+    return usage
+
 
 def _call_llama_server_stream(url: str, model: str, messages: list,
                               temperature: float = 0.2, api_key: str = "",
@@ -147,6 +176,11 @@ def _call_llama_server_stream(url: str, model: str, messages: list,
             if _fr:
                 last_finish_reason = _fr
             _usage = _extract_stream_usage(obj)
+            # Fallback: llama.cpp streaming TIDAK mengirim field 'usage' di
+            # chunk apapun (termasuk trailer). Ekstrak dari 'timings' di
+            # chunk terakhir (prompt_n/predicted_n/cache_n).
+            if _usage is None:
+                _usage = _extract_timings_usage(obj)
             if _usage is not None:
                 last_usage = _usage
             if debug:

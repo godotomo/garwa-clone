@@ -36,7 +36,7 @@ RESERVE_FOR_RESPONSE = 1024*2         # token yang disisakan untuk jawaban model
 MIN_CONTEXT_WINDOW_HISTORY_FLOOR = 256  # lantai hard_budget riwayat, lihat prepare_context_messages()
 MIN_MESSAGES_TO_SUMMARIZE = KEEP_TAIL_MESSAGES + 4  # jangan ringkas kalau riwayat masih pendek
 
-SUMMARIZE_REQUEST_TIMEOUT_SECONDS = 60
+SUMMARIZE_REQUEST_TIMEOUT_SECONDS = 180
 
 SUMMARIZE_MAX_RETRIES = 3          # total percobaan = 1 + SUMMARIZE_MAX_RETRIES
 SUMMARIZE_RETRY_BASE_DELAY = 2.0   # detik, delay pertama; digandakan tiap retry
@@ -46,7 +46,11 @@ SUMMARIZE_RETRY_MAX_DELAY = 15.0   # batas atas delay antar-retry (detik)
 # model utama, jadi batas ini dipatok agar chunk ringkasan TIDAK overflow
 # context window server -> error 400 -> ringkasan gagal total (bad-request
 # BUKAN retryable). Default 100k karakter sebagai pengaman.
-SUMMARIZE_MAX_INPUT_CHARS = 100_000
+# Dinaikkan ke 300k agar chunk ringkasan besar (~0.3M karakter) tidak
+# terpotong dari HEAD — memotong hanya akan membuang konteks penting.
+# Tetap di bawah ~75k token (~300k karakter) agar aman untuk context
+# window 128k+; model ringkasan sama dengan model utama.
+SUMMARIZE_MAX_INPUT_CHARS = 300_000
 # Rasio warning: log ke.debug kalau chunk mendekati/lewati batas input.
 SUMMARIZE_WARN_RATIO = 0.9
 

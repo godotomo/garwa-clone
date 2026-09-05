@@ -3,8 +3,13 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+.venv-test/
 venv/
 env/
+
+# Build artifacts / logs
+*.log
+pynacl_build.log
 
 # OS / editor
 .DS_Store
@@ -12,3 +17,19 @@ env/
 # Database / runtime
 *.db
 *.sqlite3
+
+# Secrets / credentials (JANGAN commit)
+.env
+jobbot/credentials.json
+jobbot/token.json
+jobbot/service_account.json
+
+# Generated deliverables (large, not source)
+deliverables/
+inbox/
+logs/
+
+# Temporary verification scripts
+verify_build.py
+garwa_cli.py
+tmp_*.py
