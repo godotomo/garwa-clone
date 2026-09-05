@@ -11,7 +11,7 @@ Skill ini membungkus pipeline pengambilan data kripto dari API publik gratis yan
 
 | Kebutuhan | Endpoint | Catatan |
 |---|---|---|
-| Harga/market cap/volume | `https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_market_cap=true&include_24hr_change=true` | Keyless |
+| Harga/market cap/volume | `https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_market_cap=true&include_24hr_vol=true&include_24hr_change=true` | Keyless |
 | Detail koin (ATH/ATL/supply) | `https://api.coingecko.com/api/v3/coins/{id}?localization=false&tickers=false&market_data=true` | Keyless |
 | Likuiditas DEX | `https://api.dexscreener.com/latest/dex/search?q={SYMBOL}` | Keyless |
 | Audit keamanan token | `https://api.gopluslabs.io/api/v1/token_security/{chainId}?contract_addresses={ADDR}` | Keyless |
@@ -40,6 +40,11 @@ d = get('https://api.gopluslabs.io/api/v1/token_security/1?contract_addresses=0x
 tok = list(d['result'].values())[0]
 print('honeypot:', tok.get('is_honeypot'), '| open_source:', tok.get('is_open_source'), '| buy_tax:', tok.get('buy_tax'))
 ```
+
+## Referensi & Script
+
+- **`references/endpoints-and-footguns.md`** — dokumentasi lengkap endpoint + footguns parsing (format field `usd_` CoinGecko, kunci lowercase GoPlus, field `timestamp` epoch int Alternative.me, chain_id reference). Baca ini sebelum menulis parser.
+- **`scripts/crypto_fetcher.py`** — script CLI siap pakai (zero-dependency, stdlib only): `python3 crypto_fetcher.py price bitcoin ethereum`, `coin bitcoin`, `dex usdc`, `audit 1 <addr>`, `fng`. Bisa dipakai langsung atau jadi referensi untuk memanggil endpoint dari kode.
 
 ## Alur Kerja
 
