@@ -24,27 +24,62 @@ class TelegramReporter:
                           or os.environ.get("TELEGRAM_CHANNEL_ID"))
         self.api_url = f"https://api.telegram.org/bot{self.token}"
 
-    def send_message(self, text: str, chat_id: str = None) -> bool:
+    def send_message(self, text: str, chat_id: str = None,
+                     max_retries: int = 3) -> bool:
+        """Kirim pesan ke Telegram dengan retry + handling 429.
+
+        Telegram membatasi ~30 pesan/det per bot. Bila kena 429
+        (Too Many Requests), response body JSON berisi 'retry_after'
+        (detik) — tunda lalu coba lagi.
+        """
         chat_id = chat_id or self.channel_id
         if not self.token or not chat_id:
             print("[telegram] TOKEN/CHANNEL_ID belum diset")
             return False
-        try:
-            resp = requests.post(
-                f"{self.api_url}/sendMessage",
-                data={
-                    "chat_id": chat_id,
-                    "text": text,
-                    "parse_mode": "HTML",
-                    "disable_web_page_preview": True,
-                },
-                timeout=30,
-            )
-            resp.raise_for_status()
-            return resp.json().get("ok", False)
-        except requests.RequestException as e:
-            print(f"[telegram] send failed -- {e}")
-            return False
+
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+
+        for attempt in range(max_retries):
+            try:
+                resp = requests.post(
+                    f"{self.api_url}/sendMessage",
+                    data=payload,
+                    timeout=30,
+                )
+
+                # 429 Too Many Requests: retry dengan retry_after.
+                if resp.status_code == 429:
+                    retry_after = 5
+                    try:
+                        retry_after = int(resp.json().get("retry_after", 5))
+                    except (ValueError, TypeError):
+                        pass
+                    wait = min(max(retry_after, 1), 60)
+                    print(f"[telegram] 429 rate limit (attempt {attempt+1}/{max_retries}), "
+                          f"retry in {wait}s")
+                    time.sleep(wait)
+                    continue
+
+                # 500/502/503/504: transient server error, retry singkat.
+                if resp.status_code in (500, 502, 503, 504):
+                    print(f"[telegram] server error {resp.status_code} (attempt {attempt+1}/{max_retries}), "
+                          f"retry in 3s")
+                    time.sleep(3)
+                    continue
+
+                resp.raise_for_status()
+                return resp.json().get("ok", False)
+            except requests.RequestException as e:
+                print(f"[telegram] send failed (attempt {attempt+1}/{max_retries}): {e}")
+                time.sleep(3)
+
+        print("[telegram] send failed setelah retry")
+        return False
 
     def send_job(self, job: Job) -> bool:
         title = job.title or "(tanpa judul)"

@@ -17,6 +17,18 @@ Panduan komprehensif untuk automasi browser headless, Chrome DevTools Protocol (
 
 ---
 
+## 0. Batasan Lingkungan (PENTING)
+
+### Termux (Android)
+- **Tidak ada browser** (Chromium/Firefox) di Termux 0.118.3 — package `chromium` hanya tersedia mulai Termux 0.120+.
+- **Playwright Python tidak bisa terinstall** di Termux: `pip install playwright` gagal karena binary browser tidak tersedia.
+- Browser hanya yang tersedia: `lynx`, `w3m`, `links` (browser **teks**, tanpa JS/CSS engine).
+- Solusi:
+  - **Desktop/Linux/macOS**: gunakan Playwright + Chromium (pilihan utama, lihat section 1.B).
+  - **Termux**: browser automation tidak bisa dipakai. Untuk scraping data gunakan HTTP client (`httpx`/`requests`) atau API JSON platform. Untuk form filling butuh browser sungguhan → tidak feasible di Termux.
+
+---
+
 ## 1. Arsitektur dan Mode Eksekusi
 
 ### A. Local CDP Connection (Chrome / Chromium Debug Mode)

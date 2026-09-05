@@ -12,6 +12,13 @@ Skill penanganan dan menyelesaikan Tantangan CAPTCHA dan Anti-Bot Guard (Cloudfl
 
 ---
 
+## 0. Batasan Lingkungan (PENTING)
+
+### Termux (Android)
+Skill ini memerlukan browser sungguhan (Chromium/Firefox) untuk CAPTCHA interaktif. Di Termux tidak ada browser, sehingga CAPTCHA aktif (reCAPTCHA, Turnstile, slider) tidak bisa diselesaikan secara lokal. Yang masih bisa: CAPTCHA audio via solver lokal, atau fallback human task (tandai `human_captcha_required` dan eskalasi ke operator). Catatan etika: bypass CAPTCHA berbayar melanggar ToS sebagian besar platform; gunakan hanya untuk tujuan yang diizinkan operator.
+
+---
+
 ## 1. Taksonomi CAPTCHA & Anti-Bot Protection
 
 | Tipe CAPTCHA | Tingkat Kesulitan | Strategi Penanganan Utama |
