@@ -8,8 +8,10 @@ secara langsung -- ia mengembalikan dict "aksi" yang diinterpretasikan
 oleh loop di main.py, sehingga alur kontrol tetap satu tempat.
 """
 from .. import config
+from .. import context_manager
 from .. import db as dbmod
 from .. import tools as tools_module
+from . import _state as state
 from ..mcp import (
     DEFAULT_MCP_CONFIG_PATH,
     MCPServerConfig,
@@ -51,6 +53,14 @@ COMMANDS = {
     "messages": "Tampilkan daftar pesan sesi ini beserta ID-nya (untuk /pin & /unpin)",
     "todos": "Cetak plan/todo list sesi ini ke layar",
     "tools": "Tampilkan daftar tool yang tersedia",
+    "compact": "Ringkas riwayat percakapan sesi ini secara manual (hemat konteks)",
+    "cost": "Tampilkan pemakaian token & estimasi biaya sesi ini",
+    "status": "Tampilkan status sesi saat ini (model, context, token, workdir, dll)",
+    "model": "Ganti model aktif (alias /api-model): /model <nama>",
+    "memory": "Kelola catatan proyek (remember): /memory list | show <key> | forget <key>",
+    "sessions": "Tampilkan daftar sesi tersimpan untuk workdir ini",
+    "summary": "Tampilkan ringkasan percakapan terakhir sesi ini",
+    "export": "Ekspor seluruh riwayat percakapan sesi ini ke file Markdown",
     "mcp-server": "Kelola server MCP: /mcp-server list | add <nama> <cmd> [args...] | remove <nama>",
     "mcp-api-key": "Set API key/header untuk server MCP HTTP: /mcp-api-key <nama> <key>",
     "mcp-enable": "Aktifkan/nonaktifkan server MCP: /mcp-enable <nama> [on|off]",
@@ -59,7 +69,7 @@ COMMANDS = {
 }
 
 # Command yang butuh argumen tambahan.
-_COMMANDS_WITH_ARGS = {"resume", "api-model", "api-url", "api-key", "ctx", "reserve", "summarize-threshold", "keep-tail", "github-token", "github-max", "firecrawl-key", "news-lang", "pin", "unpin"}
+_COMMANDS_WITH_ARGS = {"resume", "api-model", "api-url", "api-key", "ctx", "reserve", "summarize-threshold", "keep-tail", "github-token", "github-max", "firecrawl-key", "news-lang", "pin", "unpin", "model", "memory"}
 
 
 def _print_help() -> None:
@@ -130,6 +140,201 @@ def _parse_ids_arg(arg: str) -> list[int]:
         if mid is not None:
             ids.append(mid)
     return ids
+
+
+def _handle_compact(args, session_id: str, system_content: str = "") -> None:
+    """Ringkas riwayat percakapan sesi ini SECARA MANUAL.
+
+    Memanggil `maybe_summarize` dengan threshold yang dipaksa (1.0) supaya
+    ringkasan selalu terpicu (bukan menunggu threshold otomatis). Ini
+    memangkas konteks lama jadi satu summary dan menyimpannya ke DB, sehingga
+    giliran berikutnya memakai context yang lebih ringan.
+    """
+    try:
+        summarized = context_manager.maybe_summarize(
+            db_path=args.db_path,
+            session_id=session_id,
+            url=args.url,
+            model=getattr(args, "summarize_model", None) or args.model,
+            context_window_tokens=args.context_window,
+            api_key=args.api_key,
+            system_prompt=system_content or "",
+            reserve_for_response=getattr(args, "reserve_for_response", None) or 0,
+            summarize_threshold_ratio=1.0,   # paksa ringkas
+            keep_tail_messages=getattr(args, "keep_tail_messages", None) or 2,
+        )
+    except Exception as e:  # noqa: BLE001
+        print(c(f"[compact] gagal meringkas: {type(e).__name__}: {e}", C.RED))
+        return
+    if summarized:
+        print(c("[compact] konteks berhasil diringkas.", C.GREEN))
+    else:
+        print(c("[compact] riwayat terlalu pendek untuk diringkas, atau sudah ringkas.", C.DIM))
+
+
+def _handle_cost(args, session_id: str) -> None:
+    """Tampilkan pemakaian token & estimasi biaya sesi ini."""
+    usage = state.get_session_state().get("token_usage", {})
+    prompt = usage.get("prompt_tokens", 0)
+    completion = usage.get("completion_tokens", 0)
+    reasoning = usage.get("reasoning_tokens", 0)
+    total = usage.get("total", prompt + completion)
+    tool_calls = state.get_session_state().get("tool_calls", 0)
+    errors = state.get_session_state().get("error_total", 0)
+
+    print(c(f"[cost] Pemakaian token sesi ini ({session_id}):", C.BOLD))
+    print(c(f"  prompt     : {prompt:,}", C.DIM))
+    print(c(f"  completion : {completion:,}", C.DIM))
+    if reasoning:
+        print(c(f"  reasoning  : {reasoning:,}", C.DIM))
+    print(c(f"  total      : {total:,}", C.BOLD))
+    print(c(f"  tool calls : {tool_calls}", C.DIM))
+    print(c(f"  error      : {errors}", C.DIM))
+    # Estimasi biaya kasar (per 1M token, USD) -- hanya perkiraan.
+    # Harga bervariasi per model/provider; ini indikasi kasar.
+    est = (prompt * 0.15 + completion * 0.60) / 1_000_000
+    print(c(f"  estimasi   : ~${est:.4f} (indikasi kasar, harga bervariasi)", C.YELLOW))
+
+
+def _handle_status(args, session_id: str) -> None:
+    """Tampilkan status sesi saat ini."""
+    usage = state.get_session_state().get("token_usage", {})
+    total = usage.get("total", 0)
+    tool_calls = state.get_session_state().get("tool_calls", 0)
+    errors = state.get_session_state().get("error_total", 0)
+    start_time = state.get_session_state().get("start_time")
+
+    print(c(f"[status] Sesi aktif: {session_id}", C.BOLD))
+    print(c(f"  model        : {args.model}", C.DIM))
+    print(c(f"  endpoint     : {args.url}", C.DIM))
+    print(c(f"  workdir      : {getattr(args, 'workdir', '')}", C.DIM))
+    print(c(f"  context      : {args.context_window} token", C.DIM))
+    print(c(f"  reserve      : {getattr(args, 'reserve_for_response', '')} token", C.DIM))
+    print(c(f"  auto-approve : {'AKTIF' if getattr(args, 'auto_approve', False) else 'nonaktif'}", C.DIM))
+    print(c(f"  token total  : {total:,}", C.DIM))
+    print(c(f"  tool calls   : {tool_calls}", C.DIM))
+    print(c(f"  error        : {errors}", C.DIM))
+    if start_time:
+        import time as _time
+        elapsed = _time.time() - start_time
+        print(c(f"  durasi sesi  : {elapsed:.0f}s", C.DIM))
+
+
+def _handle_memory(args, arg: str) -> None:
+    """Kelola catatan proyek (remember/recall): list | show <key> | forget <key>."""
+    parts = arg.split(None, 1)
+    sub = parts[0].lower() if parts else "list"
+    key = parts[1].strip() if len(parts) > 1 else ""
+    workdir = getattr(args, "workdir", "") or ""
+
+    if sub == "list":
+        notes = dbmod.get_notes(args.db_path, workdir)
+        if not notes:
+            print(c("[memory] belum ada catatan proyek untuk workdir ini.", C.DIM))
+            return
+        print(c(f"[memory] {len(notes)} catatan proyek:", C.BOLD))
+        for n in notes:
+            preview = (n.get("value") or "").replace("\n", " ")[:60]
+            print(c(f"  {n['key']}  — {preview}", C.DIM))
+        return
+
+    if sub == "show":
+        if not key:
+            print(c("[memory] gunakan: /memory show <key>", C.RED))
+            return
+        notes = dbmod.get_notes(args.db_path, workdir)
+        match = next((n for n in notes if n["key"] == key), None)
+        if not match:
+            print(c(f"[memory] catatan '{key}' tidak ditemukan.", C.RED))
+            return
+        print(c(f"[memory] {key}:", C.BOLD))
+        print((match.get("value") or ""))
+        return
+
+    if sub == "forget":
+        if not key:
+            print(c("[memory] gunakan: /memory forget <key>", C.RED))
+            return
+        try:
+            dbmod.delete_note(args.db_path, workdir, key)
+            print(c(f"[memory] catatan '{key}' dihapus.", C.GREEN))
+        except Exception as e:  # noqa: BLE001
+            print(c(f"[memory] gagal menghapus '{key}': {type(e).__name__}: {e}", C.RED))
+        return
+
+    print(c(f"[memory] sub-perintah tidak dikenal: '{sub}'. Gunakan list | show <key> | forget <key>.", C.RED))
+
+
+def _handle_sessions(args, session_id: str) -> None:
+    """Tampilkan daftar sesi tersimpan untuk workdir ini."""
+    workdir = getattr(args, "workdir", "") or ""
+    try:
+        rows = dbmod.list_sessions(args.db_path, workdir=workdir, limit=20)
+    except Exception as e:  # noqa: BLE001
+        print(c(f"[sessions] gagal membaca sesi: {type(e).__name__}: {e}", C.RED))
+        return
+    if not rows:
+        print(c("[sessions] belum ada sesi tersimpan untuk workdir ini.", C.DIM))
+        return
+    print(c(f"[sessions] {len(rows)} sesi tersimpan:", C.BOLD))
+    for r in rows:
+        mark = "*" if r["id"] == session_id else " "
+        title = (r.get("title") or "")[:40]
+        status = r.get("status", "?")
+        print(c(f"  {mark} {r['id']}  [{status}]  {title}", C.DIM))
+    print(c("  (* = sesi aktif)", C.DIM))
+
+
+def _handle_summary(args, session_id: str) -> None:
+    """Tampilkan ringkasan percakapan terakhir sesi ini."""
+    try:
+        summary = dbmod.get_latest_summary(args.db_path, session_id)
+    except Exception as e:  # noqa: BLE001
+        print(c(f"[summary] gagal membaca ringkasan: {type(e).__name__}: {e}", C.RED))
+        return
+    if not summary:
+        print(c("[summary] belum ada ringkasan untuk sesi ini.", C.DIM))
+        return
+    print(c(f"[summary] ringkasan s.d. pesan #{summary.get('upto_message_id')}:", C.BOLD))
+    print(summary.get("summary_text", ""))
+
+
+def _handle_export(args, session_id: str) -> None:
+    """Ekspor seluruh riwayat percakapan sesi ini ke file Markdown."""
+    import datetime
+    import os
+
+    try:
+        messages = dbmod.get_all_messages(args.db_path, session_id)
+    except Exception as e:  # noqa: BLE001
+        print(c(f"[export] gagal membaca pesan: {type(e).__name__}: {e}", C.RED))
+        return
+    if not messages:
+        print(c("[export] tidak ada pesan untuk diekspor.", C.DIM))
+        return
+
+    workdir = getattr(args, "workdir", "") or os.getcwd()
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    fname = f"garwa_export_{session_id}_{ts}.md"
+    path = os.path.join(workdir, fname)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"# Garwa — ekspor sesi {session_id}\n\n")
+            f.write(f"- workdir: `{workdir}`\n")
+            f.write(f"- waktu: {datetime.datetime.now().isoformat()}\n\n")
+            f.write("---\n\n")
+            for m in messages:
+                role = m.get("role", "?")
+                content = (m.get("content") or "").strip()
+                kind = m.get("kind", "chat")
+                label = f"**{role}**"
+                if kind not in ("chat", "user", "assistant"):
+                    label += f" `({kind})`"
+                f.write(f"{label}\n\n{content}\n\n---\n\n")
+    except Exception as e:  # noqa: BLE001
+        print(c(f"[export] gagal menulis file: {type(e).__name__}: {e}", C.RED))
+        return
+    print(c(f"[export] {len(messages)} pesan diekspor ke: {path}", C.GREEN))
 
 
 def _print_mcp_servers() -> None:
@@ -634,6 +839,46 @@ def handle_slash_command(cmd_line: str, args, session_id: str, system_content: s
             preview = m["content"].replace("\n", " ")[:80]
             pin_flag = " [PIN]" if m.get("pinned") else ""
             print(c(f"  #{m['id']} [{m['role']}]{pin_flag} {preview}", C.DIM))
+        return {"action": "skip"}
+
+    if name == "model":
+        # Alias /api-model: konsisten dengan ekosistem (Claude Code memakai /model).
+        if not arg:
+            print(c(f"[model] model aktif saat ini: {args.model}", C.DIM))
+            print(c("Gunakan: /model <nama> untuk menggantinya (alias /api-model).", C.DIM))
+            return {"action": "skip"}
+        args.model = arg.strip()
+        config.save_user_config(model=args.model)
+        print(c(f"[model] model aktif diubah ke: {args.model}", C.GREEN))
+        print(c(f"[model] tersimpan di {config.USER_CONFIG_PATH} (lintas sesi).", C.DIM))
+        return {"action": "skip"}
+
+    if name == "compact":
+        _handle_compact(args, session_id, system_content)
+        return {"action": "skip"}
+
+    if name == "cost":
+        _handle_cost(args, session_id)
+        return {"action": "skip"}
+
+    if name == "status":
+        _handle_status(args, session_id)
+        return {"action": "skip"}
+
+    if name == "memory":
+        _handle_memory(args, arg)
+        return {"action": "skip"}
+
+    if name == "sessions":
+        _handle_sessions(args, session_id)
+        return {"action": "skip"}
+
+    if name == "summary":
+        _handle_summary(args, session_id)
+        return {"action": "skip"}
+
+    if name == "export":
+        _handle_export(args, session_id)
         return {"action": "skip"}
 
     if name == "new":

@@ -423,6 +423,16 @@ def get_notes(db_path: str, workdir: str):
         return [dict(r) for r in rows]
 
 
+def delete_note(db_path: str, workdir: str, key: str) -> bool:
+    """Hapus satu catatan proyek. Return True kalau ada baris yang terhapus."""
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "DELETE FROM project_notes WHERE workdir = ? AND key = ?",
+            (workdir, key),
+        )
+        return cur.rowcount > 0
+
+
 
 def get_cached_outline(db_path: str, workdir: str, path: str, mtime: float, size: int):
     with connect(db_path) as conn:
