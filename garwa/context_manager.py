@@ -424,6 +424,43 @@ def _ensure_note_summaries(db_path: str, session_id: str, url: str, model: str,
             dbmod.set_note_summary(db_path, workdir, key, summary)
 
 
+def _note_relevance_score(note: dict, query: str) -> float:
+    """Skor relevansi sederhana sebuah catatan terhadap query (teks user
+    terakhir). Memakai overlap token kata kunci antara key+value catatan dan
+    query. Catatan yang tidak cocok sama sekali mendapat skor 0.
+
+    Ini bukan retrieval semantik (tanpa embedding/LLM) -- cukup keyword
+    overlap yang murah dan deterministik. Tujuannya bukan presisi sempurna,
+    melainkan MENURUNKAN biaya tetap dengan memberi budget lebih besar ke
+    catatan yang tampaknya relevan dengan pertanyaan saat ini, sambil
+    memastikan catatan yang jelas tidak relevan hanya menampilkan key-nya.
+    """
+    if not query.strip():
+        return 0.0
+    key = (note.get("key") or "").lower()
+    value = (note.get("value") or "").lower()
+    q = query.lower()
+    # Token kata kunci dari query (kata alfanumerik len>=4, bukan stopword).
+    import re as _re
+    stop = {
+        "yang", "dengan", "untuk", "dari", "pada", "adalah", "agar", "dalam",
+        "tidak", "sudah", "akan", "harus", "bisa", "kalau", "maka", "jika",
+        "karena", "setelah", "sebelum", "the", "and", "for", "with", "that",
+        "this", "what", "how", "when", "where", "why", "are", "was", "not",
+        "but", "you", "your", "have", "has", "into", "about", "them", "then",
+        "they", "there", "their", "from", "than", "also", "just", "make",
+    }
+    q_tokens = [t for t in _re.findall(r"[a-z0-9_]+", q) if len(t) >= 4 and t not in stop]
+    if not q_tokens:
+        return 0.0
+    corpus = f"{key} {value}"
+    hits = sum(1 for t in q_tokens if t in corpus)
+    # Bobot: key lebih penting daripada value.
+    key_hits = sum(1 for t in q_tokens if t in key)
+    score = (hits / len(q_tokens)) + (key_hits / max(len(q_tokens), 1)) * 0.5
+    return score
+
+
 def _project_notes_section(db_path: str, session_id: str) -> str:
     """Bangun blok teks berisi catatan proyek persisten (tabel project_notes,
     ditulis via tool `remember`) untuk workdir sesi ini.
@@ -434,14 +471,17 @@ def _project_notes_section(db_path: str, session_id: str) -> str:
     tetap tampil utuh di konteks model -- tidak hilang walau riwayat
     percakapan sudah diringkas berkali-kali.
 
-    Untuk mencegah biaya tetap per giliran membengkak (catatan terus bertambah),
-    blok ini DIBATASI total karakternya (PROJECT_NOTES_MAX_TOTAL_CHARS) dan
-    per-catatan (PROJECT_NOTES_MAX_PER_NOTE_CHARS). Pembatasan dilakukan tanpa
-    menghilangkan konteks penting:
-      - SEMUA key catatan tetap disertakan (model tahu catatan apa saja ada).
-      - Catatan panjang diringkas secara EXTRACTIVE (pilih kalimat paling
-        informatif, susun ulang dalam urutan asli) -- bukan dipotong mentah.
-      - Budget total dibagi merata ke semua catatan.
+    Poin #6 rilis v0.5.0 (Retrieval-based notes): untuk menurunkan biaya
+    tetap per giliran, catatan diurutkan berdasarkan RELEVANSI terhadap pesan
+    user terakhir (via _note_relevance_score). Catatan yang relevan mendapat
+    budget penuh (value/ringkasan utuh), sedangkan catatan yang jelas tidak
+    relevan hanya menampilkan KEY-nya (model tetap tahu catatan itu ada,
+    tapi value tidak memakan token). Ini mempertahankan keputusan desain
+    "SEMUA key catatan tetap disuntikkan" sambil mengurangi biaya value yang
+    tidak relevan.
+
+    Pembatasan tetap berlaku: total blok dibatasi PROJECT_NOTES_MAX_TOTAL_CHARS
+    dan per-catatan PROJECT_NOTES_MAX_PER_NOTE_CHARS.
     """
     try:
         session = dbmod.get_session(db_path, session_id)
@@ -453,6 +493,26 @@ def _project_notes_section(db_path: str, session_id: str) -> str:
         return ""
     if not notes:
         return ""
+
+    # --- Retrieval: ambil pesan user terakhir sebagai query relevansi ---
+    query = ""
+    try:
+        msgs = dbmod.get_all_messages(db_path, session_id)
+        for m in reversed(msgs):
+            if m.get("role") == "user" and m.get("kind") == "chat":
+                query = m.get("content") or ""
+                break
+    except Exception:
+        query = ""
+
+    # Urutkan catatan: relevan dulu, lalu tetap dalam urutan updated_at DESC
+    # sebagai tie-breaker (catatan terbaru lebih relevan).
+    scored = []
+    for note in notes:
+        score = _note_relevance_score(note, query)
+        scored.append((score, note))
+    scored.sort(key=lambda x: (x[0], x[1].get("updated_at") or 0), reverse=True)
+
     # Pass 1: budget total dibagi merata ke semua catatan, tapi tidak melebihi
     # batas per-catatan. Catatan yang lebih pendek dari jatahnya menyisakan
     # ruang yang bisa dipakai catatan lain.
@@ -463,9 +523,14 @@ def _project_notes_section(db_path: str, session_id: str) -> str:
     )
     per_note_budget = min(per_note_budget, PROJECT_NOTES_MAX_PER_NOTE_CHARS)
     lines = []
-    for note in notes:
+    for score, note in scored:
         key = note.get("key") or ""
         value = note.get("value") or ""
+        # Poin #6: catatan yang TIDAK relevan (skor 0) hanya menampilkan key,
+        # bukan value -- hemat token tanpa menyembunyikan keberadaan catatan.
+        if score <= 0.0 and query.strip():
+            lines.append(f"- {key}: (tidak relevan dengan pertanyaan saat ini)")
+            continue
         # Prioritas: pakai ringkasan LLM (kolom `summary`) bila tersedia,
         # karena itu mempertahankan konteks penting tanpa kehilangan inti.
         # Fallback ke pemangkasan dari tengah hanya untuk catatan yang belum
@@ -489,8 +554,8 @@ def _project_notes_section(db_path: str, session_id: str) -> str:
     while total > PROJECT_NOTES_MAX_TOTAL_CHARS and len(lines) > 1:
         # cari indeks baris terpanjang
         idx = max(range(len(lines)), key=lambda i: len(lines[i]))
-        key = notes[idx].get("key") or ""
-        value = notes[idx].get("value") or ""
+        key = scored[idx][1].get("key") or ""
+        value = scored[idx][1].get("value") or ""
         # Pangkas setengah dari BUDGET SAAT INI (yang menghasilkan cur_len),
         # bukan dari panjang value penuh -- supaya new_line selalu lebih pendek
         # dari cur_len dan loop benar-benar menyusut.
@@ -853,6 +918,7 @@ def prepare_context_messages(
     reserve_for_response: int = RESERVE_FOR_RESPONSE,
     summarize_threshold_ratio: float = SUMMARIZE_THRESHOLD_RATIO,
     keep_tail_messages: int = KEEP_TAIL_MESSAGES,
+    summarize_model: str = "",
 ) -> list:
     """Summarize if needed, rebuild context from DB, then enforce a hard budget.
 
@@ -879,9 +945,12 @@ def prepare_context_messages(
     # disimpan di kolom `summary`) sehingga _project_notes_section memakai
     # ringkasan LLM, bukan trim, untuk catatan panjang -- konteks penting
     # tidak hilang. Gagal ringkas = fallback ke trim (tidak crash).
+    # Poin #4 rilis v0.5.0: `summarize_model` terpisah (opsional) untuk
+    # summarization riwayat & catatan. Kalau kosong, pakai `model` utama.
+    _sum_model = summarize_model or model
     try:
         _ensure_note_summaries(
-            db_path, session_id, url, model, api_key=api_key,
+            db_path, session_id, url, _sum_model, api_key=api_key,
         )
     except Exception:  # noqa: BLE001 - ringkasan catatan opsional
         logger.warning("gagal memastikan ringkasan catatan utk session_id=%s", session_id,
@@ -891,7 +960,7 @@ def prepare_context_messages(
         db_path=db_path,
         session_id=session_id,
         url=url,
-        model=model,
+        model=_sum_model,
         context_window_tokens=context_window_tokens,
         api_key=api_key,
         tools_payload=tools_payload,

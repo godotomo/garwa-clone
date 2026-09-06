@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content     TEXT NOT NULL,
     kind        TEXT NOT NULL DEFAULT 'chat',  -- chat | tool_call | tool_result | summary
     pinned      INTEGER NOT NULL DEFAULT 0,   -- 1 = pesan penting yg TIDAK ikut diringkas
+    meta        TEXT,                          -- JSON: tool_name, args, is_error, token_estimate (data training)
     created_at  REAL NOT NULL,
     FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
@@ -122,6 +123,12 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
         if "pinned" not in cols:
             conn.execute("ALTER TABLE messages ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
 
+        # Migrasi ringan: kolom `meta` di tabel messages (JSON berisi
+        # tool_name, args, is_error, token_estimate untuk data training).
+        # DB lama tidak akan mendapatnya dari CREATE TABLE IF NOT EXISTS.
+        if "meta" not in cols:
+            conn.execute("ALTER TABLE messages ADD COLUMN meta TEXT")
+
         # Migrasi ringan: kolom `active_instructions` di tabel summaries
         # (menyimpan instruksi aktif verbatim hasil summarize sebagai JSON
         # array string). DB lama tidak akan mendapatnya dari CREATE TABLE
@@ -146,6 +153,31 @@ def create_session(db_path: str, workdir: str, title: str = None) -> str:
     last_err = None
     for _ in range(5):
         sid = uuid.uuid4().hex[:12]
+        try:
+            with connect(db_path) as conn:
+                conn.execute(
+                    "INSERT INTO sessions (id, workdir, title, created_at, updated_at, ended) "
+                    "VALUES (?, ?, ?, ?, ?, 0)",
+                    (sid, workdir, title, now, now),
+                )
+            return sid
+        except sqlite3.IntegrityError as e:
+            last_err = e
+            continue
+    raise last_err
+
+
+def create_sub_session(db_path: str, workdir: str, title: str = None) -> str:
+    """Buat sesi SUB-AGENT dengan id ber-awalan `sub_`.
+
+    Sub-agent memakai sesi terpisah (context window sendiri) supaya tidak
+    mencemari sesi induk. Id `sub_<hex>` membuatnya mudah dibedakan dari sesi
+    interaktif biasa di `list_sessions` / analisis DB.
+    """
+    now = time.time()
+    last_err = None
+    for _ in range(5):
+        sid = "sub_" + uuid.uuid4().hex[:12]
         try:
             with connect(db_path) as conn:
                 conn.execute(
@@ -202,13 +234,22 @@ def latest_open_session(db_path: str, workdir: str):
 
 
 
-def add_message(db_path: str, session_id: str, role: str, content: str, kind: str = "chat") -> int:
+def add_message(db_path: str, session_id: str, role: str, content: str, kind: str = "chat",
+                meta: dict = None) -> int:
+    """Tambahkan satu pesan ke sesi.
+
+    `meta` (opsional): dict JSON yang disimpan di kolom `meta` (mis.
+    {"tool_name": ..., "args": ..., "is_error": ..., "token_estimate": ...})
+    untuk data training. Dibuat agar backward-compatible: kalau None,
+    kolom meta diisi NULL (perilaku lama).
+    """
     now = time.time()
+    meta_json = json.dumps(meta, ensure_ascii=False) if meta is not None else None
     with connect(db_path) as conn:
         cur = conn.execute(
-            "INSERT INTO messages (session_id, role, content, kind, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (session_id, role, content, kind, now),
+            "INSERT INTO messages (session_id, role, content, kind, meta, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, role, content, kind, meta_json, now),
         )
         conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
         return cur.lastrowid

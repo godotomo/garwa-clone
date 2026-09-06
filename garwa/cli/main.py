@@ -202,6 +202,11 @@ def main():
                          help="Jumlah pesan mentah terbaru yang selalu dipertahankan utuh "
                               "saat summarization (default dari config / env "
                               "GARWA_KEEP_TAIL_MESSAGES)")
+    parser.add_argument("--summarize-model", default="",
+                         help="Model terpisah untuk summarization riwayat & catatan "
+                              "proyek (lebih murah). Kalau kosong, pakai --model utama "
+                              "(perilaku lama). Hemat biaya: ringkasan memakai model "
+                              "murah, giliran utama memakai model kuat.")
     parser.add_argument("--no-stream", action="store_true",
                          help="Matikan SSE streaming dan gunakan response JSON biasa")
     parser.add_argument("--full-tool-schema-text", action="store_true",
@@ -407,11 +412,8 @@ def main():
 
     tools_module.state.DB_PATH = args.db_path
     tools_module.state.SESSION_ID = session_id
-    state.TOOL_CALL_TOTAL = 0
-    state.TOKEN_USAGE_TOTAL = {"prompt_tokens": 0, "completion_tokens": 0,
-                               "reasoning_tokens": 0, "total": 0}
-    state.SESSION_START_TIME = time.time()
-    state.ERROR_TOTAL = 0
+    state.reset_session_state(session_id)
+    state.get_session_state()["start_time"] = time.time()
     os.environ["GARWA_DB_PATH"] = args.db_path
     os.environ["GARWA_SESSION_ID"] = session_id
 
@@ -488,11 +490,8 @@ def main():
                     session_id = result["session_id"]
                     system_content = result["system_content"]
                     tools_module.state.SESSION_ID = session_id
-                    state.TOOL_CALL_TOTAL = 0
-                    state.TOKEN_USAGE_TOTAL = {"prompt_tokens": 0, "completion_tokens": 0,
-                                               "reasoning_tokens": 0, "total": 0}
-                    state.SESSION_START_TIME = time.time()
-                    state.ERROR_TOTAL = 0
+                    state.reset_session_state(session_id)
+                    state.get_session_state()["start_time"] = time.time()
                     os.environ["GARWA_SESSION_ID"] = session_id
                     prompt_label = _build_prompt_label(args, session_id, workdir_label)
                     continue

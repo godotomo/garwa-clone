@@ -31,19 +31,64 @@ def _env_int(name: str, default: int) -> int:
 
 
 _tool_call_index: contextvars.ContextVar[int] = contextvars.ContextVar("tool_call_index", default=0)
-# Akumulasi jumlah tool call yang benar-benar dieksekusi selama sesi interaktif
-# berjalan (di-increment di execute_tool, di-reset saat new_session/resume).
-TOOL_CALL_TOTAL = 0
-# Akumulasi pemakaian token global selama sesi interaktif berjalan.
-# Dict berisi prompt_tokens / completion_tokens / reasoning_tokens / total.
-# Di-akumulasi di stream_call & nonstream_call tiap response selesai,
-# di-reset saat new_session/resume (sama seperti TOOL_CALL_TOTAL).
-TOKEN_USAGE_TOTAL = {"prompt_tokens": 0, "completion_tokens": 0,
-                     "reasoning_tokens": 0, "total": 0}
+
+# ---------------------------------------------------------------------------
+# State per-session (ContextVar-based)
+# ---------------------------------------------------------------------------
+# Sebelumnya state sesi (TOOL_CALL_TOTAL, TOKEN_USAGE_TOTAL,
+# SESSION_START_TIME, ERROR_TOTAL) adalah variabel module-level GLOBAL yang
+# dibagi semua sesi. Itu bermasalah untuk sub-agent in-process: sub-agent
+# (yang berjalan rekursif di context sendiri) akan tercampur state-nya dengan
+# parent. Sekarang state sesi disimpan di dalam satu ContextVar `dict` yang
+# bisa di-reset per-session (reset_session_state) dan diisolasi per-context
+# (sub-agent membuat context sendiri via contextvars.copy_context()).
+#
+# Kompatibilitas: atribut lama (TOOL_CALL_TOTAL, TOKEN_USAGE_TOTAL,
+# SESSION_START_TIME, ERROR_TOTAL) tetap bisa DIBACA via __getattr__
+# module-level, jadi kode yang hanya membaca (status bar, agent_loop) tidak
+# berubah. Assignment langsung (`state.TOOL_CALL_TOTAL = 0`) TIDAK didukung
+# lagi -- ganti dengan state.reset_session_state(session_id).
+_session_state_var: contextvars.ContextVar = contextvars.ContextVar(
+    "session_state", default=None
+)
+
+
+def _new_session_state() -> dict:
+    return {
+        "session_id": None,
+        "tool_calls": 0,
+        "token_usage": {"prompt_tokens": 0, "completion_tokens": 0,
+                        "reasoning_tokens": 0, "total": 0},
+        "error_total": 0,
+        "start_time": None,
+    }
+
+
+def get_session_state() -> dict:
+    """Ambil dict state sesi aktif untuk context saat ini.
+
+    Kalau belum ada (ContextVar None), buat satu (default) dan simpan ke
+    ContextVar supaya mutasi in-place (token_usage, tool_calls) persisten
+    untuk context ini.
+    """
+    s = _session_state_var.get()
+    if s is None:
+        s = _new_session_state()
+        _session_state_var.set(s)
+    return s
+
+
+def reset_session_state(session_id=None):
+    """Reset state sesi untuk context saat ini (dipakai saat new_session /
+    resume / awal sub-agent). Mengembalikan dict state baru."""
+    s = _new_session_state()
+    s["session_id"] = session_id
+    _session_state_var.set(s)
+    return s
 
 
 def _accumulate_usage(usage):
-    """Akumulasi dict usage (dari respon model) ke TOKEN_USAGE_TOTAL.
+    """Akumulasi dict usage (dari respon model) ke state token sesi aktif.
 
     Menerima None dengan aman (mis. backend tidak mengirim field usage).
     Field yang tidak ada/tidak numerik diabaikan.
@@ -57,7 +102,7 @@ def _accumulate_usage(usage):
         or (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
         or (usage.get("output_tokens_details") or {}).get("reasoning_tokens")
     )
-    state_ = TOKEN_USAGE_TOTAL
+    state_ = get_session_state()["token_usage"]
     if isinstance(prompt, int):
         state_["prompt_tokens"] += prompt
     if isinstance(completion, int):
@@ -66,23 +111,32 @@ def _accumulate_usage(usage):
         state_["reasoning_tokens"] += reasoning
     state_["total"] = state_["prompt_tokens"] + state_["completion_tokens"]
 
-# Waktu sesi interaktif mulai (epoch detik). Di-set di main.py saat sesi
-# baru dibuat atau di-resume, dipakai status bar untuk menampilkan durasi
-# (`dur:12m`). None = belum ada sesi aktif.
-SESSION_START_TIME = None
-# Akumulasi jumlah giliran yang gagal karena error (koneksi, retry, atau
-# error tak terduga) selama sesi berjalan. Di-increment di main.py,
-# di-reset saat new_session/resume (sama seperti TOOL_CALL_TOTAL).
-ERROR_TOTAL = 0
+
+def _accumulate_tool_call():
+    """Increment jumlah tool call yang dieksekusi pada sesi aktif
+    (dipakai status bar `tools:N`)."""
+    get_session_state()["tool_calls"] += 1
 
 
 def _accumulate_error():
     """Increment penghitung error sesi (dipakai status bar `err:N`)."""
-    global ERROR_TOTAL
-    ERROR_TOTAL += 1
+    get_session_state()["error_total"] += 1
 
-_WARNED_CONTEXT_MANAGER_NO_AUTH = [False]
-_WARNED_CONTEXT_MANAGER_NO_TOOLS_BUDGET = [False]
+
+def __getattr__(name):
+    """Kompatibilitas baca atribut state lama yang sekarang tinggal di dalam
+    ContextVar per-session. Kode yang hanya MEMBACA (mis. status bar,
+    agent_loop) tetap bekerja tanpa perubahan."""
+    if name == "TOOL_CALL_TOTAL":
+        return get_session_state()["tool_calls"]
+    if name == "TOKEN_USAGE_TOTAL":
+        return get_session_state()["token_usage"]
+    if name == "SESSION_START_TIME":
+        return get_session_state()["start_time"]
+    if name == "ERROR_TOTAL":
+        return get_session_state()["error_total"]
+    raise AttributeError(f"module '_state' tidak punya atribut {name!r}")
+
 LOOP_REPEAT_WINDOW = 4
 LOOP_REPEAT_THRESHOLD = 2
 # Cooldown saat error-loop/parse-loop terdeteksi. Bukan jeda normal antar tool

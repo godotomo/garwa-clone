@@ -5,6 +5,30 @@ Semua perubahan penting pada proyek ini akan dicatat di file ini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/1.1.0/),
 dan versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-06
+
+Rilis ini menyimpan seluruh pekerjaan perbaikan arsitektur yang disepakati (6 poin) plus fitur sub-agent in-process.
+
+### Added
+- **Sub-agent in-process (`spawn_agent`)**: tool baru untuk menjalankan sub-agent di sub-session terpisah (`sub_<hex>`) dengan context window sendiri dan role prompt sendiri. Role bawaan: `general` (default) dan `explore` (penjelajah kode yang hanya meneliti tanpa mengubah file). Diimplementasikan in-process (bukan service-based) karena modular monolith sudah cukup & lebih ringan untuk agent lokal satu mesin.
+- **Kolom `meta` (JSON) di tabel `messages`** untuk data training: `tool_name`, `args`, `is_error`, `token_estimate` disimpan setiap tool call. Helper `_parse_meta` membuat pemakai messages (get_message/get_all_messages/get_messages_after) mendapat dict, bukan string JSON mentah.
+- **Retrieval-based notes**: catatan proyek persisten diurutkan berdasarkan relevansi (keyword overlap) terhadap pesan user terakhir. Catatan relevan mendapat budget penuh; catatan yang jelas tidak relevan hanya menampilkan key-nya (tetap semua key disertakan, sesuai keputusan desain). Menurunkan biaya tetap per giliran tanpa menyembunyikan keberadaan catatan.
+
+### Changed
+- **`args` → `AgentConfig` dataclass** (prasyarat sub-agent): `run_agent_loop` menerima `AgentConfig` atau `argparse.Namespace` via `coerce_agent_config()` (non-destruktif). Kontrak tipe eksplisit untuk testability & sub-agent.
+- **State per-session** (bukan module-global): prasyarat sub-agent paralel.
+- **Hapus jalur context lama + blok `TypeError` fallback** di `agent_loop`: `prepare_context_messages` sudah mendukung semua parameter, jadi jalur lama/fallback hanya kode mati.
+- **`summarize_model` terpisah** (opsional): model khusus untuk summarization menghemat biaya.
+
+### Internal
+- Helper `create_sub_session` di `db.py` untuk sesi sub-agent ber-awalan `sub_`.
+- Sinkronisasi `__version__` ke `0.5.0`.
+
+### Tests
+- Suite total: **477 passed** (penambahan `tests/test_sub_agent.py`, 9 test).
+
+---
+
 ## [0.4.0] - 2026-09-06
 
 Rilis ini menyimpan seluruh pekerjaan yang sudah dikerjakan sejak 0.3.0: optimasi konteks, percepatan startup, cache control OpenRouter, retry anti-429, dan pipeline jobbot. *(Sub-agent + perbaikan arsitektur direncanakan untuk rilis berikutnya.)*

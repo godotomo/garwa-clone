@@ -14,6 +14,8 @@ except ImportError:
 from .. import context_manager
 from .. import db as dbmod
 from . import _state as state
+from .agent_config import AgentConfig
+from .agent_config import coerce_agent_config
 from .colors import C
 from .colors import c
 from .json_repair import extract_tool_call
@@ -61,7 +63,13 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
     Mengembalikan teks terlihat (non tool_call) terakhir dari assistant,
     supaya caller non-interaktif (mode --auto/--overnight) bisa memakainya
     kalau perlu, tanpa mengubah cara loop interaktif bekerja.
+
+    `args` bisa berupa `AgentConfig` atau `argparse.Namespace`; keduanya
+    dikonversi ke `AgentConfig` di awal (via coerce_agent_config) supaya
+    sub-agent bisa memanggil loop ini dengan konfigurasi sendiri tanpa
+    parser CLI.
     """
+    args = coerce_agent_config(args)
     last_visible = ""
 
     _tool_call_seq = 0
@@ -118,110 +126,36 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
         -- sekali dengan args.context_window normal, dan sekali lagi dengan
         budget yang dipersempit kalau percobaan pertama ditolak server
         dengan ContextExceededError (lihat blok try/except di bawah).
-        Tanpa ekstraksi ini, logic compat lama/baru context_manager di atas
-        harus diduplikasi manual di jalur retry -- rawan divergen.
+
+        Poin #3 rilis v0.5.0: jalur context lama (maybe_summarize +
+        build_context_messages) dan blok TypeError fallback DIHAPUS.
+        context_manager.prepare_context_messages sudah mendukung SEMUA
+        parameter (tools_payload, api_key, reserve_for_response,
+        summarize_threshold_ratio, keep_tail_messages), jadi jalur lama dan
+        fallback TypeError tidak pernah terpicu dan hanya menambah kode mati.
         """
-
-        if hasattr(context_manager, "prepare_context_messages"):
-
-            kwargs = dict(
-                db_path=args.db_path,
-                session_id=session_id,
-                system_prompt=system_content,
-                url=args.url,
-                model=args.model,
-                context_window_tokens=context_window_tokens,
-                api_key=args.api_key,
-
-                tools_payload=build_openai_tools_payload(),
-            )
-            # Hanya teruskan parameter tuning kalau benar-benar diset user
-            # (melalui flag CLI atau config); kalau None, biarkan context_manager
-            # memakai defaultnya sendiri supaya tidak menimpa dengan None.
-            for _key in ("reserve_for_response", "summarize_threshold_ratio", "keep_tail_messages"):
-                _val = getattr(args, _key, None)
-                if _val is not None:
-                    kwargs[_key] = _val
-            while True:
-                try:
-                    return context_manager.prepare_context_messages(**kwargs)
-                except TypeError:
-                    if "tools_payload" in kwargs:
-                        if not state._WARNED_CONTEXT_MANAGER_NO_TOOLS_BUDGET[0]:
-                            print(c(
-                                "[WARN] context_manager.py versi ini belum mendukung "
-                                "parameter tools_payload -- budget token field "
-                                "\"tools\" TIDAK direservasi saat trimming/"
-                                "summarization history, request bisa lebih gampang "
-                                "kena ContextExceededError. Update context_manager.py juga.",
-                                C.YELLOW,
-                            ))
-                            state._WARNED_CONTEXT_MANAGER_NO_TOOLS_BUDGET[0] = True
-                        kwargs.pop("tools_payload")
-                        continue
-                    if "api_key" in kwargs:
-                        if args.api_key and not state._WARNED_CONTEXT_MANAGER_NO_AUTH[0]:
-                            print(c(
-                                "[WARN] context_manager.py versi ini belum mendukung "
-                                "parameter api_key -- request summarization TIDAK "
-                                "membawa API key dan bisa gagal 401 kalau server "
-                                "mewajibkannya. Update context_manager.py juga.",
-                                C.YELLOW,
-                            ))
-                            state._WARNED_CONTEXT_MANAGER_NO_AUTH[0] = True
-                        kwargs.pop("api_key")
-                        continue
-                    raise
-        else:
-
-            ms_kwargs = dict(
-                db_path=args.db_path,
-                session_id=session_id,
-                url=args.url,
-                model=args.model,
-                context_window_tokens=context_window_tokens,
-                api_key=args.api_key,
-                tools_payload=build_openai_tools_payload(),
-                system_prompt=system_content,
-            )
-            while True:
-                try:
-                    context_manager.maybe_summarize(**ms_kwargs)
-                    break
-                except TypeError:
-                    if "system_prompt" in ms_kwargs:
-                        ms_kwargs.pop("system_prompt")
-                        continue
-                    if "tools_payload" in ms_kwargs:
-                        if not state._WARNED_CONTEXT_MANAGER_NO_TOOLS_BUDGET[0]:
-                            print(c(
-                                "[WARN] context_manager.py versi ini belum mendukung "
-                                "parameter tools_payload -- budget token field "
-                                "\"tools\" TIDAK direservasi saat summarization. "
-                                "Update context_manager.py juga.",
-                                C.YELLOW,
-                            ))
-                            state._WARNED_CONTEXT_MANAGER_NO_TOOLS_BUDGET[0] = True
-                        ms_kwargs.pop("tools_payload")
-                        continue
-                    if "api_key" in ms_kwargs:
-                        if args.api_key and not state._WARNED_CONTEXT_MANAGER_NO_AUTH[0]:
-                            print(c(
-                                "[WARN] context_manager.py versi ini belum mendukung "
-                                "parameter api_key -- request summarization TIDAK "
-                                "membawa API key dan bisa gagal 401 kalau server "
-                                "mewajibkannya. Update context_manager.py juga.",
-                                C.YELLOW,
-                            ))
-                            state._WARNED_CONTEXT_MANAGER_NO_AUTH[0] = True
-                        ms_kwargs.pop("api_key")
-                        continue
-                    raise
-            return context_manager.build_context_messages(
-                db_path=args.db_path,
-                session_id=session_id,
-                system_prompt=system_content,
-            )
+        kwargs = dict(
+            db_path=args.db_path,
+            session_id=session_id,
+            system_prompt=system_content,
+            url=args.url,
+            model=args.model,
+            context_window_tokens=context_window_tokens,
+            api_key=args.api_key,
+            tools_payload=build_openai_tools_payload(),
+        )
+        # Hanya teruskan parameter tuning kalau benar-benar diset user
+        # (melalui flag CLI atau config); kalau None, biarkan context_manager
+        # memakai defaultnya sendiri supaya tidak menimpa dengan None.
+        for _key in ("reserve_for_response", "summarize_threshold_ratio", "keep_tail_messages"):
+            _val = getattr(args, _key, None)
+            if _val is not None:
+                kwargs[_key] = _val
+        # Poin #4: model terpisah untuk summarization (kalau diset user).
+        _sum_model = getattr(args, "summarize_model", None) or ""
+        if _sum_model:
+            kwargs["summarize_model"] = _sum_model
+        return context_manager.prepare_context_messages(**kwargs)
 
     for _ in range(args.max_tool_iters):
         _iteration_count += 1
@@ -757,12 +691,23 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                     return last_visible
 
         tool_result_msg = f"<tool_result>\n{result}\n</tool_result>"
+        # Poin #5 rilis v0.5.0: simpan metadata tool call di kolom `meta`
+        # (JSON) untuk data training. `token_estimate` diperkirakan dari
+        # panjang string (kasar, ~4 char/token) karena token sungguhan hanya
+        # diketahui server pada request berikutnya.
+        _meta = {
+            "tool_name": name,
+            "args": arguments,
+            "is_error": _is_error,
+            "token_estimate": max(len(tool_result_msg) // 4, 1),
+        }
         dbmod.add_message(
             args.db_path,
             session_id,
             "user",
             tool_result_msg,
             kind="tool_result",
+            meta=_meta,
         )
 
         # Pacing antar request: jeda singkat setelah setiap tool call sukses

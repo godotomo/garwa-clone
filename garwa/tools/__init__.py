@@ -22,6 +22,7 @@ from .security_tool import tool_security_scan
 from .bash_tool import _cap_output, _bash_is_risky, _restore_terminal_mode, tool_bash
 from .repo_tools import tool_repo_map, tool_outline_file
 from .session_tools import _require_session, tool_todo_write, tool_todo_read, tool_remember, tool_recall
+from .sub_agent import tool_spawn_agent
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +240,23 @@ TOOLS = {
                     "key": {"type": "string", "description": "nama catatan spesifik yang ingin dibaca"},
                 },
                 "required": [],
+            },
+        },
+    },
+    "spawn_agent": {
+        "handler": tool_spawn_agent,
+        "destructive": False,
+        "schema": {
+            "name": "spawn_agent",
+            "description": "Jalankan sub-agent in-process untuk menyelesaikan task secara mandiri di sub-session terpisah (context window sendiri, tidak mencemari sesi induk). Berguna untuk pekerjaan paralel/terfokus (mis. eksplorasi kode, riset, pengerjaan modul terpisah) sambil induk tetap fokus. Mengembalikan final report sub-agent. Role bawaan: 'general' (default) dan 'explore' (penjelajah kode yang hanya meneliti tanpa mengubah file).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string", "description": "Instruksi/task yang harus diselesaikan sub-agent secara mandiri"},
+                    "role": {"type": "string", "description": "Peran sub-agent: 'general' (default) atau 'explore' (hanya meneliti/memahami kode tanpa mengubah file)"},
+                    "max_iters": {"type": "integer", "description": "Batas maksimum pemanggilan tool oleh sub-agent (default 40, maks 100)"},
+                },
+                "required": ["task"],
             },
         },
     },
