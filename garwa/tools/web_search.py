@@ -6,7 +6,19 @@ import base64
 import re
 import xml.etree.ElementTree as ET
 
-import requests
+_requests = None
+
+
+def _get_requests():
+    """Lazy-import requests (hanya saat tool web_search benar-benar dipanggil)
+    supaya startup CLI tidak memuat library berat requests (~300ms). Konsisten
+    dengan pola lazy-load di context_manager.py / cli/llm_client/*."""
+    global _requests
+    if _requests is None:
+        import requests
+        _requests = requests
+    return _requests
+
 
 try:
     from .. import repo_map as repo_map_mod
@@ -74,7 +86,7 @@ def _remote_get(url: str, **kwargs):
     headers = dict(kwargs.get("headers") or {})
     headers.setdefault("User-Agent", "Garwa/1.0")
     kwargs["headers"] = headers
-    return requests.get(url, **kwargs)
+    return _get_requests().get(url, **kwargs)
 
 
 def _html_to_text(html: str) -> str:
@@ -128,7 +140,7 @@ def _decode_google_news_url(source_url: str) -> str:
             encoded_id, int(timestamp), signature,
         ])
         f_req = json.dumps([[["Fbv4je", inner_payload, None, "generic"]]])
-        resp = requests.post(
+        resp = _get_requests().post(
             "https://news.google.com/_/DotsSplashUi/data/batchexecute",
             headers={
                 "User-Agent": "Garwa/1.0",
@@ -233,7 +245,7 @@ def tool_web_search(query: str, max_results: int = 5, lang: str = "auto") -> str
             return _search_google_news_rss(search_query, max_results, locale)
         except ET.ParseError as e:
             return f"[ERROR: web_search RSS tidak valid -- {e}]"
-        except requests.RequestException as e:
+        except _get_requests().exceptions.RequestException as e:
             return f"[ERROR: web_search gagal -- {e}]"
         except Exception as e:
             return f"[ERROR: web_search gagal -- {e}]"

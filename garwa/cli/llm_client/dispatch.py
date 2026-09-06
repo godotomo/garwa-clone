@@ -10,7 +10,20 @@ try:
 except ImportError:
     readline = None
 
-import requests
+_requests = None
+
+
+def _get_requests():
+    """Lazy-import requests (hanya saat exception handling dipanggil) supaya
+    startup CLI tidak memuat library berat requests (~300ms) kalau fitur
+    LLM tidak dipakai. Konsisten dengan pola lazy-load di stream_call.py /
+    nonstream_call.py / connection.py."""
+    global _requests
+    if _requests is None:
+        import requests
+        _requests = requests
+    return _requests
+
 
 from .. import _state as state
 from ..colors import C
@@ -35,7 +48,7 @@ def _is_rate_limit_error(e: Exception) -> bool:
     body response-nya mengandung penanda rate_limit (untuk jaga-jaga kalau
     status code-nya bukan 429 tapi body-nya bilang rate limit).
     """
-    if isinstance(e, requests.exceptions.HTTPError):
+    if isinstance(e, _get_requests().exceptions.HTTPError):
         resp = e.response
         if resp is not None and resp.status_code == 429:
             return True
@@ -69,7 +82,7 @@ def _is_concurrent_limit_error(e: Exception) -> bool:
     Return True kalau exception adalah HTTPError dengan status 429 DAN body
     response-nya mengandung penanda "concurrent_limit" / "bersamaan".
     """
-    if isinstance(e, requests.exceptions.HTTPError):
+    if isinstance(e, _get_requests().exceptions.HTTPError):
         resp = e.response
         if resp is not None and resp.status_code == 429:
             try:
@@ -95,7 +108,7 @@ def _is_server_error(e: Exception) -> bool:
 
     Return True kalau exception adalah HTTPError dengan status code 500-599.
     """
-    if isinstance(e, requests.exceptions.HTTPError):
+    if isinstance(e, _get_requests().exceptions.HTTPError):
         resp = e.response
         if resp is not None and resp.status_code is not None:
             return 500 <= resp.status_code < 600

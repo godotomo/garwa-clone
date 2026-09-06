@@ -13,7 +13,19 @@ try:
 except ImportError:
     readline = None
 
-import requests
+_requests = None
+
+
+def _get_requests():
+    """Lazy-import requests (hanya saat exception handling koneksi dipanggil)
+    supaya startup CLI tidak memuat library berat requests (~300ms). Konsisten
+    dengan pola lazy-load di context_manager.py / cli/llm_client/*."""
+    global _requests
+    if _requests is None:
+        import requests
+        _requests = requests
+    return _requests
+
 
 from .. import config
 from .. import db as dbmod
@@ -552,7 +564,7 @@ def main():
                     C.YELLOW,
                 ))
                 dbmod.touch_session(args.db_path, session_id)
-            except requests.exceptions.RequestException as e:
+            except _get_requests().exceptions.RequestException as e:
 
                 state._accumulate_error()
                 print(c(

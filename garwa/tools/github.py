@@ -5,7 +5,19 @@ import base64
 import re
 from urllib.parse import quote
 
-import requests
+_requests = None
+
+
+def _get_requests():
+    """Lazy-import requests (hanya saat tool github benar-benar dipanggil)
+    supaya startup CLI tidak memuat library berat requests (~300ms). Konsisten
+    dengan pola lazy-load di context_manager.py / cli/llm_client/*."""
+    global _requests
+    if _requests is None:
+        import requests
+        _requests = requests
+    return _requests
+
 
 try:
     from .. import repo_map as repo_map_mod
@@ -58,7 +70,7 @@ def tool_github_search_repos(query: str, max_results: int = 5) -> str:
         )
         resp.raise_for_status()
         items = resp.json().get("items", [])[:max_results]
-    except requests.RequestException as e:
+    except _get_requests().exceptions.RequestException as e:
         return f"[ERROR: github_search_repos gagal -- {e}]"
     except Exception as e:
         return f"[ERROR: github_search_repos gagal -- {e}]"
@@ -100,7 +112,7 @@ def tool_github_search_code(query: str, max_results: int = 5) -> str:
         )
         resp.raise_for_status()
         items = resp.json().get("items", [])[:max_results]
-    except requests.RequestException as e:
+    except _get_requests().exceptions.RequestException as e:
         return f"[ERROR: github_search_code gagal -- {e}]"
     except Exception as e:
         return f"[ERROR: github_search_code gagal -- {e}]"
@@ -135,7 +147,7 @@ def tool_github_read_file(repo: str, path: str, ref: str = None) -> str:
         )
         resp.raise_for_status()
         data = resp.json()
-    except requests.RequestException as e:
+    except _get_requests().exceptions.RequestException as e:
         return f"[ERROR: github_read_file gagal mengambil {repo}:{path} -- {e}]"
     except Exception as e:
         return f"[ERROR: github_read_file gagal -- {e}]"

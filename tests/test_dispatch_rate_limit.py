@@ -174,7 +174,11 @@ class TestTimeoutConstants:
             captured["timeout"] = timeout
             return FakeResponse()
 
-        monkeypatch.setattr(stream_call.requests, "post", fake_post)
+        # stream_call memakai lazy-load _get_requests(), bukan atribut modul
+        # `requests` -- patch lewat _get_requests() agar sesuai implementasi.
+        class _FakeRequests:
+            post = staticmethod(fake_post)
+        monkeypatch.setattr(stream_call, "_get_requests", lambda: _FakeRequests())
         stream_call._call_llama_server_stream("http://x", "m", [])
         # timeout sekarang tuple (connect, read) agar read-timeout berlaku antar
         # chunk -- keduanya memakai STREAM_TIMEOUT_SECONDS.
@@ -200,7 +204,9 @@ class TestTimeoutConstants:
             captured["timeout"] = timeout
             return FakeResponse()
 
-        monkeypatch.setattr(nonstream_call.requests, "post", fake_post)
+        # requests di-lazy-load (nonstream_call._get_requests). Panggil dulu
+        # agar _requests ter-set, lalu patch atribut post-nya.
+        monkeypatch.setattr(nonstream_call._get_requests(), "post", fake_post)
         nonstream_call._call_llama_server_nonstream("http://x", "m", [])
         assert captured["timeout"] == state.NONSTREAM_TIMEOUT_SECONDS
         assert state.NONSTREAM_TIMEOUT_SECONDS < 300

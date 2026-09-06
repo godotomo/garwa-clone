@@ -13,7 +13,19 @@ endpoint: https://api.firecrawl.dev/v1 (bisa di-override lewat env
 """
 import time
 
-import requests
+_requests = None
+
+
+def _get_requests():
+    """Lazy-import requests (hanya saat tool firecrawl benar-benar dipanggil)
+    supaya startup CLI tidak memuat library berat requests (~300ms). Konsisten
+    dengan pola lazy-load di context_manager.py / cli/llm_client/*."""
+    global _requests
+    if _requests is None:
+        import requests
+        _requests = requests
+    return _requests
+
 
 from . import _state as state
 from .web_search import _remote_get
@@ -40,7 +52,7 @@ def _no_key_msg(tool: str) -> str:
 
 def _post(url: str, payload: dict):
     """POST JSON ke Firecrawl dengan timeout default dari state."""
-    return requests.post(
+    return _get_requests().post(
         url,
         json=payload,
         headers=_firecrawl_headers(),
@@ -74,7 +86,7 @@ def tool_firecrawl_scrape(url: str, formats: str = "markdown") -> str:
         )
         resp.raise_for_status()
         data = resp.json()
-    except requests.RequestException as e:
+    except _get_requests().exceptions.RequestException as e:
         return f"[ERROR: firecrawl_scrape gagal -- {e}]"
     except Exception as e:
         return f"[ERROR: firecrawl_scrape gagal -- {e}]"
@@ -105,7 +117,7 @@ def tool_firecrawl_search(query: str, limit: int = 5) -> str:
         )
         resp.raise_for_status()
         data = resp.json()
-    except requests.RequestException as e:
+    except _get_requests().exceptions.RequestException as e:
         return f"[ERROR: firecrawl_search gagal -- {e}]"
     except Exception as e:
         return f"[ERROR: firecrawl_search gagal -- {e}]"
@@ -144,7 +156,7 @@ def tool_firecrawl_crawl(url: str, limit: int = 10, max_depth: int = 3) -> str:
         )
         resp.raise_for_status()
         data = resp.json()
-    except requests.RequestException as e:
+    except _get_requests().exceptions.RequestException as e:
         return f"[ERROR: firecrawl_crawl gagal -- {e}]"
     except Exception as e:
         return f"[ERROR: firecrawl_crawl gagal -- {e}]"
@@ -165,7 +177,7 @@ def tool_firecrawl_crawl(url: str, limit: int = 10, max_depth: int = 3) -> str:
             poll = _remote_get(f"{state.FIRECRAWL_API_URL}/crawl/{job_id}")
             poll.raise_for_status()
             job = poll.json()
-        except requests.RequestException as e:
+        except _get_requests().exceptions.RequestException as e:
             return f"[ERROR: firecrawl_crawl polling gagal -- {e}]"
         except Exception as e:
             return f"[ERROR: firecrawl_crawl polling gagal -- {e}]"
