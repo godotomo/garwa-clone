@@ -423,6 +423,113 @@ _PIP_INSTALL_RE = re.compile(
     r"\b(pip|pip3|python[23]?(?:\.\d+)?\s+-m\s+pip)\s+install\b"
 )
 
+# ---------------------------------------------------------------------------
+# Processor docker build
+# ---------------------------------------------------------------------------
+
+_DOCKER_BUILD_RE = re.compile(r"\bdocker\s+(build|buildx\s+build|compose\s+build)\b")
+
+
+def _compress_docker_build(lines: list[str]) -> str:
+    out: list[str] = []
+    for line in lines:
+        s = line.strip()
+        if not s:
+            continue
+        # Skip layer progress bar dan download
+        if re.match(r"^#\d+\s+(\[.*?\]|Pulling|Downloading|Extracting|Waiting)\s", s) or re.search(r"\d+%", s):
+            continue
+        if re.match(r"^#[0-9a-f]{12}\s+", s):
+            continue
+        out.append(line)
+    return "\n".join(out) if out else "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Processor eslint / ruff / linter
+# ---------------------------------------------------------------------------
+
+_LINTER_RE = re.compile(r"\b(eslint|ruff|pylint|flake8|tsc|tsc\s+--noEmit)\b")
+
+
+def _compress_linter(lines: list[str]) -> str:
+    out: list[str] = []
+    counts: dict[str, int] = {}
+    errors = []
+    for line in lines:
+        s = line.strip()
+        if not s:
+            continue
+        if re.match(r"^(✓|✔|\d+\s+problems?|\d+\s+errors?|\d+\s+warnings?|Found\s+\d+)\b", s, re.IGNORECASE):
+            out.append(line)
+            continue
+        if re.search(r":\d+:\d+:\s+(error|warning)\s+", s, re.IGNORECASE):
+            errors.append(line)
+            m = re.search(r"\s+(error|warning)\s+(\w+)", s, re.IGNORECASE)
+            if m:
+                code = m.group(2)
+                counts[code] = counts.get(code, 0) + 1
+    if counts:
+        parts = [f"{k}:{v}" for k, v in sorted(counts.items(), key=lambda x: -x[1])]
+        out.append(f"Rules hit: {', '.join(parts[:10])}")
+    out.extend(errors[:20])
+    if len(errors) > 20:
+        out.append(f"... ({len(errors) - 20} more issues)")
+    return "\n".join(out) if out else "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Processor terraform apply / plan
+# ---------------------------------------------------------------------------
+
+_TERRAFORM_RE = re.compile(r"\b(terraform|tofu)\s+(apply|plan|destroy|refresh)\b")
+
+
+def _compress_terraform(lines: list[str]) -> str:
+    out: list[str] = []
+    counts: dict[str, int] = {}
+    for line in lines:
+        s = line.strip()
+        if not s:
+            continue
+        # Skip progress bar animasi
+        if re.match(r"^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s+", s) or re.search(r"\d+%", s):
+            continue
+        if re.match(r"^(#|\s+)(\w+\.\w+|data\.\w+\.\w+):\s+(Creating|Modifying|Destroying|Still)\b", s):
+            continue
+        if re.match(r"^(Plan|Apply) complete!", s):
+            out.append(line)
+            continue
+        m = re.match(r"^(\d+)\s+(added|changed|destroyed)\b", s)
+        if m:
+            counts[m.group(2)] = int(m.group(1))
+            out.append(line)
+            continue
+        if re.search(r"\b(error|warning)\b", s, re.IGNORECASE) or "⚠️" in s or "❌" in s:
+            out.append(line)
+    return "\n".join(out) if out else "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Processor npm run build / vite build
+# ---------------------------------------------------------------------------
+
+_BUILD_RE = re.compile(r"\b(npm|pnpm|bun|yarn)\s+run\s+(build|compile)\b|\bvite\s+build\b")
+
+
+def _compress_build(lines: list[str]) -> str:
+    out: list[str] = []
+    for line in lines:
+        s = line.strip()
+        if not s:
+            continue
+        # Skip chunk list dan asset size table
+        if re.match(r"^[✓✔]\s+\d+\s+modules?\s+transformed", s) or re.match(r"^\s*\.\w+\s+\d+\.?\d*\s*[kKM]?B", s):
+            continue
+        if re.search(r"built in\s+\d+\.?\d*\s*(ms|s)", s) or "Build completed" in s or "✓" in s or "ERROR" in s:
+            out.append(line)
+    return "\n".join(out) if out else "\n".join(lines)
+
 
 def _compress_install(lines: list[str]) -> str:
     out: list[str] = []
@@ -487,6 +594,14 @@ def compress_output(command: str, output: str, exit_code: int | None = None) -> 
         compressed = _compress_git(command, lines)
     elif _NPM_INSTALL_RE.search(command) or _PIP_INSTALL_RE.search(command):
         compressed = _compress_install(lines)
+    elif _DOCKER_BUILD_RE.search(command):
+        compressed = _compress_docker_build(lines)
+    elif _LINTER_RE.search(command):
+        compressed = _compress_linter(lines)
+    elif _TERRAFORM_RE.search(command):
+        compressed = _compress_terraform(lines)
+    elif _BUILD_RE.search(command):
+        compressed = _compress_build(lines)
 
     if compressed is None or compressed == output:
         return output

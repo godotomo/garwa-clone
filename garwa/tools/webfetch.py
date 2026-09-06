@@ -5,13 +5,29 @@ import re
 import socket
 import ipaddress
 
-import requests
+_requests = None
+_BeautifulSoup = None
+_HAS_BS4 = None
 
-try:
-    from bs4 import BeautifulSoup
-    _HAS_BS4 = True
-except ImportError:
-    _HAS_BS4 = False
+
+def _get_requests():
+    global _requests
+    if _requests is None:
+        import requests
+        _requests = requests
+    return _requests
+
+
+def _get_bs4():
+    global _BeautifulSoup, _HAS_BS4
+    if _HAS_BS4 is None:
+        try:
+            from bs4 import BeautifulSoup
+            _BeautifulSoup = BeautifulSoup
+            _HAS_BS4 = True
+        except ImportError:
+            _HAS_BS4 = False
+    return _BeautifulSoup if _HAS_BS4 else None
 
 
 try:

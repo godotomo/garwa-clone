@@ -9,7 +9,15 @@ try:
 except ImportError:
     readline = None
 
-import requests
+_requests = None
+
+
+def _get_requests():
+    global _requests
+    if _requests is None:
+        import requests
+        _requests = requests
+    return _requests
 
 from .. import _state as state
 from ..colors import C
@@ -116,6 +124,7 @@ def _call_llama_server_stream(url: str, model: str, messages: list,
         _debug_log("REQUEST", f"POST {url} (stream=True, {len(messages)} pesan dalam messages)")
         _debug_log("PAYLOAD", _debug_payload_preview(payload))
 
+    requests = _get_requests()
     try:
         response = requests.post(
             url,

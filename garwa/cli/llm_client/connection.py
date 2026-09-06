@@ -9,7 +9,15 @@ try:
 except ImportError:
     readline = None
 
-import requests
+_requests = None
+
+
+def _get_requests():
+    global _requests
+    if _requests is None:
+        import requests
+        _requests = requests
+    return _requests
 
 from .. import _state as state
 from ..colors import C
@@ -52,6 +60,7 @@ def _fetch_server_n_ctx(base: str, api_key: str = "",
     ini, bukan dianggap error fatal.
     """
     props_url = base.rstrip("/") + "/props"
+    requests = _get_requests()
     try:
         resp = requests.get(props_url, headers=_auth_headers(api_key), timeout=timeout)
     except requests.exceptions.RequestException:
@@ -111,6 +120,7 @@ def check_llama_server_connection(url: str, api_key: str = "",
         return False, f"URL tidak valid: {url!r} ({e})", None, None
 
     models_url = base.rstrip("/") + "/v1/models"
+    requests = _get_requests()
     try:
         resp = requests.get(models_url, headers=_auth_headers(api_key), timeout=timeout)
     except requests.exceptions.RequestException as e:
