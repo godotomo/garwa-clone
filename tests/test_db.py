@@ -316,3 +316,18 @@ def test_foreign_keys_enforced(db_path):
     # Menambah pesan ke sesi yang tidak ada harus gagal (FK ke sessions).
     with pytest.raises(sqlite3.IntegrityError):
         dbmod.add_message(db_path, "tidak-ada", "user", "x")
+
+
+def test_set_note_summary(db_path):
+    dbmod.set_note(db_path, "/tmp/w", "k", "nilai panjang")
+    dbmod.set_note_summary(db_path, "/tmp/w", "k", "ringkasan")
+    notes = dbmod.get_notes(db_path, "/tmp/w")
+    assert notes[0]["summary"] == "ringkasan"
+    # value asli tidak berubah
+    assert notes[0]["value"] == "nilai panjang"
+
+
+def test_set_note_summary_noop_for_missing_note(db_path):
+    # set summary untuk catatan yang belum ada tidak boleh error
+    dbmod.set_note_summary(db_path, "/tmp/w", "tidak-ada", "x")
+    assert dbmod.get_notes(db_path, "/tmp/w") == []

@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS project_notes (
     key         TEXT NOT NULL,
     value       TEXT NOT NULL,
     updated_at  REAL NOT NULL,
+    summary     TEXT,
     UNIQUE(workdir, key)
 );
 
@@ -128,6 +129,14 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
         scol = [r[1] for r in conn.execute("PRAGMA table_info(summaries)").fetchall()]
         if "active_instructions" not in scol:
             conn.execute("ALTER TABLE summaries ADD COLUMN active_instructions TEXT")
+
+        # Migrasi ringan: kolom `summary` di tabel project_notes (ringkasan
+        # catatan via LLM untuk diringkas di konteks tanpa kehilangan konteks
+        # penting). DB lama tidak akan mendapatnya dari CREATE TABLE IF NOT
+        # EXISTS, jadi tambahkan secara idempoten kalau belum ada.
+        ncol = [r[1] for r in conn.execute("PRAGMA table_info(project_notes)").fetchall()]
+        if "summary" not in ncol:
+            conn.execute("ALTER TABLE project_notes ADD COLUMN summary TEXT")
 
 
 
@@ -347,6 +356,21 @@ def set_note(db_path: str, workdir: str, key: str, value: str):
             "INSERT INTO project_notes (workdir, key, value, updated_at) VALUES (?, ?, ?, ?) "
             "ON CONFLICT(workdir, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
             (workdir, key, value, now),
+        )
+
+
+def set_note_summary(db_path: str, workdir: str, key: str, summary: str):
+    """Simpan ringkasan LLM untuk sebuah catatan (kolom `summary`).
+
+    Catatan penuh (`value`) TIDAK diubah — ringkasan hanya disimpan sebagai
+    tampilan terpotong untuk konteks, sehingga konteks penting yang coba
+    dipertahankan oleh LLM tidak hilang, dan catatan asli tetap utuh di DB.
+    """
+    with connect(db_path) as conn:
+        conn.execute(
+            "UPDATE project_notes SET summary = ?, updated_at = updated_at "
+            "WHERE workdir = ? AND key = ?",
+            (summary, workdir, key),
         )
 
 

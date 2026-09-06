@@ -17,10 +17,11 @@ Strategi ringkas ala "summary + tail":
 
 import json
 import logging
+import math
+import re
 import sys
 import time
-
-import requests
+from collections import Counter
 
 from . import db as dbmod
 from . import token_utils
@@ -29,6 +30,20 @@ from .cli.colors import c
 from .cli.progress import ProgressBar
 
 logger = logging.getLogger(__name__)
+
+_requests = None
+
+
+def _get_requests():
+    """Lazy-import requests (hanya saat summarize/ringkasan benar-benar
+    dipanggil) supaya startup CLI tidak memuat library berat requests
+    (~300ms) kalau fitur ringkasan tidak dipakai. Konsisten dengan pola
+    lazy-load di cli/llm_client/*."""
+    global _requests
+    if _requests is None:
+        import requests
+        _requests = requests
+    return _requests
 
 SUMMARIZE_THRESHOLD_RATIO = 0.2    # ringkas kalau pemakaian > 35% dari budget context
 KEEP_TAIL_MESSAGES = 8              # jumlah pesan mentah terbaru yang selalu dipertahankan utuh
@@ -53,6 +68,33 @@ SUMMARIZE_RETRY_MAX_DELAY = 15.0   # batas atas delay antar-retry (detik)
 SUMMARIZE_MAX_INPUT_CHARS = 300_000
 # Rasio warning: log ke.debug kalau chunk mendekati/lewati batas input.
 SUMMARIZE_WARN_RATIO = 0.9
+
+# ---------------------------------------------------------------------------
+# Batas blok "CATATAN PROYEK PERSISTEN" (tabel project_notes, ditulis via tool
+# `remember`) yang disuntikkan ke system prompt SETIAP giliran.
+#
+# Masalah yang diatasi: catatan `remember` bersifat persisten lintas sesi dan
+# TIDAK ikut diringkas, jadi jumlahnya terus bertambah dan biaya tetap per
+# giliran membengkak (di proyek ini ~21 catatan = ~43k karakter = ~12.9k token).
+#
+# Strategi "tidak kehilangan konteks":
+#   - SEMUA key catatan tetap disuntikkan (model tetap tahu catatan apa saja
+#     yang ada, jadi tidak ada catatan yang hilang dari konteks).
+#   - Catatan yang panjang dipangkas dari TENGAH (head + tail dipertahankan)
+#     dengan penanda jelas "[…sisa dipangkas…]", bukan dari awal/akhir, agar
+#     deskripsi (awal) dan kesimpulan/verifikasi (akhir) tetap utuh.
+#   - Budget total dibagi merata ke semua catatan, sehingga tidak ada catatan
+#     yang dikorbankan penuh demi catatan lain.
+# ---------------------------------------------------------------------------
+# Batas total blok catatan (karakter). ~12k karakter ≈ ~3.4k token (vs 43k
+# sebelumnya). Sesuaikan bila perlu.
+PROJECT_NOTES_MAX_TOTAL_CHARS = 12_000
+# Batas atas per-catatan (karakter) sebelum dipangkas dari tengah.
+PROJECT_NOTES_MAX_PER_NOTE_CHARS = 900
+# Catatan yang lebih panjang dari ini akan diringkas via LLM (bukan di-trim)
+# agar konteks penting tidak hilang. Nilai pendek = lebih banyak catatan
+# diringkas, tapi lebih hemat token.
+PROJECT_NOTES_SUMMARIZE_MIN_CHARS = 500
 
 
 def _pairing_safe_split(rows: list, split_at: int) -> int:
@@ -127,6 +169,260 @@ SUMMARIZE_SYSTEM = (
     "  - JANGAN membungkus JSON dengan ```fence``` atau teks penjelasan apa pun."
 )
 
+# Prompt untuk meringkas SATU catatan proyek persisten (`remember`) via LLM.
+# Berbeda dari SUMMARIZE_SYSTEM (yang meringkas riwayat percakapan), prompt ini
+# khusus meringkas catatan teknis/desain agar konteks penting TIDAK hilang saat
+# catatan panjang disuntikkan ke system prompt setiap giliran. Output berupa
+# teks ringkasan padat (bukan JSON) yang mempertahankan inti, keputusan desain,
+# dan kesimpulan/verifikasi.
+NOTE_SUMMARIZE_SYSTEM = (
+    "Anda adalah asisten yang meringkas SATU catatan proyek persisten (ditulis "
+    "via tool `remember` oleh coding-agent CLI) menjadi ringkasan PADAT untuk "
+    "disuntikkan ke konteks model setiap giliran.\n\n"
+    "Tujuan: mengurangi biaya token, TAPI JANGAN kehilangan konteks penting.\n\n"
+    "ATURAN:\n"
+    "1. Pertahankan SEMUA informasi penting: keputusan desain/arsitektur, "
+    "   angka/versi/konstanta kunci, hasil verifikasi, peringatan/jebakan, "
+    "   instruksi yang masih aktif, dan kesimpulan.\n"
+    "2. Buang hanya detail yang redundan/pengulangan, contoh ilustratif yang "
+    "   panjang, atau catatan prosedural yang sudah jelas dari konteks.\n"
+    "3. Output berupa SATU paragraf ringkas (maksimal ~350 kata) dalam bahasa "
+    "   Indonesia, tanpa JSON, tanpa markdown heading, tanpa teks pengantar.\n"
+    "4. Kalau catatan berisi banyak poin terstruktur, pertahankan poin-poinnya "
+    "   tapi padatkan tiap poin.\n"
+)
+
+
+def _trim_note_middle(value: str, max_chars: int) -> str:
+    """Pangkas isi catatan dari TENGAH (head + tail dipertahankan) agar konteks
+    awal (deskripsi) dan akhir (kesimpulan/verifikasi) tidak hilang.
+
+    Strategi ini dipilih supaya "tidak kehilangan konteks": memotong dari awal
+    atau akhir berisiko membuang bagian penting (mis. keputusan desain di akhir
+    atau judul di awal). Memotong dari tengah menjaga kedua ujung tetap utuh.
+    """
+    if len(value) <= max_chars:
+        return value
+    if max_chars <= 40:
+        return value[: max_chars // 2] + "…"
+    head = max_chars // 2
+    tail = max_chars - head
+    return value[:head] + "\n[…sisa dipangkas…]\n" + value[-tail:]
+
+
+# ---------------------------------------------------------------------------
+# Fallback cerdas: extractive summarization berbasis sentence scoring
+# (diadaptasi dari pendekatan TextDigest -- pure Python, stdlib only).
+# Dipakai ketika ringkasan LLM (kolom `summary`) belum tersedia / gagal.
+# Alih-alih memotong mentah dari tengah (yang bisa membuang kalimat penting),
+# fallback ini MEMILIH kalimat paling informatif dan menyusunnya kembali
+# dalam urutan asli -- jadi konteks penting dipertahankan secara context-aware.
+# ---------------------------------------------------------------------------
+
+# Kata yang hampir tidak membawa makna (dipakai untuk tokenisasi ringan).
+_NOTE_STOPWORDS = {
+    "a", "about", "above", "after", "again", "all", "also", "am", "an", "and",
+    "any", "are", "as", "at", "be", "because", "been", "before", "being", "but",
+    "by", "can", "did", "do", "does", "down", "during", "each", "few", "for",
+    "from", "had", "has", "have", "having", "he", "her", "here", "him", "his",
+    "how", "i", "if", "in", "into", "is", "it", "its", "just", "me", "more",
+    "most", "my", "no", "nor", "not", "now", "of", "off", "on", "once", "only",
+    "or", "other", "our", "out", "over", "own", "same", "she", "should", "so",
+    "some", "such", "than", "that", "the", "their", "them", "then", "there",
+    "these", "they", "this", "those", "through", "to", "too", "under", "until",
+    "up", "very", "was", "we", "were", "what", "when", "where", "which", "while",
+    "who", "why", "will", "with", "you", "your", "yang", "dan", "ke", "dari",
+    "ini", "itu", "untuk", "dengan", "pada", "di", "adalah", "tidak", "akan",
+    "juga", "sudah", "telah", "agar", "supaya", "bila", "kalau", "jika", "saat",
+}
+
+# Penanda penting: kalimat yang mengandung salah satunya diberi bobot ekstra
+# karena biasanya memuat keputusan/instruksi/verifikasi yang wajib dipertahankan.
+_NOTE_IMPORTANT_MARKERS = (
+    "penting", "catatan", "wajib", "jangan", "harus", "jebakan", "verifikasi",
+    "terbukti", "berhasil", "selesai", "keputusan", "konvensi", "hasil terukur",
+    "constraints", "jangan lupa", "perhatian", "bug", "fix", "jangan dilanggar",
+    "kompatibilitas", "hati-hati",
+)
+
+# Kata/frasa yang menandakan baris adalah bagian dari poin terstruktur (bullet).
+_NOTE_BULLET_MARKERS = ("- ", "* ", "• ", "1. ", "2. ", "3. ", "4. ", "5. ",
+                        "6. ", "7. ", "8. ", "9. ", "0. ")
+
+
+def _note_tokenize(sentence: str) -> list:
+    """Lowercase + ekstrak kata bermakna (buang stopword & kata pendek)."""
+    words = re.findall(r"[a-z0-9_]+", sentence.lower())
+    return [w for w in words if w not in _NOTE_STOPWORDS and len(w) > 2]
+
+
+def _note_sentences(value: str) -> list:
+    """Pecah catatan jadi daftar (kalimat, posisi_awal) dengan heuristik.
+
+    Catatan `remember` sering berupa poin terstruktur (bullet) yang tidak
+    selalu berakhir dengan titik. Kita pecah per baris kalau barisnya pendek
+    (terlihat seperti bullet/poin), dan per kalimat (. ! ?) untuk teks
+    mengalir. Posisi awal dipakai untuk menyusun ulang dalam urutan asli.
+    """
+    result = []
+    cursor = 0
+    for raw_line in value.splitlines():
+        line = raw_line.strip()
+        if not line:
+            cursor += len(raw_line) + 1
+            continue
+        if _NOTE_BULLET_MARKERS and any(line.startswith(m) for m in _NOTE_BULLET_MARKERS):
+            # Baris bullet: perlakukan seluruh baris sebagai satu "kalimat".
+            result.append((line, cursor))
+            cursor += len(raw_line) + 1
+        else:
+            # Teks mengalir: pecah per kalimat. Setiap kalimat diberi posisi
+            # inkremental (cursor + offset) agar urutan asli tetap terjaga
+            # saat disusun ulang -- kalimat dalam satu baris tidak boleh
+            # berbagi posisi yang sama.
+            offset = 0
+            for sent in re.split(r"(?<=[.!?])\s+", line):
+                if len(sent.split()) > 2:  # buang fragmen 1-2 kata (noise)
+                    result.append((sent, cursor + offset))
+                    offset += 1
+            cursor += len(raw_line) + 1 + offset
+    # Gabungkan kalimat yang sangat pendek (<=2 kata) ke kalimat berikutnya?
+    # Tidak perlu -- buang saja yang <=2 kata, itu biasanya heading/noise.
+    return result
+
+
+def _note_score_sentences(sentences: list) -> list:
+    """Berikan skor ke tiap (kalimat, posisi) berbasis word-frequency + bobot
+    penanda penting. Kembalikan list (skor, posisi, kalimat) yang sudah diurut.
+    """
+    counts = Counter()
+    for sent, _pos in sentences:
+        counts.update(_note_tokenize(sent))
+    if not counts:
+        return []
+    most_common = max(counts.values())
+    word_scores = {w: c / most_common for w, c in counts.items()}
+
+    scored = []
+    for sent, pos in sentences:
+        words = _note_tokenize(sent)
+        if not words:
+            continue
+        # Skor dasar: jumlah bobot kata / sqrt(panjang) supaya kalimat panjang
+        # tidak menang hanya karena panjang (pola TextDigest).
+        base = sum(word_scores.get(w, 0) for w in words) / math.sqrt(len(words))
+        # Bonus untuk kalimat yang memuat penanda penting.
+        low = sent.lower()
+        if any(m in low for m in _NOTE_IMPORTANT_MARKERS):
+            base *= 1.5
+        scored.append((base, pos, sent))
+    return scored
+
+
+def _extractive_summarize_note(value: str, max_chars: int) -> str:
+    """Fallback cerdas: pilih kalimat paling informatif (extractive) lalu
+    susun ulang dalam urutan asli, dibatasi `max_chars`.
+
+    Ini menggantikan pemangkasan mentah dari tengah: alih-alih membuang
+    bagian tengah, kita MEMILIH kalimat-kalimat yang paling padat informasi
+    (termasuk yang bertanda PENTING/CATATAN/WAJIB) dan mempertahankannya,
+    sehingga konteks penting tetap utuh secara context-aware.
+    """
+    if len(value) <= max_chars:
+        return value
+    sentences = _note_sentences(value)
+    if not sentences:
+        return _trim_note_middle(value, max_chars)
+
+    scored = _note_score_sentences(sentences)
+    if not scored:
+        return _trim_note_middle(value, max_chars)
+
+    # Ambil kalimat ber-skor tertinggi sampai muat dalam budget.
+    ordered = sorted(scored, reverse=True)
+    chosen = []
+    budget = max_chars
+    for _score, _pos, sent in ordered:
+        if len(sent) + 1 > budget:
+            continue
+        chosen.append((_pos, sent))
+        budget -= len(sent) + 1
+    if not chosen:
+        # Kalimat terpanjang pun tak muat: ambil kalimat skor tertinggi,
+        # pangkas dari tengah sebagai jaring pengaman terakhir.
+        best = ordered[0][2]
+        return _trim_note_middle(best, max_chars)
+
+    # Susun ulang dalam urutan asli supaya ringkasan tetap mengalir.
+    chosen.sort(key=lambda item: item[0])
+    return " ".join(sent for _pos, sent in chosen)
+
+
+def _summarize_note_text(url: str, model: str, note_text: str, api_key: str = "") -> str:
+    """Ringkas SATU catatan via LLM menjadi ringkasan padat (plain text).
+
+    Mengembalikan teks ringkasan. Kalau gagal (server error / response tidak
+    valid), kembalikan string kosong agar pemanggil bisa fallback ke trim.
+    """
+    if not note_text.strip():
+        return ""
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": NOTE_SUMMARIZE_SYSTEM},
+            {"role": "user", "content": note_text},
+        ],
+        "temperature": 0.2,
+        "stream": False,
+    }
+    try:
+        resp = _get_requests().post(
+            url, json=payload, headers=_auth_headers(api_key),
+            timeout=SUMMARIZE_REQUEST_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"]
+        return (content or "").strip()
+    except Exception:  # noqa: BLE001 - ringkasan catatan opsional, jangan crash
+        logger.warning("gagal meringkas catatan via LLM", exc_info=True)
+        return ""
+
+
+def _ensure_note_summaries(db_path: str, session_id: str, url: str, model: str,
+                           api_key: str = "", force: bool = False) -> None:
+    """Ringkas catatan `remember` yang panjang via LLM dan simpan ke kolom
+    `summary` (sekali per catatan). Dipanggil di awal prepare_context_messages
+    sehingga _project_notes_section bisa memakai ringkasan LLM (bukan trim)
+    untuk catatan panjang -- konteks penting tidak hilang.
+
+    Catatan yang sudah punya `summary` TIDAK diringkas ulang (hemat biaya).
+    `force=True` memaksa ringkas ulang (mis. untuk pengujian). Catatan pendek
+    (<= PROJECT_NOTES_SUMMARIZE_MIN_CHARS) tidak perlu diringkas.
+    """
+    try:
+        session = dbmod.get_session(db_path, session_id)
+        if not session:
+            return
+        workdir = session.get("workdir") or ""
+        notes = dbmod.get_notes(db_path, workdir)
+    except Exception:
+        logger.warning("gagal membaca project_notes untuk ringkasan session_id=%s",
+                       session_id, exc_info=True)
+        return
+    for note in notes:
+        key = note.get("key") or ""
+        value = note.get("value") or ""
+        if not value.strip():
+            continue
+        if len(value) <= PROJECT_NOTES_SUMMARIZE_MIN_CHARS:
+            continue
+        if not force and (note.get("summary") or "").strip():
+            continue  # sudah diringkas sebelumnya
+        summary = _summarize_note_text(url, model, value, api_key=api_key)
+        if summary:
+            dbmod.set_note_summary(db_path, workdir, key, summary)
+
 
 def _project_notes_section(db_path: str, session_id: str) -> str:
     """Bangun blok teks berisi catatan proyek persisten (tabel project_notes,
@@ -137,6 +433,15 @@ def _project_notes_section(db_path: str, session_id: str) -> str:
     menjamin instruksi/preferensi/keputusan yang disimpan via `remember`
     tetap tampil utuh di konteks model -- tidak hilang walau riwayat
     percakapan sudah diringkas berkali-kali.
+
+    Untuk mencegah biaya tetap per giliran membengkak (catatan terus bertambah),
+    blok ini DIBATASI total karakternya (PROJECT_NOTES_MAX_TOTAL_CHARS) dan
+    per-catatan (PROJECT_NOTES_MAX_PER_NOTE_CHARS). Pembatasan dilakukan tanpa
+    menghilangkan konteks penting:
+      - SEMUA key catatan tetap disertakan (model tahu catatan apa saja ada).
+      - Catatan panjang diringkas secara EXTRACTIVE (pilih kalimat paling
+        informatif, susun ulang dalam urutan asli) -- bukan dipotong mentah.
+      - Budget total dibagi merata ke semua catatan.
     """
     try:
         session = dbmod.get_session(db_path, session_id)
@@ -148,12 +453,58 @@ def _project_notes_section(db_path: str, session_id: str) -> str:
         return ""
     if not notes:
         return ""
-    lines = [f"- {n['key']}: {n['value']}" for n in notes]
-    return (
+    # Pass 1: budget total dibagi merata ke semua catatan, tapi tidak melebihi
+    # batas per-catatan. Catatan yang lebih pendek dari jatahnya menyisakan
+    # ruang yang bisa dipakai catatan lain.
+    n = len(notes)
+    per_note_budget = max(
+        PROJECT_NOTES_MAX_TOTAL_CHARS // n,
+        40,
+    )
+    per_note_budget = min(per_note_budget, PROJECT_NOTES_MAX_PER_NOTE_CHARS)
+    lines = []
+    for note in notes:
+        key = note.get("key") or ""
+        value = note.get("value") or ""
+        # Prioritas: pakai ringkasan LLM (kolom `summary`) bila tersedia,
+        # karena itu mempertahankan konteks penting tanpa kehilangan inti.
+        # Fallback ke pemangkasan dari tengah hanya untuk catatan yang belum
+        # sempat diringkas (mis. LLM summarize belum dijalankan / gagal).
+        summary = note.get("summary") or ""
+        if summary.strip():
+            display = summary.strip()
+        else:
+            display = _extractive_summarize_note(value, per_note_budget)
+        lines.append(f"- {key}: {display}")
+
+    # Pass 2: pastikan total blok (termasuk prefix "- key:") benar-benar tidak
+    # melebihi PROJECT_NOTES_MAX_TOTAL_CHARS. Kalau masih lewat, pangkas lagi
+    # catatan TERPANJANG dulu (berulang) sampai muat. Ini menjaga batas total
+    # tetap dihormati walau ada banyak key panjang.
+    header = (
         "\n\nCATATAN PROYEK PERSISTEN (disimpan user/model via tool `remember`, "
         "jangan dianggap usang walau riwayat sudah diringkas):\n"
-        + "\n".join(lines)
     )
+    total = len(header) + sum(len(l) for l in lines)
+    while total > PROJECT_NOTES_MAX_TOTAL_CHARS and len(lines) > 1:
+        # cari indeks baris terpanjang
+        idx = max(range(len(lines)), key=lambda i: len(lines[i]))
+        key = notes[idx].get("key") or ""
+        value = notes[idx].get("value") or ""
+        # Pangkas setengah dari BUDGET SAAT INI (yang menghasilkan cur_len),
+        # bukan dari panjang value penuh -- supaya new_line selalu lebih pendek
+        # dari cur_len dan loop benar-benar menyusut.
+        cur_len = len(lines[idx])
+        prefix = len(f"- {key}: ")
+        cur_budget = max(cur_len - prefix, 40)
+        new_budget = max(cur_budget // 2, 40)
+        new_line = f"- {key}: {_extractive_summarize_note(value, new_budget)}"
+        if len(new_line) >= cur_len:
+            break  # tidak bisa menyusut lagi
+        total -= cur_len - len(new_line)
+        lines[idx] = new_line
+
+    return header + "\n".join(lines)
 
 
 def build_context_messages(db_path: str, session_id: str, system_prompt: str) -> list:
@@ -226,11 +577,12 @@ def _is_retryable_error(exc: Exception) -> bool:
     TIDAK di-retry: 4xx lain (400/401/403/404/422) karena itu error
     permanen dari sisi request/payload -- retry hanya buang waktu.
     """
-    if isinstance(exc, requests.Timeout):
+    _req = _get_requests()
+    if isinstance(exc, _req.Timeout):
         return True
-    if isinstance(exc, requests.ConnectionError):
+    if isinstance(exc, _req.ConnectionError):
         return True
-    if isinstance(exc, requests.HTTPError):
+    if isinstance(exc, _req.HTTPError):
         status = exc.response.status_code if exc.response is not None else None
         return status is not None and (status == 429 or status >= 500)
     return False
@@ -323,7 +675,7 @@ def _summarize_text(url: str, model: str, text_to_summarize: str, api_key: str =
             except Exception:
                 pass
         try:
-            resp = requests.post(
+            resp = _get_requests().post(
                 url, json=payload, headers=_auth_headers(api_key),
                 timeout=SUMMARIZE_REQUEST_TIMEOUT_SECONDS,
             )
@@ -522,6 +874,18 @@ def prepare_context_messages(
         )
 
     tools_tokens = _tools_payload_tokens(tools_payload)
+
+    # Ringkas catatan `remember` yang panjang via LLM (sekali per catatan,
+    # disimpan di kolom `summary`) sehingga _project_notes_section memakai
+    # ringkasan LLM, bukan trim, untuk catatan panjang -- konteks penting
+    # tidak hilang. Gagal ringkas = fallback ke trim (tidak crash).
+    try:
+        _ensure_note_summaries(
+            db_path, session_id, url, model, api_key=api_key,
+        )
+    except Exception:  # noqa: BLE001 - ringkasan catatan opsional
+        logger.warning("gagal memastikan ringkasan catatan utk session_id=%s", session_id,
+                       exc_info=True)
 
     summarized = maybe_summarize(
         db_path=db_path,

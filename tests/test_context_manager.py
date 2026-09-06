@@ -360,3 +360,146 @@ def test_prepare_context_messages_no_trim_when_summarize_fails(db_path, session_
     assert len(msgs) == 51  # system + 50 pesan mentah, tidak ada yang dibuang
     # Tidak boleh ada summary tersimpan (summarize gagal).
     assert dbmod.get_latest_summary(db_path, session_id) is None
+
+
+# ---------------------------------------------------------------- project notes
+def test_trim_note_middle_short_value_unchanged():
+    v = "teks pendek"
+    assert cm._trim_note_middle(v, 100) == v
+
+
+def test_trim_note_middle_long_value_keeps_head_and_tail():
+    v = "A" * 50 + "MIDDLE" + "B" * 50
+    out = cm._trim_note_middle(v, 60)
+    assert len(out) < len(v)
+    # head dan tail dipertahankan, tengah dipangkas
+    assert out.startswith("A" * 30)
+    assert out.endswith("B" * 30)
+    assert "…sisa dipangkas…" in out
+
+
+# ------------------------------------------------- fallback extractive (context-aware)
+def test_extractive_summarize_short_value_unchanged():
+    v = "teks pendek saja"
+    assert cm._extractive_summarize_note(v, 100) == v
+
+
+def test_extractive_summarize_keeps_important_markers():
+    # Kalimat bertanda PENTING/CATATAN harus dipertahankan walau di tengah.
+    v = (
+        "Deskripsi awal proyek yang panjang dan tidak terlalu penting. "
+        "CATATAN: ini keputusan desain yang wajib dipertahankan. "
+        "Detail teknis kecil yang bisa dibuang untuk menghemat ruang. "
+        "PENTING: verifikasi konteks tetap utuh. "
+        "Kesimpulan akhir."
+    )
+    out = cm._extractive_summarize_note(v, 200)
+    assert len(out) <= 200 + 20  # toleransi
+    assert "keputusan desain" in out
+    assert "verifikasi konteks" in out
+
+
+def test_extractive_summarize_preserves_original_order():
+    v = (
+        "Kalimat pertama yang penting sekali. "
+        "Kalimat kedua yang juga penting. "
+        "Kalimat ketiga yang kurang penting. "
+        "Kalimat keempat yang cukup penting. "
+    )
+    out = cm._extractive_summarize_note(v, 100)
+    # Kalimat yang terpilih harus tetap dalam urutan asli teks.
+    positions = [out.find(s) for s in ("Kalimat pertama", "Kalimat kedua", "Kalimat keempat")]
+    positions = [p for p in positions if p != -1]
+    assert positions == sorted(positions)
+
+
+def test_extractive_summarize_falls_back_to_trim_on_no_sentences():
+    # Teks tanpa kalimat yang bisa dipecah (mis. satu kata panjang) -> trim.
+    v = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    out = cm._extractive_summarize_note(v, 40)
+    assert len(out) < len(v)
+
+
+def test_project_notes_section_injects_all_keys(db_path, session_id):
+    for i in range(5):
+        dbmod.set_note(db_path, "/tmp/test-workdir", f"key{i}", "x" * 500)
+    section = cm._project_notes_section(db_path, session_id)
+    assert "CATATAN PROYEK PERSISTEN" in section
+    for i in range(5):
+        assert f"key{i}" in section
+
+
+def test_project_notes_section_respects_total_budget(db_path, session_id):
+    # Banyak catatan panjang -> total blok harus <= PROJECT_NOTES_MAX_TOTAL_CHARS
+    for i in range(30):
+        dbmod.set_note(db_path, "/tmp/test-workdir", f"k{i}", "z" * 2000)
+    section = cm._project_notes_section(db_path, session_id)
+    assert len(section) <= cm.PROJECT_NOTES_MAX_TOTAL_CHARS + 5  # toleransi kecil
+    # semua key tetap ada
+    for i in range(30):
+        assert f"k{i}" in section
+
+
+def test_project_notes_section_empty_when_no_session(db_path):
+    assert cm._project_notes_section(db_path, "nonexistent-session") == ""
+
+
+# ------------------------------------------------------ note summarization via LLM
+def test_summarize_note_text_returns_content(db_path, monkeypatch):
+    """_summarize_note_text memakai LLM dan mengembalikan teks ringkasan."""
+    def fake_post(url, json=None, headers=None, timeout=None):
+        class R:
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return {"choices": [{"message": {"content": "Ringkasan padat."}}]}
+        return R()
+    # requests di-lazy-load (cm._get_requests). Panggil dulu agar _requests
+    # ter-set, lalu patch atribut post-nya.
+    monkeypatch.setattr(cm._get_requests(), "post", fake_post)
+    out = cm._summarize_note_text("http://x", "m", "isi catatan panjang")
+    assert out == "Ringkasan padat."
+
+
+def test_summarize_note_text_returns_empty_on_error(db_path, monkeypatch):
+    def boom(url, json=None, headers=None, timeout=None):
+        raise cm._get_requests().Timeout("gagal")
+    monkeypatch.setattr(cm._get_requests(), "post", boom)
+    assert cm._summarize_note_text("http://x", "m", "isi") == ""
+
+
+def test_ensure_note_summaries_fills_summary_for_long_notes(db_path, session_id, monkeypatch):
+    """Catatan panjang diringkas via LLM dan disimpan ke kolom summary."""
+    dbmod.set_note(db_path, "/tmp/test-workdir", "long1", "x" * 1000)
+    dbmod.set_note(db_path, "/tmp/test-workdir", "short", "pendek")
+    def fake_summarize(url, model, note_text, api_key=""):
+        return f"ringkasan-{len(note_text)}"
+    monkeypatch.setattr(cm, "_summarize_note_text", fake_summarize)
+    cm._ensure_note_summaries(db_path, session_id, "http://x", "m", api_key="")
+    notes = {n["key"]: n for n in dbmod.get_notes(db_path, "/tmp/test-workdir")}
+    # catatan panjang dapat summary; catatan pendek tidak
+    assert notes["long1"]["summary"] == "ringkasan-1000"
+    assert notes["short"]["summary"] in (None, "")
+
+
+def test_ensure_note_summaries_skips_when_already_summarized(db_path, session_id, monkeypatch):
+    dbmod.set_note(db_path, "/tmp/test-workdir", "k", "x" * 1000)
+    dbmod.set_note_summary(db_path, "/tmp/test-workdir", "k", "sudah ada")
+    calls = []
+    def fake_summarize(url, model, note_text, api_key=""):
+        calls.append(note_text)
+        return "baru"
+    monkeypatch.setattr(cm, "_summarize_note_text", fake_summarize)
+    cm._ensure_note_summaries(db_path, session_id, "http://x", "m", api_key="")
+    assert calls == []  # tidak dipanggil ulang
+    notes = {n["key"]: n for n in dbmod.get_notes(db_path, "/tmp/test-workdir")}
+    assert notes["k"]["summary"] == "sudah ada"
+
+
+def test_project_notes_section_uses_summary_when_available(db_path, session_id):
+    dbmod.set_note(db_path, "/tmp/test-workdir", "k", "x" * 2000)
+    dbmod.set_note_summary(db_path, "/tmp/test-workdir", "k", "RINGKASAN LLM")
+    section = cm._project_notes_section(db_path, session_id)
+    assert "RINGKASAN LLM" in section
+    # ringkasan LLM dipakai, bukan trim (tidak ada penanda pemangkasan)
+    assert "…sisa dipangkas…" not in section
