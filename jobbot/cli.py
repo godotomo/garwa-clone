@@ -605,6 +605,8 @@ def main():
     p_exec.add_argument("--repo-name", default=None, help="Nama repo GitHub (default = slug)")
     p_exec.add_argument("--auto-merge", action="store_true",
                         help="Otomatis review APPROVE + merge PR")
+    p_exec.add_argument("--framework", default=None,
+                        help="Framework target untuk deliverable (mis. react, nextjs, fastapi)")
     p_exec.set_defaults(func=cmd_execute)
 
     p_auto = sub.add_parser("autopilot", help="Pipeline autonomous end-to-end (tanpa interaksi)")
