@@ -26,14 +26,38 @@ dipakai (mis. "o200k_base").
 
 import json
 import os
+import threading
 
-try:
-    import tiktoken
+# PENTING (optimasi startup): `tiktoken` cukup berat untuk diimpor (~0.35s).
+# Karena itu import dilakukan LAZY -- hanya saat count_tokens() pertama kali
+# benar-benar membutuhkannya. Sebelum itu, _ENC tetap None dan dipakai
+# heuristik fallback. Ini menghilangkan ~0.35s dari import `garwa.cli.main`.
+_ENC = None
+_ENC_LOADED = False
+_ENC_LOCK = threading.Lock()
 
-    _ENC_NAME = os.environ.get("GARWA_TIKTOKEN_ENCODING", "cl100k_base")
-    _ENC = tiktoken.get_encoding(_ENC_NAME)
-except Exception:
-    _ENC = None
+
+def _load_encoding() -> None:
+    """Muat encoding tiktoken secara lazy (thread-safe, idempoten).
+
+    Mengisi _ENC dengan objek encoding tiktoken, atau membiarkannya None
+    bila tiktoken tidak tersedia / gagal dimuat. Hanya dijalankan sekali.
+    """
+    global _ENC, _ENC_LOADED
+
+    if _ENC_LOADED:
+        return
+    with _ENC_LOCK:
+        if _ENC_LOADED:
+            return
+        _ENC_LOADED = True
+        try:
+            import tiktoken
+
+            enc_name = os.environ.get("GARWA_TIKTOKEN_ENCODING", "cl100k_base")
+            _ENC = tiktoken.get_encoding(enc_name)
+        except Exception:
+            _ENC = None
 
 # Rasio karakter-per-token fallback (dipakai hanya kalau tiktoken tidak ada).
 CHARS_PER_TOKEN = 3.5
@@ -74,6 +98,7 @@ def count_tokens(text: str) -> int:
     """
     if not text:
         return 0
+    _load_encoding()
     if _ENC is not None:
         try:
             return len(_ENC.encode(text, disallowed_special=()))

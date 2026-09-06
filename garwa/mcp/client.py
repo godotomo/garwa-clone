@@ -31,27 +31,68 @@ logger = logging.getLogger("garwa.mcp")
 # ---------------------------------------------------------------------------
 # Import opsional SDK MCP. Kalau tidak terinstall, CLI tetap berjalan tanpa
 # tool MCP (fallback otomatis). `mcp_available` memberi tahu pemanggil.
+#
+# PENTING (optimasi startup): SDK MCP sangat berat (~2 detik import). Karena
+# itu import dilakukan LAZY -- hanya saat fitur MCP benar-benar dipakai
+# (mcp_available() / connect_all / connect_server), bukan saat modul
+# `garwa.mcp.client` diimpor oleh `garwa.cli.main` di awal startup.
 # ---------------------------------------------------------------------------
-try:
-    from mcp import ClientSession, StdioServerParameters
-    from mcp.client.stdio import stdio_client
-    from mcp.client.streamable_http import streamable_http_client
+ClientSession = None  # type: ignore
+StdioServerParameters = None  # type: ignore
+stdio_client = None  # type: ignore
+streamable_http_client = None  # type: ignore
 
-    _MCP_IMPORT_ERROR: Optional[str] = None
-except Exception as _e:  # noqa: BLE001
-    _MCP_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
-    ClientSession = None  # type: ignore
-    StdioServerParameters = None  # type: ignore
-    stdio_client = None  # type: ignore
-    streamable_http_client = None  # type: ignore
+_mcp_import_error: Optional[str] = None
+_mcp_import_attempted = False
+_mcp_lock = threading.Lock()
 
 
-mcp_import_error = _MCP_IMPORT_ERROR
+def _load_mcp_sdk() -> None:
+    """Muat SDK MCP secara lazy (thread-safe, idempoten).
+
+    Mengisi variabel module-level ClientSession / StdioServerParameters /
+    stdio_client / streamable_http_client, atau menetapkan _mcp_import_error
+    bila SDK tidak tersedia. Hanya dijalankan sekali.
+    """
+    global ClientSession, StdioServerParameters
+    global stdio_client, streamable_http_client
+    global _mcp_import_error, _mcp_import_attempted
+
+    with _mcp_lock:
+        if _mcp_import_attempted:
+            return
+        _mcp_import_attempted = True
+        try:
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+            from mcp.client.streamable_http import streamable_http_client
+
+            _mcp_import_error = None
+        except Exception as _e:  # noqa: BLE001
+            _mcp_import_error = f"{type(_e).__name__}: {_e}"
+            ClientSession = None  # type: ignore
+            StdioServerParameters = None  # type: ignore
+            stdio_client = None  # type: ignore
+            streamable_http_client = None  # type: ignore
+
+
+def mcp_import_error() -> Optional[str]:
+    """Kesalahan import SDK MCP (None = berhasil/tidak ada kesalahan).
+
+    Memicu lazy-load SDK terlebih dahulu agar statusnya akurat.
+    """
+    _load_mcp_sdk()
+    return _mcp_import_error
 
 
 def mcp_available() -> bool:
-    """True kalau SDK MCP berhasil diimpor."""
-    return _MCP_IMPORT_ERROR is None
+    """True kalau SDK MCP berhasil diimpor.
+
+    Memicu lazy-load SDK MCP (import ~2 detik) hanya pada pemanggilan
+    pertama. Dipanggil oleh main.py hanya saat inisialisasi MCP.
+    """
+    _load_mcp_sdk()
+    return _mcp_import_error is None
 
 
 # ---------------------------------------------------------------------------
@@ -463,7 +504,7 @@ class MCPToolRegistry:
     def connect_all(self, timeout: float = 30.0) -> None:
         """Sambungkan ke semua server yang enabled. Server gagal dilewati."""
         if not mcp_available():
-            logger.warning("SDK MCP tidak terinstall (%s). Tool MCP dinonaktifkan.", mcp_import_error)
+            logger.warning("SDK MCP tidak terinstall (%s). Tool MCP dinonaktifkan.", mcp_import_error())
             return
         for cfg in self.configs:
             if not cfg.enabled:

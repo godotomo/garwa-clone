@@ -90,16 +90,19 @@ def _init_mcp(mcp_config: Optional[str]) -> Optional[MCPToolRegistry]:
     dibersihkan saat shutdown) atau None bila tidak ada konfigurasi / SDK
     tidak tersedia.
     """
+    # Baca konfigurasi DULU (ringan, tanpa import SDK MCP yang ~2 detik).
+    # SDK MCP hanya diimpor bila benar-benar ada server yang terkonfigurasi,
+    # sehingga startup CLI tanpa MCP tidak membayar biaya import SDK.
+    configs = load_mcp_config(mcp_config)
+    if not configs:
+        return None
+
     if not mcp_available():
         print(c(
             "[WARN] Modul 'mcp' tidak terinstall. Integrasi MCP dinonaktifkan. "
             "Install dengan: pip install 'mcp>=2.0'",
             C.YELLOW,
         ))
-        return None
-
-    configs = load_mcp_config(mcp_config)
-    if not configs:
         return None
 
     registry = MCPToolRegistry(configs)
