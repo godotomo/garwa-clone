@@ -36,6 +36,14 @@ except ImportError:
     config_mod = None
 from . import _state as state
 
+# Kompresi output format-aware (git/pytest/install) untuk mengurangi token
+# yang masuk context window. Pure stdlib, deterministik, dengan safety-net
+# agar error tidak pernah hilang (lihat docstring modul).
+try:
+    from .output_compressor import compress_output
+except ImportError:  # pragma: no cover -- jaring pengaman import
+    compress_output = None
+
 
 
 def _cap_output(text: str, limit: int = state.OUTPUT_CAP_BYTES,
@@ -186,6 +194,15 @@ def tool_bash(command: str, timeout: int = 60) -> str:
         out, err = proc.communicate(timeout=timeout)
         out = out.strip()
         err = err.strip()
+
+        # Kompresi format-aware (pytest/git/install) per-stream SEBELUM digabung.
+        # exit_code diteruskan supaya command yang gagal TIDAK dikompres
+        # agresif (alasan kegagalan tidak boleh hilang). Kalau modul tidak
+        # tersedia (ImportError), fallback ke perilaku lama (tanpa kompresi).
+        if compress_output is not None:
+            out = compress_output(command, out, exit_code=proc.returncode)
+            err = compress_output(command, err, exit_code=proc.returncode)
+
         combined = f"[exit_code={proc.returncode}]\n"
         if out:
             combined += f"STDOUT:\n{out}\n"
