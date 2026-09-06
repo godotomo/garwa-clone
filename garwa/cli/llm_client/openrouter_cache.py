@@ -2,6 +2,7 @@
 Dipecah lebih lanjut dari cli/llm_client.py.
 """
 import copy
+import os
 from urllib.parse import urlparse
 
 try:
@@ -16,9 +17,21 @@ from .. import _state as state
 
 
 def _wants_openrouter_cache_control(url: str, model: str) -> bool:
-    """True kalau request ini menuju OpenRouter DAN model yang dipakai
-    termasuk provider yang mewajibkan breakpoint cache_control eksplisit
-    (lihat komentar panjang di atas OPENROUTER_EXPLICIT_CACHE_PREFIXES).
+    """True kalau request ini menuju OpenRouter.
+
+    Sejak riset dokumentasi resmi OpenRouter (Prompt Caching), SEMUA provider
+    OpenRouter mendukung prompt caching:
+      - Implicit/otomatis (OpenAI, DeepSeek, Gemini 2.5, dll) -- cache dipicu
+        otomatis oleh OpenRouter/provider tanpa perlu marker apapun.
+      - Explicit cache breakpoints (Anthropic, Alibaba Qwen, DeepSeek, Z.AI,
+        Gemini) -- butuh marker `cache_control` per-message untuk kontrol
+        halus (system_and_3).
+
+    Karena OpenRouter menggunakan provider sticky routing untuk memaksimalkan
+    cache hit, menerapkan marker `cache_control` ke SEMUA model (bukan hanya
+    prefix tertentu) tidak merusak apa-apa: untuk provider implicit marker
+    diabaikan/dinormalisasi, untuk provider explicit marker dipakai. Jadi
+    fungsi ini mengembalikan True untuk SEMUA model yang lewat OpenRouter.
 
     Dicek per-request (bukan sekali di startup seperti deteksi llama.cpp)
     karena `model` bisa berbeda-beda kalau CLI ini nanti mendukung ganti
@@ -28,10 +41,53 @@ def _wants_openrouter_cache_control(url: str, model: str) -> bool:
         host = urlparse(url).netloc.lower()
     except Exception:
         return False
-    if "openrouter.ai" not in host:
-        return False
-    model_lower = (model or "").lower()
-    return any(model_lower.startswith(p) for p in state.OPENROUTER_EXPLICIT_CACHE_PREFIXES)
+    return "openrouter.ai" in host
+
+
+def _build_openrouter_session_id(session_id: str = None, max_len: int = 256) -> str:
+    """Bangun `session_id` yang aman untuk sticky routing OpenRouter.
+
+    OpenRouter memakai `session_id` (body) atau header `x-session-id` sebagai
+    kunci sticky routing: request dalam sesi yang sama dijamin diarahkan ke
+    provider yang sama sehingga prompt cache tetap hangat (lihat riset
+    dokumentasi resmi -- sticky routing aktif sejak request pertama bila
+    `session_id` diberikan, bukan menunggu cache hit).
+
+    Sumber session id (prioritas):
+      1. Argumen eksplisit `session_id` (dari caller).
+      2. Env var `GARWA_SESSION_ID` (di-set CLI saat sesi dibuat/di-resume).
+      3. Fallback: string kosong -> caller memutuskan tidak memakai session.
+
+    Aturan OpenRouter: `session_id` maksimal 256 karakter. Kalau sumber lebih
+    panjang dari `max_len`, di-truncate (pakai hash SHA-256 untuk menghindari
+    dua session berbeda menghasilkan prefix identik yang menempel di provider
+    yang sama).
+    """
+    raw = session_id or os.environ.get("GARWA_SESSION_ID") or ""
+    raw = str(raw).strip()
+    if not raw:
+        return ""
+    if len(raw) <= max_len:
+        return raw
+    # Terlalu panjang: pakai hash penuh agar unik, bukan sekadar potongan
+    # prefix yang bisa bertabrakan antar session.
+    import hashlib
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _apply_openrouter_session_id(payload: dict, session_id: str = None) -> dict:
+    """Suntik `session_id` ke payload bila ada sumber session yang valid.
+
+    `payload` dimutasi IN PLACE dan dikembalikan (tidak deep-copy -- ini
+    payload yang baru dibangun caller, aman diubah). Hanya menambahkan field
+    `session_id` bila hasil `_build_openrouter_session_id` tidak kosong, jadi
+    kalau CLI berjalan tanpa sesi (mis. test/one-shot) tidak ada field
+    tambahan yang mengganggu provider non-OpenRouter.
+    """
+    sid = _build_openrouter_session_id(session_id)
+    if sid:
+        payload["session_id"] = sid
+    return payload
 
 
 def _build_openrouter_cache_marker(ttl: str = None) -> dict:

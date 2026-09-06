@@ -9,7 +9,20 @@ try:
 except ImportError:
     readline = None
 
-import requests
+_requests = None
+
+
+def _get_requests():
+    """Lazy-import requests (hanya saat request LLM non-stream benar-benar
+    dipanggil) supaya startup CLI tidak memuat library berat requests
+    (~300ms) kalau fitur non-stream tidak dipakai. Konsisten dengan pola
+    lazy-load di stream_call.py / connection.py."""
+    global _requests
+    if _requests is None:
+        import requests
+        _requests = requests
+    return _requests
+
 
 from .. import _state as state
 from ..colors import C
@@ -24,6 +37,7 @@ from .connection import _auth_headers
 from .debug_log import _debug_log
 from .debug_log import _debug_payload_preview
 from .openrouter_cache import _apply_openrouter_cache_control
+from .openrouter_cache import _apply_openrouter_session_id
 from .openrouter_cache import _wants_openrouter_cache_control
 
 
@@ -47,14 +61,19 @@ def _call_llama_server_nonstream(url: str, model: str, messages: list,
 
     if _wants_openrouter_cache_control(url, model):
         payload["messages"] = _apply_openrouter_cache_control(messages)
+        # Sticky routing OpenRouter: session_id konsisten per sesi memastikan
+        # request berikutnya diarahkan ke provider yang sama, menjaga prompt
+        # cache tetap hangat sejak request pertama (bukan menunggu cache hit).
+        _apply_openrouter_session_id(payload)
     if debug:
         _debug_log("REQUEST", f"POST {url} (stream=False, {len(messages)} pesan dalam messages)")
         _debug_log("PAYLOAD", _debug_payload_preview(payload))
 
     response = None
     try:
-        response = requests.post(url, json=payload, headers=_auth_headers(api_key),
-                                 timeout=state.NONSTREAM_TIMEOUT_SECONDS)
+        _requests = _get_requests()
+        response = _requests.post(url, json=payload, headers=_auth_headers(api_key),
+                                  timeout=state.NONSTREAM_TIMEOUT_SECONDS)
         if debug:
             _debug_log("HTTP-STATUS", f"{response.status_code} {response.reason}")
             raw_text = _resp_text_utf8(response)
@@ -91,14 +110,14 @@ def _call_llama_server_nonstream(url: str, model: str, messages: list,
         native_tool_calls = message.get("tool_calls")
         if native_tool_calls:
             content += _native_tool_calls_to_blocks(native_tool_calls)
-    except requests.exceptions.ConnectionError:
+    except _get_requests().exceptions.ConnectionError:
         print(c(
             f"[ERROR] Tidak bisa konek ke server model di {url}. "
             f"Pastikan server model sudah jalan.",
             C.RED,
         ))
         raise
-    except requests.exceptions.HTTPError as e:
+    except _get_requests().exceptions.HTTPError as e:
 
         ctx_err = _parse_context_exceeded(response)
         if ctx_err is not None:
@@ -124,7 +143,7 @@ def _call_llama_server_nonstream(url: str, model: str, messages: list,
             )
         print(c(f"[ERROR] HTTP error dari server model: {e}\n{body}", C.RED) + hint)
         raise
-    except requests.exceptions.RequestException as e:
+    except _get_requests().exceptions.RequestException as e:
 
         print(c(f"[ERROR] Request ke server model gagal: {type(e).__name__}: {e}", C.RED))
         raise

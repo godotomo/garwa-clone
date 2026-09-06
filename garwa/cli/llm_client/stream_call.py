@@ -45,6 +45,7 @@ from .connection import _auth_headers
 from .debug_log import _debug_log
 from .debug_log import _debug_payload_preview
 from .openrouter_cache import _apply_openrouter_cache_control
+from .openrouter_cache import _apply_openrouter_session_id
 from .openrouter_cache import _wants_openrouter_cache_control
 
 
@@ -97,6 +98,10 @@ def _call_llama_server_stream(url: str, model: str, messages: list,
 
     if _wants_openrouter_cache_control(url, model):
         payload["messages"] = _apply_openrouter_cache_control(messages)
+        # Sticky routing OpenRouter: session_id konsisten per sesi memastikan
+        # request berikutnya diarahkan ke provider yang sama, menjaga prompt
+        # cache tetap hangat sejak request pertama (bukan menunggu cache hit).
+        _apply_openrouter_session_id(payload)
     response = None
     full_parts = []
 
