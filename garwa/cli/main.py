@@ -411,7 +411,7 @@ def main():
         session_id = session["id"]
 
     tools_module.state.DB_PATH = args.db_path
-    tools_module.state.SESSION_ID = session_id
+    tools_module.state.set_session_id(session_id)
     state.reset_session_state(session_id)
     state.get_session_state()["start_time"] = time.time()
     os.environ["GARWA_DB_PATH"] = args.db_path
@@ -489,7 +489,7 @@ def main():
                     # Ganti sesi aktif: simpan env/state baru, lanjut loop.
                     session_id = result["session_id"]
                     system_content = result["system_content"]
-                    tools_module.state.SESSION_ID = session_id
+                    tools_module.state.set_session_id(session_id)
                     state.reset_session_state(session_id)
                     state.get_session_state()["start_time"] = time.time()
                     os.environ["GARWA_SESSION_ID"] = session_id

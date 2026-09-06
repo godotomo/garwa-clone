@@ -21,8 +21,11 @@ Cara kerja:
 Role bawaan (built-in): `general` (default) dan `explore`. Role menentukan
 system prompt khusus yang memberi sub-agent fokus/tujuan berbeda dari induk.
 """
+import contextvars
+import io
 import json
 import os
+import sys
 
 from .. import db as dbmod
 from . import _state as state
@@ -155,16 +158,18 @@ def tool_spawn_agent(task: str, role: str = "general", max_iters: int = 40) -> s
     system_content = _resolve_role(role)
 
     # Simpan state sesi aktif sub-agent selama loop berjalan, lalu pulihkan.
-    prev_session = getattr(state, "SESSION_ID", None)
+    # Memakai set_session_id/get_session_id (ContextVar) supaya isolasi
+    # per-thread/context berfungsi saat sub-agent dijalankan paralel.
+    prev_session = state.get_session_id()
     try:
-        state.SESSION_ID = sub_sid
+        state.set_session_id(sub_sid)
         final_report = run_agent_loop(cfg, sub_sid, system_content)
     except KeyboardInterrupt:
         final_report = "[INTERRUPTED] Sub-agent dibatalkan (Ctrl+C)."
     except Exception as e:
         final_report = f"[ERROR] Sub-agent gagal: {type(e).__name__}: {e}"
     finally:
-        state.SESSION_ID = prev_session
+        state.set_session_id(prev_session)
 
     try:
         dbmod.touch_session(db_path, sub_sid)
@@ -175,3 +180,91 @@ def tool_spawn_agent(task: str, role: str = "general", max_iters: int = 40) -> s
         f"[SUB-AGENT:{role}] selesai (session {sub_sid}).\n"
         f"FINAL REPORT:\n{final_report}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Sub-agent PARALEL
+# ---------------------------------------------------------------------------
+# Setiap sub-agent paralel dijalankan di thread sendiri. Karena `_state`
+# memakai ContextVar untuk SESSION_ID (dan state lain), isolasi per-thread
+# dicapai dengan `contextvars.copy_context()` -- setiap thread memanggil
+# tool-nya di dalam snapshot context sendiri sehingga tidak saling menimpa
+# sesi aktif. Output stdout per-thread juga diisolasi (StringIO) supaya
+# log dari sub-agent paralel tidak campur aduk di terminal induk.
+
+def _run_sub_agent_one(idx: int, task: str, role: str, max_iters: int) -> dict:
+    """Jalankan SATU sub-agent dalam context terisolasi. Mengembalikan dict
+    {idx, sid, role, ok, report, error}. Aman dipanggil dari thread apa pun.
+    `idx` dipakai untuk mengurutkan ulang hasil sesuai urutan task asli."""
+    # Snapshot context saat ini (ContextVar) -- dipakai oleh thread worker
+    # supaya SESSION_ID & state lain terisolasi per sub-agent.
+    ctx = contextvars.copy_context()
+
+    # Isolasi stdout per-thread supaya log sub-agent paralel tidak campur.
+    buf = io.StringIO()
+    old_stdout = sys.stdout
+
+    def _run():
+        sys.stdout = buf
+        try:
+            return tool_spawn_agent(task=task, role=role, max_iters=max_iters)
+        finally:
+            sys.stdout = old_stdout
+
+    try:
+        result = ctx.run(_run)
+    except Exception as e:
+        sys.stdout = old_stdout
+        return {"idx": idx, "sid": None, "role": role, "ok": False,
+                "report": f"[ERROR] thread sub-agent gagal: {type(e).__name__}: {e}",
+                "log": buf.getvalue()}
+    return {"idx": idx, "sid": None, "role": role, "ok": True, "report": result,
+            "log": buf.getvalue()}
+
+
+def tool_spawn_agents_parallel(tasks: list, role: str = "general",
+                               max_iters: int = 40,
+                               max_workers: int = 4) -> str:
+    """Jalankan beberapa sub-agent SECARA PARALEL (thread pool).
+
+    Args:
+        tasks: list[str] -- daftar task, masing-masing dijalankan oleh satu
+               sub-agent dengan role & max_iters yang sama.
+        role: role bawaan untuk semua sub-agent (default 'general').
+        max_iters: batas iterasi tool per sub-agent (default 40).
+        max_workers: jumlah thread paralel maksimum (default 4).
+
+    Mengembalikan laporan gabungan berisi hasil tiap task + log stdout
+    terisolasi per sub-agent.
+    """
+    if not tasks:
+        return "[ERROR] Argumen 'tasks' wajib berupa list non-kosong."
+
+    tasks = [str(t or "").strip() for t in tasks]
+    tasks = [t for t in tasks if t]
+    if not tasks:
+        return "[ERROR] Semua item 'tasks' kosong."
+
+    import concurrent.futures as cf
+
+    results = []
+    with cf.ThreadPoolExecutor(max_workers=max(1, int(max_workers or 1))) as pool:
+        futures = [pool.submit(_run_sub_agent_one, i, t, role, max_iters)
+                   for i, t in enumerate(tasks)]
+        for f in cf.as_completed(futures):
+            results.append(f.result())
+
+    # Urutkan sesuai urutan tasks asli agar laporan konsisten & mudah dibaca.
+    # (as_completed tidak menjamin urutan; kita urutkan ulang via idx.)
+    results.sort(key=lambda r: r["idx"])
+
+    lines = [f"[SUB-AGENT-PARALEL] {len(results)} sub-agent selesai."]
+    for r in results:
+        n = r["idx"] + 1
+        status = "OK" if r["ok"] else "GAGAL"
+        lines.append(f"\n=== Task #{n} ({r['role']}) [{status}] ===")
+        lines.append(r["report"])
+        if r.get("log"):
+            lines.append(f"\n--- log stdout task #{n} ---")
+            lines.append(r["log"].strip())
+    return "\n".join(lines)

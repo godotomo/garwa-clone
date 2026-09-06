@@ -19,7 +19,7 @@ from ..skills import build_system_prompt
 
 def _start_overnight_session(args, title: str):
     session_id = dbmod.create_session(args.db_path, args.workdir, title=title)
-    tools_module.state.SESSION_ID = session_id
+    tools_module.state.set_session_id(session_id)
     os.environ["GARWA_SESSION_ID"] = session_id
     system_content = build_system_prompt(args.workdir, args.skills_dir,
                                          full_tool_schema=args.full_tool_schema_text)

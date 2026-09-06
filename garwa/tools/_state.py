@@ -9,6 +9,7 @@ mengakses nilai ini lewat `state.NAMA` (bukan `from ._state import NAMA`)
 supaya perubahan dari luar langsung terlihat di semua tempat -- persis
 seperti perilaku variabel module-level di tools.py sebelum dipecah.
 """
+import contextvars
 import os
 import re
 import threading
@@ -38,7 +39,11 @@ except ImportError:
 WORKDIR = os.environ.get("GARWA_WORKDIR", os.getcwd())
 SANDBOX_ENABLED = True
 DB_PATH = os.environ.get("GARWA_DB_PATH", dbmod.DEFAULT_DB_PATH)
-SESSION_ID = os.environ.get("GARWA_SESSION_ID")
+# SESSION_ID dijadikan ContextVar agar sub-agent paralel (thread) masing-masing
+# punya sesi aktif sendiri tanpa saling menimpa. Nilai awal dari env.
+_SESSION_ID_VAR: contextvars.ContextVar = contextvars.ContextVar(
+    "tools_session_id", default=os.environ.get("GARWA_SESSION_ID")
+)
 _RECENTLY_TOUCHED = []
 _MAX_RECENT = 20
 _RECENTLY_TOUCHED_LOCK = threading.Lock()
@@ -93,3 +98,25 @@ _DANGEROUS_BASH_PATTERNS = [
     r"\bos\.remove\b|\bos\.rmdir\b",
 ]
 _DANGEROUS_BASH_RE = re.compile("|".join(_DANGEROUS_BASH_PATTERNS), re.IGNORECASE)
+
+
+def get_session_id():
+    """Ambil SESSION_ID aktif untuk context/thread saat ini."""
+    return _SESSION_ID_VAR.get()
+
+
+def set_session_id(sid):
+    """Set SESSION_ID untuk context/thread saat ini. Mengembalikan nilai lama."""
+    old = _SESSION_ID_VAR.get()
+    _SESSION_ID_VAR.set(sid)
+    return old
+
+
+def __getattr__(name):
+    """Kompatibilitas baca `state.SESSION_ID` (kini ContextVar). Dipanggil
+    hanya saat atribut tidak ditemukan normal -- karena SESSION_ID tidak lagi
+    didefinisikan sebagai atribut modul, setiap baca `state.SESSION_ID`
+    diteruskan ke ContextVar aktif (isolasi per-thread/context)."""
+    if name == "SESSION_ID":
+        return _SESSION_ID_VAR.get()
+    raise AttributeError(f"module '_state' tidak punya atribut {name!r}")

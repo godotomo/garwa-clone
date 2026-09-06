@@ -22,7 +22,7 @@ from .security_tool import tool_security_scan
 from .bash_tool import _cap_output, _bash_is_risky, _restore_terminal_mode, tool_bash
 from .repo_tools import tool_repo_map, tool_outline_file
 from .session_tools import _require_session, tool_todo_write, tool_todo_read, tool_remember, tool_recall
-from .sub_agent import tool_spawn_agent
+from .sub_agent import tool_spawn_agent, tool_spawn_agents_parallel
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +257,24 @@ TOOLS = {
                     "max_iters": {"type": "integer", "description": "Batas maksimum pemanggilan tool oleh sub-agent (default 40, maks 100)"},
                 },
                 "required": ["task"],
+            },
+        },
+    },
+    "spawn_agents_parallel": {
+        "handler": tool_spawn_agents_parallel,
+        "destructive": False,
+        "schema": {
+            "name": "spawn_agents_parallel",
+            "description": "Jalankan BEBERAPA sub-agent SECARA PARALEL (thread pool) untuk menyelesaikan daftar task secara bersamaan. Setiap task dijalankan oleh satu sub-agent di sub-session terpisah dengan context window sendiri dan SESSION_ID terisolasi per-thread (ContextVar), sehingga tidak saling menimpa. Berguna untuk memecah pekerjaan besar menjadi beberapa task independen yang bisa dikerjakan serentak. Mengembalikan laporan gabungan berisi hasil tiap task + log stdout terisolasi.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "tasks": {"type": "array", "items": {"type": "string"}, "description": "Daftar task; masing-masing dijalankan oleh satu sub-agent paralel"},
+                    "role": {"type": "string", "description": "Peran sub-agent: 'general' (default) atau 'explore' (hanya meneliti/memahami kode tanpa mengubah file)"},
+                    "max_iters": {"type": "integer", "description": "Batas maksimum pemanggilan tool oleh tiap sub-agent (default 40, maks 100)"},
+                    "max_workers": {"type": "integer", "description": "Jumlah thread paralel maksimum (default 4)"},
+                },
+                "required": ["tasks"],
             },
         },
     },
