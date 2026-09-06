@@ -78,16 +78,29 @@ def _make_sub_config() -> "object":
     db_path = getattr(state, "DB_PATH", None) or ""
     workdir = getattr(state, "WORKDIR", None) or os.getcwd()
 
+    # Server model: ambil dari `garwa.config` (sumber kebenaran yang dipakai
+    # cli/main.py untuk mengisi args.url/api_key/model). Jangan baca env
+    # `GARWA_MODEL_URL`/`GARWA_API_KEY`/`GARWA_MODEL` -- variabel itu TIDAK
+    # pernah diset oleh main.py, jadi sub-agent akan jatuh ke default
+    # http://127.0.0.1:8080 dan gagal terhubung ke server sungguhan.
+    try:
+        from .. import config as config_mod
+        model_url = getattr(config_mod, "LLAMA_URL", "") or os.environ.get("LLAMA_URL", "")
+        api_key = getattr(config_mod, "LLAMA_API_KEY", "") or os.environ.get("LLAMA_API_KEY", "")
+        model = getattr(config_mod, "LLAMA_MODEL", "") or os.environ.get("LLAMA_MODEL", "")
+    except Exception:
+        model_url = os.environ.get("LLAMA_URL", "")
+        api_key = os.environ.get("LLAMA_API_KEY", "")
+        model = os.environ.get("LLAMA_MODEL", "")
+
     cfg = AgentConfig(
         db_path=db_path,
         workdir=workdir,
         auto_approve=True,          # sub-agent jalan tanpa konfirmasi interaktif
         max_tool_iters=40,          # batas aman; bisa ditimpa per-panggilan
-        # Server model diisi dari env/config aktif supaya sub-agent memakai
-        # model yang sama dengan induk.
-        url=os.environ.get("GARWA_MODEL_URL", ""),
-        api_key=os.environ.get("GARWA_API_KEY", ""),
-        model=os.environ.get("GARWA_MODEL", ""),
+        url=model_url,
+        api_key=api_key,
+        model=model,
         no_stream=True,             # sub-agent tidak perlu streaming ke terminal
     )
     return cfg
