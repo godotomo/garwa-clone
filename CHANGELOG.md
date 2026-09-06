@@ -5,6 +5,36 @@ Semua perubahan penting pada proyek ini akan dicatat di file ini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/1.1.0/),
 dan versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-06
+
+Rilis ini menyimpan seluruh pekerjaan yang sudah dikerjakan sejak 0.3.0: optimasi konteks, percepatan startup, cache control OpenRouter, retry anti-429, dan pipeline jobbot. *(Sub-agent + perbaikan arsitektur direncanakan untuk rilis berikutnya.)*
+
+### Added
+- **Ringkas catatan `remember` panjang via LLM**: catatan proyek persisten yang panjang diringkas lewat LLM (kolom `summary` di tabel `project_notes`) dengan fallback extractive context-aware. Catatan penuh (`value`) tetap utuh di DB; hanya representasi ringkas yang masuk konteks. Konstanta: `PROJECT_NOTES_MAX_TOTAL_CHARS=12_000`, `PROJECT_NOTES_MAX_PER_NOTE_CHARS=900`, `PROJECT_NOTES_SUMMARIZE_MIN_CHARS=500`.
+- **Cache control OpenRouter untuk semua model**: `_wants_openrouter_cache_control` mengembalikan True untuk semua model yang lewat `openrouter.ai` (implicit/otomatis maupun explicit cache breakpoints), plus sticky routing session_id untuk memaksimalkan cache hit. Konstanta `OPENROUTER_MAX_CACHE_BREAKPOINTS=4` dan `OPENROUTER_CACHE_TAIL_BREAKPOINTS=3`.
+- **Lazy-load startup**: `requests`, MCP SDK, dan `tiktoken` di-lazy-load sehingga startup CLI jauh lebih cepat (dari ~575ms ke ~431ms).
+- **Retry/backoff anti-429 di LLM filter** (`jobbot/llm_filter.py`): `_classify_llm` kini memakai retry/backoff (exp + full jitter) pada {429,500,502,503,504} + ConnectionError/Timeout; 400/401 tidak di-retry.
+- **Kirim proposal email personalisasi** (`jobbot/proposal_email.py`): pilih job relevan dari DB dan kirim proposal via SMTP.
+- **Uji registrasi flow** (`tests/test_registration_flow.py`): deteksi kemampuan browser, deteksi strategi CAPTCHA (turnstile/recaptcha/hcaptcha/generic + sitekey + fallback human_required), dan ekstraksi OTP/link verifikasi via IMAP.
+
+### Changed
+- **Optimasi besar system prompt**: daftar tool dipersingkat (deskripsi + skema tetap dikirim via field `tools` ala OpenAI), hemat ~987 token/giliran (31.2%).
+- **Ringkasan akhir giliran** kini menampilkan total token per giliran (input+output), dihitung dari selisih akumulasi `TOKEN_USAGE_TOTAL`.
+- **Parameter context-window & summarization dapat dikonfigurasi** (`context_window`, `reserve_for_response`, `summarize_threshold_ratio`, `keep_tail_messages`) via config + slash-command `/ctx`, `/reserve`, `/summarize-threshold`, `/keep-tail`.
+
+### Fixed
+- **Bug `token:0`**: timings usage diekstrak dari `predict`/`prompt` fields di `stream_call.py` (`_extract_timings_usage`) sehingga token per giliran dilaporkan benar.
+- **Argumen `--framework` di parser execute** (AttributeError saat `cmd_execute`).
+- **Bug h-captcha hyphen** di deteksi strategi CAPTCHA.
+
+### Internal
+- Sinkronisasi `__version__` ke `0.4.0` dan bump versi di `README.md`.
+
+### Tests
+- Suite total: **468 passed** (penambahan test LLM filter retry + registrasi flow).
+
+---
+
 ## [0.3.0] - 2026-08-30
 
 ### Added
