@@ -27,6 +27,8 @@ Output klasifikasi (dict):
 """
 import json
 import os
+import random
+import time
 from typing import Optional
 
 from .models import Job
@@ -207,51 +209,93 @@ def _repair_truncated_json(s: str) -> str:
     return s
 
 
+# Konstanta retry/backoff anti rate-limit (429)
+LLM_MAX_RETRIES = 3
+LLM_BASE_BACKOFF = 1.0  # detik
+LLM_MAX_BACKOFF = 15.0  # detik
+LLM_RETRY_STATUS = {429, 500, 502, 503, 504}  # status yang layak di-retry
+
+
+def _should_retry(exc: Exception) -> bool:
+    """True bila exception layak di-retry (rate limit / server sibuk)."""
+    # requests.HTTPError punya atribut .response; cek status code.
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        status = getattr(resp, "status_code", None)
+        if status in LLM_RETRY_STATUS:
+            return True
+    # Koneksi error / timeout juga layak di-retry (server sibuk).
+    import requests
+    if isinstance(exc, (requests.exceptions.ConnectionError,
+                        requests.exceptions.Timeout)):
+        return True
+    return False
+
+
+def _backoff_delay(attempt: int) -> float:
+    """Exponential backoff + full jitter untuk attempt ke-N (mulai 0)."""
+    exp = min(LLM_MAX_BACKOFF, LLM_BASE_BACKOFF * (2 ** attempt))
+    return random.uniform(0, exp)
+
+
 def _classify_llm(job: Job) -> Optional[dict]:
-    """Klasifikasi via LLM. Return dict atau None bila gagal/tidak tersedia."""
+    """Klasifikasi via LLM dengan retry/backoff anti rate-limit.
+
+    Return dict atau None bila gagal/tidak tersedia setelah semua percobaan.
+    """
     if not _llm_available():
         return None
     import requests
     api_key, url, model = _llm_config()
-    try:
-        resp = requests.post(
-            url,
-            headers={"Authorization": f"Bearer {api_key}",
-                     "Content-Type": "application/json"},
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": _build_user_msg(job)},
-                ],
-                "temperature": 0.0,
-                "max_tokens": 200,
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"].strip()
-        data = _extract_json(content)
+    last_err: Optional[Exception] = None
+    for attempt in range(LLM_MAX_RETRIES):
+        try:
+            resp = requests.post(
+                url,
+                headers={"Authorization": f"Bearer {api_key}",
+                         "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": _build_user_msg(job)},
+                    ],
+                    "temperature": 0.0,
+                    "max_tokens": 200,
+                },
+                timeout=60,
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"].strip()
+            data = _extract_json(content)
 
-        relevant = bool(data.get("relevant", False))
-        role = str(data.get("role", "") or "").strip()
-        subtype = str(data.get("subtype", "") or "").strip()
+            relevant = bool(data.get("relevant", False))
+            role = str(data.get("role", "") or "").strip()
+            subtype = str(data.get("subtype", "") or "").strip()
 
-        # Validasi: job yang diterima WAJIB punya role valid; kalau tidak,
-        # anggap response tidak valid -> fallback heuristik.
-        if relevant and role not in ROLE_SPEC:
-            raise ValueError(f"role tidak valid untuk job relevan: {role!r}")
+            # Validasi: job yang diterima WAJIB punya role valid; kalau tidak,
+            # anggap response tidak valid -> fallback heuristik.
+            if relevant and role not in ROLE_SPEC:
+                raise ValueError(f"role tidak valid untuk job relevan: {role!r}")
 
-        return {
-            "relevant": relevant,
-            "role": role,
-            "subtype": subtype,
-            "reason": str(data.get("reason", "")),
-            "source": "llm",
-        }
-    except Exception as e:
-        print(f"[llm_filter] LLM gagal, fallback heuristik -- {e}")
-        return None
+            return {
+                "relevant": relevant,
+                "role": role,
+                "subtype": subtype,
+                "reason": str(data.get("reason", "")),
+                "source": "llm",
+            }
+        except Exception as e:
+            last_err = e
+            if attempt < LLM_MAX_RETRIES - 1 and _should_retry(e):
+                delay = _backoff_delay(attempt)
+                print(f"[llm_filter] retry {attempt + 1}/{LLM_MAX_RETRIES} "
+                      f"setelah {delay:.1f}s -- {type(e).__name__}: {e}")
+                time.sleep(delay)
+                continue
+            break
+    print(f"[llm_filter] LLM gagal, fallback heuristik -- {last_err}")
+    return None
 
 
 def _classify_heuristic(job: Job) -> dict:
