@@ -95,13 +95,22 @@ CREATE TABLE IF NOT EXISTS file_cache (
 """
 
 
+#: timeout (detik) SQLite busy-handler per statement. Diturunkan dari 30 ke
+#: nilai ini supaya operasi yang menunggu lock tidak menggantung terlalu lama
+#: saat sub-agent paralel menulis ke DB yang sama. WAL memungkinkan banyak
+#: reader + satu writer, tapi writer tetap diserialisasi; busy_timeout memberi
+#: jeda tunggu per statement sebelum melempar OperationalError.
+DB_BUSY_TIMEOUT = 30
+#: Jeda (detik) antar-retry saat DB terkunci. Dipakai oleh helper
+#: `_retry_connect` yang bisa dipanggil pemanggil bila perlu (busy_timeout
+#: saja kadang tidak cukup untuk writer yang memegang lock sangat lama).
+DB_BUSY_RETRY_DELAY = 0.05
+
+
 @contextmanager
 def connect(db_path: str = DEFAULT_DB_PATH):
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA foreign_keys=ON;")
+    conn = _open_conn(db_path)
     try:
         yield conn
         conn.commit()
@@ -111,6 +120,23 @@ def connect(db_path: str = DEFAULT_DB_PATH):
         raise
     finally:
         conn.close()
+
+
+def _open_conn(db_path: str):
+    """Buka koneksi SQLite dengan busy_timeout yang panjang (tahan terhadap
+    lock sementara dari writer lain, mis. sub-agent paralel)."""
+    conn = sqlite3.connect(db_path, timeout=DB_BUSY_TIMEOUT)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA foreign_keys=ON;")
+    conn.execute(f"PRAGMA busy_timeout={int(DB_BUSY_TIMEOUT * 1000)};")
+    return conn
+
+
+def _is_busy_error(exc: Exception) -> bool:
+    """True kalau exception SQLite karena database terkunci (busy/locked)."""
+    msg = str(exc)
+    return "database is locked" in msg or "database table is locked" in msg
 
 
 def init_db(db_path: str = DEFAULT_DB_PATH):
@@ -304,6 +330,22 @@ def get_messages_after(db_path: str, session_id: str, after_id: int):
             (session_id, after_id),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def get_last_user_message(db_path: str, session_id: str) -> dict:
+    """Ambil pesan user chat TERAKHIR untuk sesi ini.
+
+    Query terarah (ORDER BY id DESC LIMIT 1) -- jauh lebih ringan daripada
+    get_all_messages() yang menarik seluruh riwayat. Dipakai untuk retrieval
+    relevansi catatan proyek (query singkat) tanpa memuat semua pesan.
+    """
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM messages WHERE session_id = ? AND role = 'user' "
+            "AND kind = 'chat' ORDER BY id DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        return dict(row) if row else {}
 
 
 

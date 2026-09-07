@@ -114,6 +114,16 @@ def _pairing_safe_split(rows: list, split_at: int) -> int:
     return split_at
 
 
+#: Cache hasil hitung token tools_payload, keyed by id(objek). tools_payload
+#: dibangun SEKALI per sesi dan tidak dimutasi antar giliran, jadi menghitung
+#: ulang json.dumps + count_tokens setiap giliran (dipanggil 2x: budget &
+#: build_context) adalah buang-buang. Cache berbasis identitas objek murah
+#: O(1) dan akurat selama payload tidak dimutasi in-place (asumsi desain).
+#: Kalau suatu saat payload dimutasi, pemanggil harus membangun objek baru
+#: (id berbeda) sehingga cache otomatis ter-invalidate.
+_TOOLS_PAYLOAD_TOKENS_CACHE: dict = {}
+
+
 def _tools_payload_tokens(tools_payload) -> int:
     """Hitung berapa token yang dipakai field `"tools"` ala OpenAI kalau
     disertakan di request (lihat build_openai_tools_payload() di cli.py).
@@ -122,14 +132,22 @@ def _tools_payload_tokens(tools_payload) -> int:
 
     Dihitung dari representasi JSON-nya (persis seperti yang akan dikirim
     di payload), bukan diestimasi. Return 0 kalau tools_payload kosong/None.
+    Hasil di-cache per-objek (lihat _TOOLS_PAYLOAD_TOKENS_CACHE) sehingga
+    tidak dihitung ulang setiap giliran.
     """
     if not tools_payload:
         return 0
+    key = id(tools_payload)
+    cached = _TOOLS_PAYLOAD_TOKENS_CACHE.get(key)
+    if cached is not None:
+        return cached
     try:
-        return token_utils.count_tokens(json.dumps(tools_payload, ensure_ascii=False))
+        n = token_utils.count_tokens(json.dumps(tools_payload, ensure_ascii=False))
     except Exception:
 
         return 0
+    _TOOLS_PAYLOAD_TOKENS_CACHE[key] = n
+    return n
 
 SUMMARIZE_SYSTEM = (
     "Anda adalah asisten yang meringkas riwayat percakapan dari sebuah coding-agent "
@@ -425,22 +443,25 @@ def _ensure_note_summaries(db_path: str, session_id: str, url: str, model: str,
 
 
 def _note_relevance_score(note: dict, query: str) -> float:
-    """Skor relevansi sederhana sebuah catatan terhadap query (teks user
-    terakhir). Memakai overlap token kata kunci antara key+value catatan dan
-    query. Catatan yang tidak cocok sama sekali mendapat skor 0.
+    """Skor relevansi sebuah catatan terhadap query (teks user terakhir).
 
-    Ini bukan retrieval semantik (tanpa embedding/LLM) -- cukup keyword
-    overlap yang murah dan deterministik. Tujuannya bukan presisi sempurna,
-    melainkan MENURUNKAN biaya tetap dengan memberi budget lebih besar ke
-    catatan yang tampaknya relevan dengan pertanyaan saat ini, sambil
-    memastikan catatan yang jelas tidak relevan hanya menampilkan key-nya.
+    Memakai kombinasi murah & deterministik (tanpa embedding/LLM):
+      1. Jaccard similarity antara token catatan (key+value) dan token query
+         -- lebih baik daripada hit/miss mentah karena menormalisasi panjang.
+      2. Partial token match (prefix/substring) untuk menangkap kata yang
+         hanya sebagian cocok (mis. query "repo_map" vs catatan "repo_mapping").
+      3. Bobot ekstra untuk kecocokan di KEY (lebih penting daripada value).
+
+    Tujuannya bukan presisi sempurna, melainkan MENURUNKAN biaya tetap dengan
+    memberi budget lebih besar ke catatan yang tampaknya relevan dengan
+    pertanyaan saat ini, sambil memastikan catatan yang jelas tidak relevan
+    hanya menampilkan key-nya.
     """
     if not query.strip():
         return 0.0
     key = (note.get("key") or "").lower()
     value = (note.get("value") or "").lower()
     q = query.lower()
-    # Token kata kunci dari query (kata alfanumerik len>=4, bukan stopword).
     import re as _re
     stop = {
         "yang", "dengan", "untuk", "dari", "pada", "adalah", "agar", "dalam",
@@ -449,15 +470,36 @@ def _note_relevance_score(note: dict, query: str) -> float:
         "this", "what", "how", "when", "where", "why", "are", "was", "not",
         "but", "you", "your", "have", "has", "into", "about", "them", "then",
         "they", "there", "their", "from", "than", "also", "just", "make",
+        "please", "please", "code", "file", "fix", "add", "make", "need",
     }
     q_tokens = [t for t in _re.findall(r"[a-z0-9_]+", q) if len(t) >= 4 and t not in stop]
     if not q_tokens:
         return 0.0
-    corpus = f"{key} {value}"
-    hits = sum(1 for t in q_tokens if t in corpus)
-    # Bobot: key lebih penting daripada value.
-    key_hits = sum(1 for t in q_tokens if t in key)
-    score = (hits / len(q_tokens)) + (key_hits / max(len(q_tokens), 1)) * 0.5
+    corpus_tokens = set(_re.findall(r"[a-z0-9_]+", f"{key} {value}"))
+    if not corpus_tokens:
+        return 0.0
+
+    # 1) Exact token overlap (Jaccard) antara query dan corpus.
+    exact_hits = sum(1 for t in q_tokens if t in corpus_tokens)
+    union = len(set(q_tokens) | corpus_tokens)
+    jaccard = exact_hits / union if union else 0.0
+
+    # 2) Partial match: query token yang muncul sebagai prefix/substring token
+    #    corpus (atau sebaliknya). Menangkap infleksi/varian nama.
+    partial_hits = 0
+    for t in q_tokens:
+        if any(t in c or c in t for c in corpus_tokens):
+            partial_hits += 1
+    partial = partial_hits / len(q_tokens)
+
+    # 3) Key match: query token yang muncul di key (bobot ekstra).
+    key_tokens = set(_re.findall(r"[a-z0-9_]+", key))
+    key_hits = sum(1 for t in q_tokens if t in key_tokens
+                   or any(t in k or k in t for k in key_tokens))
+    key_frac = key_hits / len(q_tokens)
+
+    # Gabungan: Jaccard dominan, partial menaikkan, key memberi bonus.
+    score = jaccard * 1.0 + partial * 0.4 + key_frac * 0.6
     return score
 
 
@@ -495,13 +537,12 @@ def _project_notes_section(db_path: str, session_id: str) -> str:
         return ""
 
     # --- Retrieval: ambil pesan user terakhir sebagai query relevansi ---
+    # Pakai query terarah (LIMIT 1) alih-alih get_all_messages() yang menarik
+    # seluruh riwayat hanya untuk satu pesan -- hemat query DB per giliran.
     query = ""
     try:
-        msgs = dbmod.get_all_messages(db_path, session_id)
-        for m in reversed(msgs):
-            if m.get("role") == "user" and m.get("kind") == "chat":
-                query = m.get("content") or ""
-                break
+        last = dbmod.get_last_user_message(db_path, session_id)
+        query = last.get("content") or ""
     except Exception:
         query = ""
 

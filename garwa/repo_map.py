@@ -26,6 +26,8 @@ Install (opsional, disarankan untuk hasil lebih akurat & multi-bahasa):
 
 import os
 import re
+import threading
+import time
 from collections import defaultdict
 
 from . import db as dbmod
@@ -84,14 +86,24 @@ _INDIVIDUAL_GRAMMARS = {
     "markdown": "tree_sitter_markdown",
     "toml": "tree_sitter_toml",
 }
-# cache: lang -> parser (atau None kalau tak didukung)
-_individual_parser_cache: dict = {}
+# cache: lang -> parser (atau None kalau tak didukung).
+# PENTING: disimpan di thread-local storage (bukan dict global) karena objek
+# Parser tree-sitter TIDAK thread-safe untuk parse bersamaan. Sub-agent paralel
+# (spawn_agents_parallel) memakai thread pool, jadi kalau parser dibagi global,
+# dua thread bisa memanggil .parse() pada objek yang sama bersamaan -> crash/
+# panic. Dengan thread-local, tiap thread punya parser sendiri yang aman.
+_individual_parser_cache: "threading.local" = threading.local()
 
 
 def _individual_parser(lang: str):
-    """Buat parser dari grammar individual untuk `lang`, atau None."""
-    if lang in _individual_parser_cache:
-        return _individual_parser_cache[lang]
+    """Buat parser dari grammar individual untuk `lang`, atau None.
+
+    Cache per-thread (thread-local) supaya parser tidak dibagi lintas thread
+    (objek Parser tree-sitter tidak thread-safe untuk parse bersamaan).
+    """
+    cache = _individual_parser_cache.__dict__
+    if lang in cache:
+        return cache[lang]
     mod_name = _INDIVIDUAL_GRAMMARS.get(lang)
     parser = None
     if mod_name:
@@ -126,31 +138,44 @@ def _individual_parser(lang: str):
             parser = p
         except BaseException:  # noqa: BLE001 — grammar tak terinstall/rubah API
             parser = None
-    _individual_parser_cache[lang] = parser
+    cache[lang] = parser
     return parser
+
+
+_get_parser_cache: "threading.local" = threading.local()
 
 
 def _get_parser(lang: str):
     """Kembalikan parser untuk `lang` (objek dengan .parse(bytes) -> Tree),
     atau None bila tak tersedia. Prioritas: language-pack -> individual ->
-    tree_sitter_languages."""
+    tree_sitter_languages.
+
+    Hasil di-cache per-thread (thread-local) supaya objek Parser yang sama
+    tidak dipakai parse bersamaan oleh beberapa thread sub-agent paralel
+    (Parser tree-sitter tidak thread-safe). Tiap thread mendapat parser
+    sendiri yang aman.
+    """
+    cache = _get_parser_cache.__dict__
+    if lang in cache:
+        return cache[lang]
+    parser = None
     # 1. language-pack (primary)
     if _lp_get_parser is not None:
         try:
-            return _lp_get_parser(lang)
+            parser = _lp_get_parser(lang)
         except BaseException:  # noqa: BLE001 — panic Rust / import gagal
-            pass
+            parser = None
     # 2. grammar individual (andal di Termux/Android)
-    p = _individual_parser(lang)
-    if p is not None:
-        return p
+    if parser is None:
+        parser = _individual_parser(lang)
     # 3. tree_sitter_languages (fallback lama)
-    if _tl_get_parser is not None:
+    if parser is None and _tl_get_parser is not None:
         try:
-            return _tl_get_parser(lang)
+            parser = _tl_get_parser(lang)
         except BaseException:  # noqa: BLE001
-            pass
-    return None
+            parser = None
+    cache[lang] = parser
+    return parser
 
 
 def _ts_available() -> bool:
@@ -338,15 +363,32 @@ def _preview_text(root: str, rel: str, max_lines: int = 6, max_chars: int = 120)
         return []
 
 
-def _iter_source_files(root: str, max_files: int = 2000):
+def _iter_source_files(root: str, max_files: int = 2000,
+                       time_budget: float = 10.0, byte_budget: int = 64 * 1024 * 1024):
+    """Iterasi file source di repo, dengan guard agar tidak hang/gembung di
+    repo besar. Berhenti lebih awal bila:
+      - sudah melewati `max_files`, ATAU
+      - total ukuran file yang dihasilkan melebihi `byte_budget`, ATAU
+      - sudah berjalan lebih dari `time_budget` detik.
+    Return (generator) yield (rel, full, lang)."""
     count = 0
+    total_bytes = 0
+    start = time.monotonic()
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".")]
         for fn in filenames:
+            if time.monotonic() - start > time_budget:
+                return
             ext = os.path.splitext(fn)[1]
             base_lower = fn.lower()
             if ext in EXT_LANG:
                 full = os.path.join(dirpath, fn)
+                try:
+                    total_bytes += os.path.getsize(full)
+                except OSError:
+                    pass
+                if total_bytes > byte_budget:
+                    return
                 rel = os.path.relpath(full, root)
                 yield rel, full, EXT_LANG[ext]
                 count += 1
@@ -355,6 +397,12 @@ def _iter_source_files(root: str, max_files: int = 2000):
                 # walau tanpa ekstensi bahasa, supaya P3 (filter_important_files)
                 # benar-benar bisa memasukkannya ke map.
                 full = os.path.join(dirpath, fn)
+                try:
+                    total_bytes += os.path.getsize(full)
+                except OSError:
+                    pass
+                if total_bytes > byte_budget:
+                    return
                 rel = os.path.relpath(full, root)
                 yield rel, full, None
                 count += 1

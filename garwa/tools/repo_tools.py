@@ -35,7 +35,11 @@ def tool_repo_map(token_budget: int = 1024) -> str:
     except ValueError as e:
         return f"[ERROR] {e}"
     try:
-        personalize = set(state._RECENTLY_TOUCHED[:10])
+        # Baca _RECENTLY_TOUCHED di dalam lock supaya tidak race dengan
+        # penulisan dari thread sub-agent paralel (sandbox.py menulis pakai
+        # _RECENTLY_TOUCHED_LOCK).
+        with state._RECENTLY_TOUCHED_LOCK:
+            personalize = set(state._RECENTLY_TOUCHED[:10])
         return repo_map_mod.generate(state.WORKDIR, token_budget=token_budget, personalize_files=personalize)
     except Exception as e:
         return f"[ERROR] Gagal membangun repo map: {e}"
