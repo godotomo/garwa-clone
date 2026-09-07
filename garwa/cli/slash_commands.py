@@ -26,12 +26,18 @@ from ..tools import TOOLS
 from ..tools.git_tools import (
     GitError,
     git_add,
+    git_blame,
+    git_branch,
     git_commit,
     git_commit_all,
     git_diff,
     git_dirty_files,
     git_head_commit,
     git_log,
+    git_log_graph,
+    git_reset,
+    git_show,
+    git_stash,
     git_status,
     git_undo,
     _is_repo,
@@ -87,11 +93,17 @@ COMMANDS = {
     "git-add": "Stage file ke git: /git-add [path...] (tanpa argumen = stage semua)",
     "git-commit": "Commit perubahan yang sudah di-stage: /git-commit <pesan> (atau /git-commit --all <pesan> untuk stage semua dulu)",
     "git-undo": "Batalkan commit terakhir (soft reset ke HEAD~1)",
+    "git-branch": "Kelola branch git: /git-branch [create <nama>|delete <nama>|switch <nama>] (tanpa argumen = list)",
+    "git-blame": "Blame sebuah file: /git-blame <path> [line] (siapa menulis tiap baris)",
+    "git-show": "Tampilkan isi/perubahan commit: /git-show [ref] [--stat] (default HEAD)",
+    "git-reset": "Reset HEAD: /git-reset [soft|mixed] [ref] (default soft HEAD~1; --hard ditolak)",
+    "git-stash": "Stash: /git-stash [list|push|pop|drop] [pesan]",
+    "git-log-graph": "Log commit dengan grafik branch: /git-log-graph [n]",
     "auto-commit": "Aktifkan/nonaktifkan commit otomatis setelah edit: /auto-commit on|off",
 }
 
 # Command yang butuh argumen tambahan.
-_COMMANDS_WITH_ARGS = {"resume", "api-model", "api-url", "api-key", "ctx", "reserve", "summarize-threshold", "keep-tail", "github-token", "github-max", "firecrawl-key", "news-lang", "pin", "unpin", "model", "memory", "git", "git-diff", "git-log", "git-add", "git-commit"}
+_COMMANDS_WITH_ARGS = {"resume", "api-model", "api-url", "api-key", "ctx", "reserve", "summarize-threshold", "keep-tail", "github-token", "github-max", "firecrawl-key", "news-lang", "pin", "unpin", "model", "memory", "git", "git-diff", "git-log", "git-add", "git-commit", "git-branch", "git-blame", "git-show", "git-reset", "git-stash", "git-log-graph"}
 
 
 def _print_help() -> None:
@@ -719,6 +731,100 @@ def _handle_git_undo(args, arg: str) -> None:
         print(c(f"[git-undo] {e}", C.RED))
 
 
+def _handle_git_branch(args, arg: str) -> None:
+    create = delete = switch = ""
+    toks = arg.split()
+    if toks:
+        op = toks[0].lower()
+        name = toks[1] if len(toks) > 1 else ""
+        if op in ("create", "-c", "new"):
+            create = name
+        elif op in ("delete", "-d", "del", "rm"):
+            delete = name
+        elif op in ("switch", "checkout", "co", "-s"):
+            switch = name
+        elif op in ("list", "ls", "-l"):
+            pass  # list default
+        else:
+            # Perilaku /git-branch <nama> -> buat branch baru (mirip git branch <nama>)
+            create = op
+    try:
+        print(c(f"[git-branch] {git_branch(create=create, delete=delete, switch=switch)}", C.GREEN))
+    except GitError as e:
+        print(c(f"[git-branch] {e}", C.RED))
+
+
+def _handle_git_blame(args, arg: str) -> None:
+    toks = arg.split()
+    if not toks:
+        print(c("[git-blame] gunakan: /git-blame <path> [line]", C.YELLOW))
+        return
+    path = toks[0]
+    line = 0
+    if len(toks) > 1 and toks[1].isdigit():
+        line = int(toks[1])
+    try:
+        print(git_blame(path, line=line or None))
+    except GitError as e:
+        print(c(f"[git-blame] {e}", C.RED))
+
+
+def _handle_git_show(args, arg: str) -> None:
+    stat = "--stat" in arg
+    ref = "HEAD"
+    for tok in arg.split():
+        if tok != "--stat":
+            ref = tok
+            break
+    try:
+        print(git_show(ref, stat=stat))
+    except GitError as e:
+        print(c(f"[git-show] {e}", C.RED))
+
+
+def _handle_git_reset(args, arg: str) -> None:
+    toks = arg.split()
+    mode = "soft"
+    ref = "HEAD~1"
+    for tok in toks:
+        if tok in ("soft", "mixed"):
+            mode = tok
+        elif tok.startswith("HEAD") or tok.startswith("~") or tok.isdigit() or ".." in tok:
+            ref = tok
+    if "--hard" in toks:
+        print(c("[git-reset] --hard ditolak demi keamanan. Gunakan 'soft' atau 'mixed'.", C.RED))
+        return
+    try:
+        print(c(f"[git-reset] {git_reset(mode, ref)}", C.GREEN))
+    except GitError as e:
+        print(c(f"[git-reset] {e}", C.RED))
+
+
+def _handle_git_stash(args, arg: str) -> None:
+    toks = arg.split()
+    action = "list"
+    message = ""
+    if toks:
+        action = toks[0].lower()
+        message = " ".join(toks[1:])
+    try:
+        print(c(f"[git-stash] {git_stash(action=action, message=message)}", C.GREEN))
+    except GitError as e:
+        print(c(f"[git-stash] {e}", C.RED))
+
+
+def _handle_git_log_graph(args, arg: str) -> None:
+    n = 20
+    for tok in arg.split():
+        if tok.isdigit():
+            n = int(tok)
+            break
+    try:
+        print(git_log_graph(n=n))
+    except GitError as e:
+        print(c(f"[git-log-graph] {e}", C.RED))
+
+
 def _handle_git(args, arg: str) -> None:
     from ..tools.git_tools import tool_git_run
     print(tool_git_run(arg))
@@ -1085,6 +1191,30 @@ def handle_slash_command(cmd_line: str, args, session_id: str, system_content: s
 
     if name == "git-undo":
         _handle_git_undo(args, arg)
+        return {"action": "skip"}
+
+    if name == "git-branch":
+        _handle_git_branch(args, arg)
+        return {"action": "skip"}
+
+    if name == "git-blame":
+        _handle_git_blame(args, arg)
+        return {"action": "skip"}
+
+    if name == "git-show":
+        _handle_git_show(args, arg)
+        return {"action": "skip"}
+
+    if name == "git-reset":
+        _handle_git_reset(args, arg)
+        return {"action": "skip"}
+
+    if name == "git-stash":
+        _handle_git_stash(args, arg)
+        return {"action": "skip"}
+
+    if name == "git-log-graph":
+        _handle_git_log_graph(args, arg)
         return {"action": "skip"}
 
     if name == "git":

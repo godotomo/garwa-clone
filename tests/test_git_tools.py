@@ -261,3 +261,115 @@ def test_slash_auto_commit_toggle(tmp_path, capsys):
         assert cfg["auto_commit"] == "1"
     finally:
         config.AUTO_COMMIT = old
+
+
+# ---------------------------------------------------------------------------
+# Fitur git baru (aider-style): branch / blame / show / reset / stash / log-graph
+# ---------------------------------------------------------------------------
+
+def test_git_branch_list(git_repo):
+    out = gt.git_branch(cwd=str(git_repo))
+    assert "master" in out or "main" in out
+
+
+def test_git_branch_create_switch_delete(git_repo):
+    # create
+    out = gt.git_branch(create="fitur", cwd=str(git_repo))
+    assert "fitur" in out
+    # list sekarang punya 2 branch
+    out = gt.git_branch(cwd=str(git_repo))
+    assert "fitur" in out
+    # switch
+    out = gt.git_branch(switch="fitur", cwd=str(git_repo))
+    assert "fitur" in out
+    # branch aktif sekarang fitur
+    out = gt.git_branch(cwd=str(git_repo))
+    assert "* fitur" in out
+    # kembali ke master lalu delete fitur
+    gt.git_branch(switch="master", cwd=str(git_repo))
+    out = gt.git_branch(delete="fitur", cwd=str(git_repo))
+    assert "fitur" in out
+
+
+def test_git_blame(git_repo):
+    f = git_repo / "a.txt"
+    f.write_text("hello\nworld\n", encoding="utf-8")
+    _git("add", "-A", cwd=str(git_repo))
+    _git("commit", "-q", "-m", "add lines", cwd=str(git_repo))
+    out = gt.git_blame("a.txt", cwd=str(git_repo))
+    assert "hello" in out
+    # blame satu baris
+    out_line = gt.git_blame("a.txt", cwd=str(git_repo), line=1)
+    assert "hello" in out_line
+
+
+def test_git_show(git_repo):
+    out = gt.git_show(cwd=str(git_repo))
+    assert "initial commit" in out
+    out_stat = gt.git_show(stat=True, cwd=str(git_repo))
+    assert "a.txt" in out_stat
+
+
+def test_git_reset_soft(git_repo):
+    (git_repo / "a.txt").write_text("changed\n", encoding="utf-8")
+    _git("add", "-A", cwd=str(git_repo))
+    _git("commit", "-q", "-m", "second commit", cwd=str(git_repo))
+    head_before = gt.git_head_commit(cwd=str(git_repo))
+    out = gt.git_reset("soft", "HEAD~1", cwd=str(git_repo))
+    head_after = gt.git_head_commit(cwd=str(git_repo))
+    assert head_after != head_before
+    assert "reset" in out.lower()
+    # perubahan tetap ada (soft reset tidak hapus)
+    assert "changed" in (git_repo / "a.txt").read_text(encoding="utf-8")
+
+
+def test_git_reset_rejects_hard(git_repo):
+    with pytest.raises(gt.GitError):
+        gt.git_reset("hard", "HEAD~1", cwd=str(git_repo))
+
+
+def test_git_stash_push_pop(git_repo):
+    (git_repo / "a.txt").write_text("stash me\n", encoding="utf-8")
+    out = gt.git_stash(action="push", message="wip", cwd=str(git_repo))
+    assert "saved" in out.lower() or "stash" in out.lower()
+    out_list = gt.git_stash(cwd=str(git_repo))
+    assert "wip" in out_list
+    # pop mengembalikan perubahan
+    out = gt.git_stash(action="pop", cwd=str(git_repo))
+    assert "stash me" in (git_repo / "a.txt").read_text(encoding="utf-8")
+
+
+def test_git_log_graph(git_repo):
+    out = gt.git_log_graph(cwd=str(git_repo))
+    assert "initial commit" in out
+
+
+def test_slash_git_branch(git_repo, capsys):
+    old = tools_module.state.WORKDIR
+    tools_module.state.WORKDIR = str(git_repo)
+    try:
+        res = _run("/git-branch", _Args())
+        assert res["action"] == "skip"
+        out = capsys.readouterr().out
+        assert "master" in out or "main" in out
+    finally:
+        tools_module.state.WORKDIR = old
+
+
+def test_slash_git_reset_hard_rejected(git_repo, capsys):
+    old = tools_module.state.WORKDIR
+    tools_module.state.WORKDIR = str(git_repo)
+    try:
+        res = _run("/git-reset --hard", _Args())
+        assert res["action"] == "skip"
+        out = capsys.readouterr().out
+        assert "ditolak" in out
+    finally:
+        tools_module.state.WORKDIR = old
+
+
+def test_tools_registry_has_new_git_tools():
+    from garwa.tools import TOOLS
+    for name in ("git_branch", "git_blame", "git_show", "git_reset", "git_stash", "git_log_graph"):
+        assert name in TOOLS
+        assert callable(TOOLS[name]["handler"])

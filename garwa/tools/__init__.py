@@ -22,7 +22,7 @@ from .security_tool import tool_security_scan
 from .bash_tool import _cap_output, _bash_is_risky, _restore_terminal_mode, tool_bash
 from .repo_tools import tool_repo_map, tool_outline_file
 from .compile_tools import tool_check, tool_snippet
-from .git_tools import tool_git_status, tool_git_diff, tool_git_log, tool_git_add, tool_git_commit, tool_git_undo, tool_git_run
+from .git_tools import tool_git_status, tool_git_diff, tool_git_log, tool_git_add, tool_git_commit, tool_git_undo, tool_git_run, tool_git_branch, tool_git_blame, tool_git_show, tool_git_reset, tool_git_stash, tool_git_log_graph
 from .session_tools import _require_session, tool_todo_write, tool_todo_read, tool_remember, tool_recall
 from .sub_agent import tool_spawn_agent, tool_spawn_agents_parallel
 
@@ -646,6 +646,108 @@ TOOLS = {
                     "cwd": {"type": "string", "description": "direktori repo (default: working directory)"},
                 },
                 "required": ["command"],
+            },
+        },
+    },
+    "git_branch": {
+        "handler": tool_git_branch,
+        "destructive": False,
+        "schema": {
+            "name": "git_branch",
+            "description": "Kelola branch git: list (default), create, delete, atau switch. Contoh: git_branch() untuk list; git_branch(create='fitur') buat branch; git_branch(switch='fitur') pindah branch; git_branch(delete='fitur') hapus branch (safe -d).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "create": {"type": "string", "description": "nama branch yang akan dibuat"},
+                    "delete": {"type": "string", "description": "nama branch yang akan dihapus (safe -d, tolak bila belum di-merge)"},
+                    "switch": {"type": "string", "description": "nama branch yang akan diaktifkan (checkout)"},
+                    "cwd": {"type": "string", "description": "direktori repo (default: working directory)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    "git_blame": {
+        "handler": tool_git_blame,
+        "destructive": False,
+        "schema": {
+            "name": "git_blame",
+            "description": "Blame sebuah file: siapa yang menulis tiap baris & di commit mana. Opsional argumen line untuk blame satu baris (1-based).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "path file yang akan di-blame"},
+                    "line": {"type": "integer", "description": "opsional: nomor baris (1-based) untuk blame satu baris"},
+                    "cwd": {"type": "string", "description": "direktori repo (default: working directory)"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    "git_show": {
+        "handler": tool_git_show,
+        "destructive": False,
+        "schema": {
+            "name": "git_show",
+            "description": "Tampilkan isi/perubahan sebuah commit atau path (git show). Default HEAD. Gunakan stat=True untuk ringkasan statistik.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ref": {"type": "string", "default": "HEAD", "description": "ref commit (hash, branch, tag) atau path"},
+                    "stat": {"type": "boolean", "default": False, "description": "tampilkan ringkasan statistik (--stat)"},
+                    "cwd": {"type": "string", "description": "direktori repo (default: working directory)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    "git_reset": {
+        "handler": tool_git_reset,
+        "destructive": True,
+        "schema": {
+            "name": "git_reset",
+            "description": "Reset HEAD ke ref dengan mode aman: soft (default, perubahan tetap di staging) atau mixed (perubahan kembali ke working tree). Menolak --hard. Menolak bila HEAD sudah di-push.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "mode": {"type": "string", "default": "soft", "enum": ["soft", "mixed"], "description": "mode reset (--hard ditolak)"},
+                    "ref": {"type": "string", "default": "HEAD~1", "description": "ref target reset"},
+                    "cwd": {"type": "string", "description": "direktori repo (default: working directory)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    "git_stash": {
+        "handler": tool_git_stash,
+        "destructive": False,
+        "schema": {
+            "name": "git_stash",
+            "description": "Stash: simpan perubahan sementara (push), tampilkan (list, default), pulihkan (pop), atau buang (drop).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "default": "list", "enum": ["list", "push", "pop", "drop"], "description": "aksi stash"},
+                    "message": {"type": "string", "description": "pesan untuk stash push"},
+                    "cwd": {"type": "string", "description": "direktori repo (default: working directory)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    "git_log_graph": {
+        "handler": tool_git_log_graph,
+        "destructive": False,
+        "schema": {
+            "name": "git_log_graph",
+            "description": "Log commit dengan grafik branch (--graph --oneline --decorate).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "n": {"type": "integer", "default": 20, "description": "jumlah commit yang ditampilkan (maks 100)"},
+                    "cwd": {"type": "string", "description": "direktori repo (default: working directory)"},
+                },
+                "required": [],
             },
         },
     },

@@ -468,6 +468,56 @@ def test_run_fires_end_with_message_on_copy_failure():
     assert events[0].startswith("[ERROR]")
 
 
+# ---------------------------------------------------------------------------
+# Jaring pengaman BaseException (P2): pyo3 PanicException dari panic Rust
+# (mis. rustls-platform-verifier di tree-sitter-language-pack, atau panic di
+# grammar tree-sitter) adalah BaseException, BUKAN Exception. Guard terakhir
+# di executor harus mengubahnya jadi pesan model-safe, bukan crash loop.
+# ---------------------------------------------------------------------------
+class _PanicException(BaseException):
+    """Simulasi pyo3.PanicException (tidak bisa di-subclass dari Exception)."""
+
+
+def _panic_handler(**kwargs):
+    raise _PanicException("panic Rust internal (rustls-platform-verifier)")
+
+
+def _keyboard_interrupt_handler(**kwargs):
+    raise KeyboardInterrupt()
+
+
+def _system_exit_handler(**kwargs):
+    raise SystemExit(3)
+
+
+def test_run_base_exception_panic_returns_invalid_output():
+    # Panic (BaseException non-KeyboardInterrupt/SystemExit) harus dikonversi
+    # jadi pesan model-safe, BUKAN crash keluar dari agent loop.
+    out = run_tool_with_runtime("t", {}, _panic_handler)
+    assert out.startswith("[ERROR] InvalidToolOutput")
+    assert "panic internal" in out
+
+
+def test_run_base_exception_fires_failure_hook():
+    events = []
+    hooks = ToolCallHooks(on_tool_call_end=lambda c: events.append(c.outcome))
+    run_tool_with_runtime("t", {}, _panic_handler, hooks=hooks)
+    assert events == ["failure"]
+
+
+def test_run_keyboard_interrupt_propagates():
+    # KeyboardInterrupt (Ctrl-C user) HARUS tetap propagate supaya CLI bisa
+    # keluar bersih, bukan ditelan jadi pesan tool.
+    with pytest.raises(KeyboardInterrupt):
+        run_tool_with_runtime("t", {}, _keyboard_interrupt_handler)
+
+
+def test_run_system_exit_propagates():
+    with pytest.raises(SystemExit) as excinfo:
+        run_tool_with_runtime("t", {}, _system_exit_handler)
+    assert excinfo.value.code == 3
+
+
 # ================================================================ web_search (multi-bahasa)
 
 def test_resolve_news_locale_id():

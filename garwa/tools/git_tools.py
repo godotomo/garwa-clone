@@ -404,6 +404,155 @@ def _auto_commit_message(diff_text: str, dirty_files) -> str:
     return "update " + ", ".join(files)
 
 
+# ---------------------------------------------------------------------------
+# Branch / blame / show / reset / stash (fitur git aider yang belum ada)
+# ---------------------------------------------------------------------------
+
+def git_branch(cwd: Optional[str] = None, create: Optional[str] = None,
+               delete: Optional[str] = None, switch: Optional[str] = None) -> str:
+    """Kelola branch: list (default), create, delete, atau switch.
+
+    - git_branch()                     -> daftar branch lokal + penanda aktif
+    - git_branch(create="nama")        -> buat branch baru (git branch <nama>)
+    - git_branch(delete="nama")        -> hapus branch (git branch -d <nama>)
+    - git_branch(switch="nama")        -> pindah branch (git checkout <nama>)
+
+    Meniru fitur branch di aider. Semua operasi aman (tidak ada force).
+    """
+    _require_repo_root(cwd)
+    if create:
+        _run_git(["branch", create], cwd=cwd)
+        return f"Branch '{create}' dibuat."
+    if delete:
+        # -d (safe delete): tolak kalau branch belum di-merge (mirip guard aider).
+        _run_git(["branch", "-d", delete], cwd=cwd)
+        return f"Branch '{delete}' dihapus."
+    if switch:
+        _run_git(["checkout", switch], cwd=cwd)
+        return f"Berpindah ke branch '{switch}'."
+    # List branch lokal dengan penanda aktif (*) + commit terkait.
+    _, out, _ = _run_git(
+        ["branch", "-vv", "--no-color"], cwd=cwd, check=False,
+    )
+    if not out.strip():
+        return "(belum ada branch)"
+    return out.strip()
+
+
+def git_blame(path: str, cwd: Optional[str] = None, line: Optional[int] = None) -> str:
+    """Blame sebuah file: siapa yang menulis tiap baris & di commit mana.
+
+    `line` (opsional): kalau diisi, hanya tampilkan blame untuk baris tsb
+    (1-based). Tanpa line, tampilkan blame seluruh file (dibatasi).
+    """
+    _require_repo_root(cwd)
+    # Resolve path relatif terhadap repo root (bukan cwd proses), supaya
+    # blame path seperti "a.txt" bekerja walau cwd berbeda dari repo root.
+    base = cwd or state.WORKDIR
+    full = path if os.path.isabs(path) else os.path.join(base, path)
+    if not os.path.isfile(full):
+        raise GitError(f"file tidak ditemukan untuk blame: {path}")
+    args = ["blame", "--date=short"]
+    if line:
+        args += ["-L", f"{line},{line}"]
+    args.append(full)
+    _, out, _ = _run_git(args, cwd=cwd, check=False)
+    if not out.strip():
+        return "(tidak ada output blame)"
+    # Batasi panjang output blame (file besar bisa ribuan baris).
+    lines = out.splitlines()
+    if len(lines) > 200:
+        lines = lines[:200]
+        lines.append(f"... ({len(out.splitlines()) - 200} baris lagi)")
+    return "\n".join(lines)
+
+
+def git_show(ref: str = "HEAD", cwd: Optional[str] = None, stat: bool = False) -> str:
+    """Tampilkan isi/perubahan sebuah commit atau path: git show <ref>.
+
+    `stat=True` hanya menampilkan ringkasan statistik (--stat).
+    """
+    _require_repo_root(cwd)
+    args = ["show", "--no-color"]
+    if stat:
+        args.append("--stat")
+    args.append(ref)
+    _, out, _ = _run_git(args, cwd=cwd, check=False)
+    if not out.strip():
+        return f"(git show {ref}: tidak ada output)"
+    # Batasi panjang output (commit besar bisa sangat panjang).
+    lines = out.splitlines()
+    if len(lines) > 300:
+        lines = lines[:300]
+        lines.append(f"... ({len(out.splitlines()) - 300} baris lagi)")
+    return "\n".join(lines)
+
+
+def git_reset(mode: str = "soft", ref: str = "HEAD~1", cwd: Optional[str] = None) -> str:
+    """Reset HEAD ke `ref` dengan mode aman: soft (default) atau mixed.
+
+    - soft  : HEAD pindah, perubahan tetap di staging (aman, tidak kehilangan apa pun)
+    - mixed : HEAD pindah, perubahan kembali ke working tree (unstage)
+
+    Menolak mode berbahaya (--hard) konsisten dengan guard. Menolak kalau
+    HEAD sudah direferensikan branch remote (riwayat publik).
+    """
+    _require_repo_root(cwd)
+    if mode not in ("soft", "mixed"):
+        raise GitError(
+            f"mode reset '{mode}' tidak didukung. Gunakan 'soft' atau 'mixed' "
+            "(--hard ditolak demi keamanan)."
+        )
+    # Guard: jangan reset kalau sudah di-push ke origin (mirip guard undo).
+    code, out, _ = _run_git(
+        ["branch", "-r", "--contains", "HEAD"], cwd=cwd, check=False
+    )
+    if code == 0 and out.strip():
+        raise GitError(
+            "commit HEAD sudah direferensikan oleh branch remote (kemungkinan "
+            "sudah di-push). Reset akan mengubah riwayat publik -- batalkan."
+        )
+    _, out, _ = _run_git(["reset", f"--{mode}", ref], cwd=cwd, check=False)
+    return f"HEAD di-reset ({mode}) ke {ref}:\n" + (out.strip() or "")
+
+
+def git_stash(cwd: Optional[str] = None, action: str = "list", message: Optional[str] = None) -> str:
+    """Stash: simpan perubahan sementara (push) / tampilkan (list) / pulihkan (pop).
+
+    - git_stash()                -> list stash yang tersimpan
+    - git_stash(action="push")   -> simpan perubahan working tree ke stash
+    - git_stash(action="pop")    -> pulihkan stash terbaru
+    - git_stash(action="drop")   -> buang stash terbaru
+    """
+    _require_repo_root(cwd)
+    action = (action or "list").lower()
+    if action == "push":
+        args = ["stash", "push", "-m", message] if message else ["stash", "push"]
+        _, out, _ = _run_git(args, cwd=cwd)
+        return out.strip() or "Perubahan disimpan ke stash."
+    if action == "pop":
+        _, out, _ = _run_git(["stash", "pop"], cwd=cwd)
+        return out.strip() or "Stash terbaru dipulihkan."
+    if action == "drop":
+        _, out, _ = _run_git(["stash", "drop"], cwd=cwd)
+        return out.strip() or "Stash terbaru dibuang."
+    # list (default)
+    _, out, _ = _run_git(["stash", "list"], cwd=cwd, check=False)
+    return out.strip() if out.strip() else "(tidak ada stash tersimpan)"
+
+
+def git_log_graph(cwd: Optional[str] = None, n: int = 20) -> str:
+    """Log commit dengan grafik branch (--graph) -- mirip /git log --graph."""
+    _require_repo_root(cwd)
+    fmt = "%h %d %s (%an, %ad)"
+    args = [
+        "log", "--graph", "--oneline", "--decorate",
+        f"-{max(1, min(n, 100))}", f"--pretty=format:{fmt}", "--date=short",
+    ]
+    _, out, _ = _run_git(args, cwd=cwd)
+    return out.strip() if out.strip() else "(belum ada commit)"
+
+
 def tool_git_status(cwd: str = None) -> str:
     try:
         return git_status(cwd)
@@ -484,3 +633,52 @@ def tool_git_run(command: str, cwd: str = None) -> str:
     if code != 0:
         return f"[ERROR] git {command} gagal (exit {code}):\n{err.strip() or out.strip()}"
     return out.strip() if out.strip() else "(berhasil, tanpa output)"
+
+
+def tool_git_branch(create: str = "", delete: str = "", switch: str = "", cwd: str = None) -> str:
+    """Tool 'git_branch': list / create / delete / switch branch."""
+    try:
+        return git_branch(cwd, create=create or None, delete=delete or None,
+                          switch=switch or None)
+    except GitError as e:
+        return f"[ERROR] {e}"
+
+
+def tool_git_blame(path: str, line: int = 0, cwd: str = None) -> str:
+    """Tool 'git_blame': blame sebuah file (opsional per-baris)."""
+    try:
+        return git_blame(path, cwd, line=line or None)
+    except GitError as e:
+        return f"[ERROR] {e}"
+
+
+def tool_git_show(ref: str = "HEAD", stat: bool = False, cwd: str = None) -> str:
+    """Tool 'git_show': tampilkan isi/perubahan sebuah commit atau path."""
+    try:
+        return git_show(ref, cwd, stat=stat)
+    except GitError as e:
+        return f"[ERROR] {e}"
+
+
+def tool_git_reset(mode: str = "soft", ref: str = "HEAD~1", cwd: str = None) -> str:
+    """Tool 'git_reset': reset HEAD (soft/mixed aman). Tolak --hard."""
+    try:
+        return git_reset(mode, ref, cwd)
+    except GitError as e:
+        return f"[ERROR] {e}"
+
+
+def tool_git_stash(action: str = "list", message: str = "", cwd: str = None) -> str:
+    """Tool 'git_stash': list / push / pop / drop stash."""
+    try:
+        return git_stash(cwd, action=action, message=message or None)
+    except GitError as e:
+        return f"[ERROR] {e}"
+
+
+def tool_git_log_graph(n: int = 20, cwd: str = None) -> str:
+    """Tool 'git_log_graph': log dengan grafik branch."""
+    try:
+        return git_log_graph(cwd, n=n)
+    except GitError as e:
+        return f"[ERROR] {e}"

@@ -83,3 +83,28 @@ def run_tool_with_runtime(
         duration_ms = (time.monotonic() - start) * 1000.0
         hooks.fire_end(ToolCallEnded(index, name, safe_args, duration_ms, "failure", err.format_for_model()))
         return err.format_for_model()
+    except BaseException as e:  # noqa: BLE001 - jaring pengaman TERAKHIR
+        # pyo3 PanicException (panic Rust, mis. rustls-platform-verifier di
+        # language-pack, atau panic di grammar tree-sitter) adalah BaseException,
+        # BUKAN Exception — jadi except Exception di atas tidak menangkapnya.
+        # Tanpa guard ini, panic yang lolos dari guard internal repo_map/tool
+        # lain akan menembus keluar dan meng-crash seluruh agent loop.
+        #
+        # PENTING: KeyboardInterrupt dan SystemExit juga BaseException, tapi
+        # keduanya HARUS tetap propagate (user Ctrl-C / sys.exit) supaya CLI
+        # bisa keluar dengan bersih. Jadi filter eksplisit di sini.
+        if isinstance(e, (KeyboardInterrupt, SystemExit)):
+            raise
+        err = tool_error(
+            shared.KIND_INVALID_TOOL_OUTPUT,
+            f"Eksekusi tool '{name}' gagal (panic internal): {e}",
+            [
+                "Terjadi panic internal saat menjalankan tool ini (kemungkinan "
+                "panic Rust/pyo3 dari tree-sitter). Garwa menangkapnya dan "
+                "melanjutkan; coba jalankan tool dengan argumen yang lebih "
+                "sederhana atau di file yang lebih kecil.",
+            ],
+        )
+        duration_ms = (time.monotonic() - start) * 1000.0
+        hooks.fire_end(ToolCallEnded(index, name, safe_args, duration_ms, "failure", err.format_for_model()))
+        return err.format_for_model()
