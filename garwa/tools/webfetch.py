@@ -209,6 +209,15 @@ def tool_webfetch(url: str, format: str = "markdown", timeout: int = None) -> st
     if not url:
         return "[ERROR] url wajib diisi."
 
+    # Modul ini memakai lazy import (lihat _get_requests); variabel global
+    # `requests` di level modul selalu None. Ambil instance yang benar di
+    # sini, kalau tidak urlparse() di bawah akan melempar AttributeError
+    # yang tertangkap `except Exception` -> parsed=None -> error palsu
+    # "URL harus menggunakan http:// atau https://." untuk URL yang valid.
+    requests = _get_requests()
+    if requests is None:
+        return "[ERROR] pustaka 'requests' tidak tersedia."
+
     # Validasi skema URL (hanya http/https).
     try:
         parsed = requests.utils.urlparse(url)
