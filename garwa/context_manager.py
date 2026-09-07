@@ -15,11 +15,13 @@ Strategi ringkas ala "summary + tail":
   KEEP_TAIL_MESSAGES pesan terakhir) jadi satu paragraf ringkas.
 """
 
+import hashlib
 import json
 import logging
 import math
 import re
 import sys
+import threading
 import time
 from collections import Counter
 
@@ -114,14 +116,23 @@ def _pairing_safe_split(rows: list, split_at: int) -> int:
     return split_at
 
 
-#: Cache hasil hitung token tools_payload, keyed by id(objek). tools_payload
-#: dibangun SEKALI per sesi dan tidak dimutasi antar giliran, jadi menghitung
-#: ulang json.dumps + count_tokens setiap giliran (dipanggil 2x: budget &
-#: build_context) adalah buang-buang. Cache berbasis identitas objek murah
-#: O(1) dan akurat selama payload tidak dimutasi in-place (asumsi desain).
-#: Kalau suatu saat payload dimutasi, pemanggil harus membangun objek baru
-#: (id berbeda) sehingga cache otomatis ter-invalidate.
+#: Cache hasil hitung token tools_payload, keyed by hash konten (MD5 dari
+#: serialisasi JSON). tools_payload dibangun SEKALI per sesi dan tidak dimutasi
+#: antar giliran, jadi menghitung ulang json.dumps + count_tokens setiap
+#: giliran (dipanggil 2x: budget & build_context) adalah buang-buang.
+#:
+#: Kenapa hash konten, bukan id(objek)? Cache berbasis id() TIDAK aman: begitu
+#: objek di-GC, CPython bisa me-reuse id untuk objek baru, sehingga dua payload
+#: berbeda bisa punya id sama -> collision -> nilai token yang salah. Hash
+#: konten menghindari itu sepenuhnya: payload dengan isi sama berbagi cache,
+#: payload berbeda selalu punya key berbeda (MD5 collision praktis mustahil).
+#:
+#: Thread-safety: sub-agent paralel (spawn_agents_parallel) bisa memanggil ini
+#: dari beberapa thread sekaligus. dict biasa tidak aman untuk operasi set/get
+#: bersamaan (race condition bisa kehilangan entry), jadi semua akses ke cache
+#: dilindungi lock.
 _TOOLS_PAYLOAD_TOKENS_CACHE: dict = {}
+_TOOLS_PAYLOAD_TOKENS_LOCK = threading.Lock()
 
 
 def _tools_payload_tokens(tools_payload) -> int:
@@ -132,21 +143,42 @@ def _tools_payload_tokens(tools_payload) -> int:
 
     Dihitung dari representasi JSON-nya (persis seperti yang akan dikirim
     di payload), bukan diestimasi. Return 0 kalau tools_payload kosong/None.
-    Hasil di-cache per-objek (lihat _TOOLS_PAYLOAD_TOKENS_CACHE) sehingga
-    tidak dihitung ulang setiap giliran.
+    Hasil di-cache per-konten (lihat _TOOLS_PAYLOAD_TOKENS_CACHE) sehingga
+    tidak dihitung ulang setiap giliran. Thread-safe (dilindungi lock).
     """
     if not tools_payload:
         return 0
-    key = id(tools_payload)
-    cached = _TOOLS_PAYLOAD_TOKENS_CACHE.get(key)
-    if cached is not None:
-        return cached
+    # Serialisasi untuk KEY cache: urutan kunci distabilkan + compact supaya
+    # payload dengan isi sama (walau urutan field beda) berbagi cache. Ini
+    # TIDAK dipakai untuk menghitung token (lihat di bawah).
     try:
-        n = token_utils.count_tokens(json.dumps(tools_payload, ensure_ascii=False))
+        key_serialized = json.dumps(
+            tools_payload, ensure_ascii=False, sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError):
+        # Payload tidak bisa diserialisasi -> hitung langsung tanpa cache.
+        try:
+            return token_utils.count_tokens(json.dumps(tools_payload, ensure_ascii=False))
+        except Exception:
+            return 0
+    key = hashlib.md5(key_serialized.encode("utf-8")).hexdigest()
+    with _TOOLS_PAYLOAD_TOKENS_LOCK:
+        cached = _TOOLS_PAYLOAD_TOKENS_CACHE.get(key)
+        if cached is not None:
+            return cached
+    # Hitung token dari serialisasi DEFAULT (json.dumps tanpa sort_keys, dengan
+    # spasi) -- persis representasi yang dikirim ke server via `json=payload`
+    # (httpx/_requests memakai json.dumps default). Ini menjamin estimasi token
+    # akurat terhadap apa yang benar-benar dihitung server.
+    try:
+        wire_serialized = json.dumps(tools_payload, ensure_ascii=False)
+        n = token_utils.count_tokens(wire_serialized)
     except Exception:
 
         return 0
-    _TOOLS_PAYLOAD_TOKENS_CACHE[key] = n
+    with _TOOLS_PAYLOAD_TOKENS_LOCK:
+        _TOOLS_PAYLOAD_TOKENS_CACHE[key] = n
     return n
 
 SUMMARIZE_SYSTEM = (

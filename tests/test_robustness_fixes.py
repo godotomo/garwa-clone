@@ -129,6 +129,18 @@ def test_iter_source_files_max_files_guard(tmp_path):
     assert len(files) == 3
 
 
+def test_iter_source_files_max_files_zero(tmp_path):
+    """Regresi: max_files=0 harus menghasilkan 0 file (sebelumnya guard dicek
+    setelah yield sehingga file pertama tetap ter-yield)."""
+    src = tmp_path / "src"
+    src.mkdir()
+    for i in range(5):
+        (src / f"f{i}.py").write_text("x = 1\n")
+
+    files = list(repo_map._iter_source_files(str(src), max_files=0))
+    assert files == []
+
+
 def test_iter_source_files_time_budget(tmp_path):
     """Guard time_budget berhenti lebih awal walau banyak file."""
     src = tmp_path / "src"
@@ -234,3 +246,49 @@ def test_tools_payload_tokens_cache_keyed_by_object():
     p1 = [{"type": "function", "function": {"name": "read_file"}}]
     p2 = [{"type": "function", "function": {"name": "read_file"}}]
     assert cm._tools_payload_tokens(p1) == cm._tools_payload_tokens(p2)
+
+
+def test_tools_payload_tokens_cache_thread_safe():
+    """Cache harus aman dipakai dari banyak thread (sub-agent paralel) --
+    tidak kehilangan entry (race condition) walau objek di-GC (id reuse)."""
+    cm._TOOLS_PAYLOAD_TOKENS_CACHE.clear()
+    results = {}
+
+    def worker(i):
+        p = [{"type": "function", "function": {"name": f"func_{i}", "parameters": {"a": 1}}}]
+        results[i] = cm._tools_payload_tokens(p)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    # Semua 8 payload berbeda harus punya entry cache sendiri (tidak collision).
+    assert len(cm._TOOLS_PAYLOAD_TOKENS_CACHE) == 8
+    assert all(results.values())
+
+
+def test_tools_payload_tokens_cache_content_based():
+    """Cache berbasis hash konten: payload dengan isi sama (walau urutan field
+    beda) berbagi cache & hasilnya sama. Ini menghindari id-reuse GC yang bisa
+    membuat cache berbasis id() mengembalikan nilai salah."""
+    p1 = [{"type": "function", "function": {"name": "read_file", "parameters": {"a": 1, "b": 2}}}]
+    p2 = [{"type": "function", "function": {"parameters": {"b": 2, "a": 1}, "name": "read_file"}}]
+    assert cm._tools_payload_tokens(p1) == cm._tools_payload_tokens(p2)
+
+
+def test_tools_payload_tokens_cache_consistent_across_gc():
+    """Cache berbasis hash konten tidak terpengaruh id-reuse GC: konten yang
+    sama selalu menghasilkan nilai yang sama, dan konten yang jelas berbeda
+    (panjang sangat beda) menghasilkan nilai berbeda. Ini regresi cache
+    berbasis id() yang bisa collision saat objek di-GC."""
+    cm._TOOLS_PAYLOAD_TOKENS_CACHE.clear()
+    # Payload pendek vs panjang (jumlah token jelas berbeda).
+    short = [{"type": "function", "function": {"name": "read_file"}}]
+    long = [{"type": "function", "function": {"name": "read_file", "parameters": {"x": "y" * 500}}}]
+    v_short = cm._tools_payload_tokens(short)
+    v_long = cm._tools_payload_tokens(long)
+    assert v_short != v_long  # panjang berbeda -> token berbeda
+    # Konsisten: panggil ulang -> sama.
+    assert cm._tools_payload_tokens(short) == v_short
+    assert cm._tools_payload_tokens(long) == v_long

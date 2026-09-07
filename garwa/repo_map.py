@@ -377,6 +377,10 @@ def _iter_source_files(root: str, max_files: int = 2000,
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".")]
         for fn in filenames:
+            # Guard max_files dicek di AWAL loop (sebelum yield) supaya
+            # max_files=0 benar-benar tidak menghasilkan file apa pun.
+            if count >= max_files:
+                return
             if time.monotonic() - start > time_budget:
                 return
             ext = os.path.splitext(fn)[1]
@@ -390,8 +394,8 @@ def _iter_source_files(root: str, max_files: int = 2000,
                 if total_bytes > byte_budget:
                     return
                 rel = os.path.relpath(full, root)
-                yield rel, full, EXT_LANG[ext]
                 count += 1
+                yield rel, full, EXT_LANG[ext]
             elif base_lower in _IMPORTANT_FILENAMES:
                 # File penting (README/Makefile/LICENSE/dll) ikut dihasilkan
                 # walau tanpa ekstensi bahasa, supaya P3 (filter_important_files)
@@ -404,10 +408,8 @@ def _iter_source_files(root: str, max_files: int = 2000,
                 if total_bytes > byte_budget:
                     return
                 rel = os.path.relpath(full, root)
-                yield rel, full, None
                 count += 1
-            if count >= max_files:
-                return
+                yield rel, full, None
 
 
 def _extract_defs_treesitter(path: str, lang: str, source: bytes):
