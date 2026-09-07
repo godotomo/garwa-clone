@@ -1699,6 +1699,11 @@ class TestPromptLabel:
         assert "sandbox:ON" in info
 
     def test_status_info_tools_count(self):
+        # Reset state sesi supaya deterministik: test lain yang mengeksekusi
+        # tool call bisa meng-akumulasi TOOL_CALL_TOTAL (state global per-session)
+        # dan membuat counter bocor >0 ke test ini.
+        from garwa.cli import _state as st
+        st.reset_session_state("abc12345")
         args = _Args()
         info = _build_status_info(args, "abc12345")
         assert "tools:0" in info

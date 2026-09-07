@@ -34,15 +34,138 @@ from . import db as dbmod
 _TS_AVAILABLE = False
 _get_parser = None
 
+# ---------------------------------------------------------------------------
+# Loader tree-sitter multi-tier (poor-man's LSP, tanpa LSP/daemon).
+#
+# Urutan prioritas grammar:
+#   1. tree-sitter-language-pack  -> get_parser(lang) (primary, multi-bahasa)
+#   2. grammar individual          -> tree_sitter.<lang> (per-bahasa, di-build
+#      dari source; andal di Termux/Android di mana language-pack .abi3.so
+#      sering gagal dimuat atau panic rustls-platform-verifier)
+#   3. tree_sitter_languages       -> get_parser(lang) (fallback lama)
+#
+# `_get_parser(lang)` SELALU mengembalikan objek dengan method `.parse(bytes)`
+# yang mengembalikan Tree, ATAU None kalau bahasa tak didukung. Panic Rust
+# (pyo3 PanicException, BaseException) ditangkap di pemanggil supaya garwa
+# tidak pernah crash — cukup fallback ke regex.
+# ---------------------------------------------------------------------------
+
 try:
-    from tree_sitter_language_pack import get_parser as _get_parser  # type: ignore
-    _TS_AVAILABLE = True
+    from tree_sitter_language_pack import get_parser as _lp_get_parser  # type: ignore
 except Exception:
+    _lp_get_parser = None
+
+try:
+    from tree_sitter_languages import get_parser as _tl_get_parser  # type: ignore
+except Exception:
+    _tl_get_parser = None
+
+# Grammar individual: nama modul python per bahasa (opsional, di-build dari
+# source). Dipakai bila language-pack tak tersedia / panic.
+_INDIVIDUAL_GRAMMARS = {
+    "python": "tree_sitter_python",
+    "javascript": "tree_sitter_javascript",
+    "typescript": "tree_sitter_typescript",
+    "c": "tree_sitter_c",
+    "cpp": "tree_sitter_cpp",
+    "java": "tree_sitter_java",
+    "go": "tree_sitter_go",
+    "rust": "tree_sitter_rust",
+    "c_sharp": "tree_sitter_c_sharp",
+    "ruby": "tree_sitter_ruby",
+    "php": "tree_sitter_php",
+    "swift": "tree_sitter_swift",
+    "kotlin": "tree_sitter_kotlin",
+    "bash": "tree_sitter_bash",
+    "html": "tree_sitter_html",
+    "css": "tree_sitter_css",
+    "json": "tree_sitter_json",
+    "yaml": "tree_sitter_yaml",
+    "markdown": "tree_sitter_markdown",
+    "toml": "tree_sitter_toml",
+}
+# cache: lang -> parser (atau None kalau tak didukung)
+_individual_parser_cache: dict = {}
+
+
+def _individual_parser(lang: str):
+    """Buat parser dari grammar individual untuk `lang`, atau None."""
+    if lang in _individual_parser_cache:
+        return _individual_parser_cache[lang]
+    mod_name = _INDIVIDUAL_GRAMMARS.get(lang)
+    parser = None
+    if mod_name:
+        try:
+            import importlib
+            mod = importlib.import_module(mod_name)
+            from tree_sitter import Language, Parser
+            # Beberapa grammar menamai fungsi bahasa berbeda:
+            #   - umum:          language()
+            #   - typescript:    language_typescript() / language_tsx()
+            #   - c_sharp:       language_c_sharp()
+            #   - php:           language_php()
+            # Coba beberapa nama sampai dapat objek Language/PyCapsule.
+            lang_obj = None
+            for fn_name in ("language", f"language_{lang}", "language_tsx", "language_ts"):
+                fn = getattr(mod, fn_name, None)
+                if fn is None:
+                    continue
+                try:
+                    lang_obj = fn()
+                    if lang_obj is not None:
+                        break
+                except BaseException:  # noqa: BLE001
+                    continue
+            if lang_obj is None:
+                parser = None
+                return
+            if not isinstance(lang_obj, Language):
+                # tree-sitter-python 0.25 dkk mengembalikan PyCapsule; bungkus.
+                lang_obj = Language(lang_obj)
+            p = Parser(lang_obj)
+            parser = p
+        except BaseException:  # noqa: BLE001 — grammar tak terinstall/rubah API
+            parser = None
+    _individual_parser_cache[lang] = parser
+    return parser
+
+
+def _get_parser(lang: str):
+    """Kembalikan parser untuk `lang` (objek dengan .parse(bytes) -> Tree),
+    atau None bila tak tersedia. Prioritas: language-pack -> individual ->
+    tree_sitter_languages."""
+    # 1. language-pack (primary)
+    if _lp_get_parser is not None:
+        try:
+            return _lp_get_parser(lang)
+        except BaseException:  # noqa: BLE001 — panic Rust / import gagal
+            pass
+    # 2. grammar individual (andal di Termux/Android)
+    p = _individual_parser(lang)
+    if p is not None:
+        return p
+    # 3. tree_sitter_languages (fallback lama)
+    if _tl_get_parser is not None:
+        try:
+            return _tl_get_parser(lang)
+        except BaseException:  # noqa: BLE001
+            pass
+    return None
+
+
+def _ts_available() -> bool:
+    """True kalau tree-sitter core tersedia (untuk grammar individual) ATAU
+    language-pack / tree_sitter_languages terinstall. Grammar individual
+    butuh modul `tree_sitter` (core) yang menyediakan Parser + Language."""
     try:
-        from tree_sitter_languages import get_parser as _get_parser  # type: ignore
-        _TS_AVAILABLE = True
+        import tree_sitter  # noqa: F401
+        core_ok = True
     except Exception:
-        _TS_AVAILABLE = False
+        core_ok = False
+    return _lp_get_parser is not None or _tl_get_parser is not None or core_ok
+
+
+_TS_AVAILABLE = _ts_available()
 
 EXT_LANG = {
     ".py": "python", ".pyi": "python",
@@ -168,29 +291,86 @@ REGEX_DEFS = {
 }
 
 
+# File yang selalu penting untuk disertakan dalam repo map (mirip Aider's
+# filter_important_files): dokumen, build config, dsb.
+_IMPORTANT_FILENAMES = {
+    "readme.md", "readme", "readme.txt", "readme.rst",
+    "makefile", "cmakelists.txt", "dockerfile", "docker-compose.yml",
+    "docker-compose.yaml", "license", "license.md", "license.txt",
+    "contributing.md", "changelog.md", "changelog", "go.mod", "go.sum",
+    "package.json", "pyproject.toml", "setup.py", "setup.cfg",
+    "requirements.txt", "cargo.toml", "pom.xml", "build.gradle",
+    "build.gradle.kts", "gemfile", "gemfile.lock", "pipeline.yml",
+    "azure-pipelines.yml", ".gitignore", "tsconfig.json", "webpack.config.js",
+    "vite.config.js", "vite.config.ts", "jest.config.js", "eslint.config.js",
+    "vitest.config.ts", "tsconfig.json",
+}
+
+
+def _filter_important_files(rel_fnames) -> list:
+    """Kembalikan file penting (README/Makefile/LICENSE/dll) yang ada di repo.
+
+    File penting selalu disertakan dalam repo map walau rank PageRank-nya
+    rendah, karena memberi konteks proyek (dokumentasi, build config).
+    """
+    important = []
+    for rel in rel_fnames:
+        base = os.path.basename(rel).lower()
+        if base in _IMPORTANT_FILENAMES or rel.lower() in _IMPORTANT_FILENAMES:
+            important.append(rel)
+    return important
+
+
+def _preview_text(root: str, rel: str, max_lines: int = 6, max_chars: int = 120) -> list:
+    """Ambil preview baris-baris pertama file (untuk file penting tanpa simbol)."""
+    try:
+        full = os.path.join(root, rel)
+        with open(full, "r", encoding="utf-8", errors="replace") as f:
+            lines = []
+            for i, ln in enumerate(f):
+                if i >= max_lines:
+                    break
+                ln = ln.rstrip("\n")[:max_chars]
+                if ln.strip():
+                    lines.append(ln)
+            return lines
+    except Exception:
+        return []
+
+
 def _iter_source_files(root: str, max_files: int = 2000):
     count = 0
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".")]
         for fn in filenames:
             ext = os.path.splitext(fn)[1]
+            base_lower = fn.lower()
             if ext in EXT_LANG:
                 full = os.path.join(dirpath, fn)
                 rel = os.path.relpath(full, root)
                 yield rel, full, EXT_LANG[ext]
                 count += 1
-                if count >= max_files:
-                    return
+            elif base_lower in _IMPORTANT_FILENAMES:
+                # File penting (README/Makefile/LICENSE/dll) ikut dihasilkan
+                # walau tanpa ekstensi bahasa, supaya P3 (filter_important_files)
+                # benar-benar bisa memasukkannya ke map.
+                full = os.path.join(dirpath, fn)
+                rel = os.path.relpath(full, root)
+                yield rel, full, None
+                count += 1
+            if count >= max_files:
+                return
 
 
 def _extract_defs_treesitter(path: str, lang: str, source: bytes):
     try:
+        # BaseException: pyo3 PanicException (panic Rust) bukan Exception.
         parser = _get_parser(lang)
-    except Exception:
+    except BaseException:
         return None  # bahasa tidak didukung grammar terinstall
     try:
         tree = parser.parse(source)
-    except Exception:
+    except BaseException:
         return None
 
     defs = []
@@ -347,6 +527,38 @@ def _extract_defs_treesitter(path: str, lang: str, source: bytes):
     return defs
 
 
+def _collect_identifiers_treesitter(path: str, lang: str, source: bytes):
+    """Kumpulkan semua nama identifier yang muncul di AST (referensi potensial).
+
+    Lebih akurat daripada regex `\\bname\\b` scan karena tidak menangkap nama
+    yang kebetulan muncul di dalam string literal / komentar. Mengembalikan
+    set nama, atau None kalau grammar tak tersedia (pemanggil fallback regex).
+    """
+    if not lang:
+        return set()  # file penting tanpa bahasa: tidak ada identifier AST
+    try:
+        parser = _get_parser(lang)
+    except BaseException:
+        return None
+    try:
+        tree = parser.parse(source)
+    except BaseException:
+        return None
+    src_text = source.decode("utf-8", errors="replace")
+    idents = set()
+
+    def _walk(node):
+        if "identifier" in node.type:
+            txt = src_text[node.start_byte:node.end_byte]
+            if txt and txt.isidentifier():
+                idents.add(txt)
+        for child in node.children:
+            _walk(child)
+
+    _walk(tree.root_node)
+    return idents
+
+
 def _extract_defs_regex(path: str, lang: str, source_text: str):
     defs = []
     patterns = []
@@ -379,6 +591,10 @@ def _extract_defs_regex(path: str, lang: str, source_text: str):
 
 def extract_defs(full_path: str, lang: str):
     """Ekstrak daftar definisi simbol dari satu file. Mengembalikan list of dict."""
+    if not lang:
+        # File penting (README/Makefile/LICENSE/dll) tanpa bahasa: tidak punya
+        # definisi simbol, tapi tetap bisa masuk map sebagai file berkonteks.
+        return []
     try:
         with open(full_path, "rb") as f:
             raw = f.read()
@@ -427,9 +643,213 @@ def outline_for_file(full_path: str, workdir: str, db_path: str = None) -> str:
     return outline
 
 
+# ---------------------------------------------------------------------------
+# Snippet konteks AST (poor-man's LSP) — dipakai tool 'snippet' & 'check'
+# ---------------------------------------------------------------------------
 
-def _power_iteration_pagerank(nodes, edges, damping=0.85, iters=50):
-    """edges: dict[(src, dst)] -> weight. Mengembalikan dict node->skor."""
+def snippet_for_position(full_path: str, line: int, radius: int = 5) -> str:
+    """Ambil snippet konteks di sekitar posisi `line` (1-based) pada file.
+
+    Dengan tree-sitter (kalau tersedia): cari node AST terkecil yang memuat
+    posisi tsb via named_descendant_for_point_range, lalu naik ke node pemilik
+    terluar yang masih masuk akal (fungsi/class/metode, maks ~60 baris),
+    ekstrak nama simbol pemilik, render 5-15 baris konteks + header.
+    Fallback (tanpa tree-sitter / grammar tak tersedia): render baris
+    [line-radius, line+radius] polos.
+
+    Tidak pernah melempar exception — selalu kembalikan string ber-format.
+    """
+    try:
+        with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except Exception as e:  # noqa: BLE001
+        return f"[snippet] Gagal membaca {full_path}: {e}"
+    if not lines:
+        return "[snippet] (file kosong)"
+    try:
+        line = max(1, int(line))
+    except (TypeError, ValueError):
+        line = 1
+
+    if _TS_AVAILABLE:
+        s = _snippet_via_treesitter(full_path, lines, line, radius)
+        if s:
+            return s
+
+    # Fallback regex/baris: ambil baris sekitar posisi.
+    lo = max(0, line - 1 - radius)
+    hi = min(len(lines), line - 1 + radius + 1)
+    ctx = "\n".join(f"{i + 1:6d}\t{lines[i]}" for i in range(lo, hi))
+    return f"[snippet] {os.path.basename(full_path)} (fallback, sekitar baris {line}):\n{ctx}"
+
+
+# ---------------------------------------------------------------------------
+# Cache tree-sitter + incremental parse (P3)
+# ---------------------------------------------------------------------------
+# Simpan Tree hasil parse per (path, hash konten) supaya edit berikutnya bisa
+# re-parse HANYA bagian yang berubah via tree.edit() + parser.parse(new_src,
+# old_tree) — jauh lebih cepat daripada parse penuh untuk file besar di loop
+# auto-check pasca-edit. Cache dibatasi ukurannya (LRU sederhana).
+_ts_tree_cache: dict = {}          # path -> (content_hash, src_bytes, Tree)
+_ts_tree_cache_order: list = []    # path, urutan akses untuk LRU
+_TS_TREE_CACHE_MAX = 64
+
+
+def _tree_edit(tree, old_src: bytes, new_src: bytes) -> None:
+    """Terapkan perbedaan byte old->new ke tree lama (incremental).
+
+    py-tree-sitter 0.25+ menyediakan Tree.edit(start_byte, old_end_byte,
+    new_end_byte). Mari kita hitung titik beda pertama & terakhir dari dua
+    buffer, lalu panggil tree.edit. Kalau API tak tersedia (versi lama),
+    kita diamkan (parse penuh akan dipakai sebagai fallback).
+    """
+    # cari posisi byte pertama yang berbeda
+    n = min(len(old_src), len(new_src))
+    start = 0
+    while start < n and old_src[start] == new_src[start]:
+        start += 1
+    # cari posisi byte terakhir yang berbeda (dari belakang)
+    old_end = len(old_src)
+    new_end = len(new_src)
+    while (old_end > start and new_end > start
+           and old_src[old_end - 1] == new_src[new_end - 1]):
+        old_end -= 1
+        new_end -= 1
+    if start == old_end and start == new_end:
+        return  # tidak ada perubahan
+    edit = getattr(tree, "edit", None)
+    if edit is None:
+        return
+    try:
+        edit(start, old_end, new_end)
+    except Exception:
+        pass
+
+
+def parse_with_cache(full_path: str, lang: str) -> tuple:
+    """Parse file dengan tree-sitter, pakai incremental bila ada cache.
+
+    Mengembalikan (tree, src_bytes, src_text). Kalau tree-sitter tidak
+    tersedia / grammar tak ada, mengembalikan (None, None, None).
+    """
+    if not _TS_AVAILABLE:
+        return None, None, None
+    try:
+        # Catatan: pyo3 PanicException (panic Rust, mis. rustls-platform-verifier
+        # di Termux/Android) adalah BaseException, BUKAN Exception — jadi kita
+        # tangkap BaseException agar get_parser yang panic tidak crash garwa.
+        parser = _get_parser(lang)
+    except BaseException:
+        return None, None, None
+    try:
+        with open(full_path, "rb") as f:
+            src = f.read()
+    except Exception:
+        return None, None, None
+
+    import hashlib
+    h = hashlib.sha256(src).hexdigest()
+    cached = _ts_tree_cache.get(full_path)
+    if cached and cached[0] == h:
+        # konten sama persis -> pakai tree lama (tidak perlu parse ulang)
+        return cached[2], src, src.decode("utf-8", errors="replace")
+
+    try:
+        if cached:
+            # konten berubah -> incremental parse: edit tree lama agar bisa
+            # dipakai sebagai hint oleh parser.parse(new_src, old_tree).
+            _tree_edit(cached[2], cached[1], src)
+            tree = parser.parse(src, cached[2])
+        else:
+            tree = parser.parse(src)
+    except BaseException:
+        try:
+            tree = parser.parse(src)  # fallback parse penuh
+        except BaseException:
+            return None, None, None  # tree-sitter rusak -> fallback regex
+
+    # simpan cache (LRU sederhana)
+    _ts_tree_cache[full_path] = (h, src, tree)
+    if full_path in _ts_tree_cache_order:
+        _ts_tree_cache_order.remove(full_path)
+    _ts_tree_cache_order.append(full_path)
+    while len(_ts_tree_cache_order) > _TS_TREE_CACHE_MAX:
+        evict = _ts_tree_cache_order.pop(0)
+        _ts_tree_cache.pop(evict, None)
+
+    return tree, src, src.decode("utf-8", errors="replace")
+
+
+def invalidate_tree_cache(full_path: str) -> None:
+    """Buang cache tree-sitter untuk satu path (dipanggil setelah write/edit)."""
+    _ts_tree_cache.pop(full_path, None)
+    if full_path in _ts_tree_cache_order:
+        _ts_tree_cache_order.remove(full_path)
+
+
+def _node_name(node, src_text: str) -> str:
+    """Ekstrak nama simbol dari node AST (field name/identifier/declarator)."""
+    for field in NAME_FIELDS:
+        child = node.child_by_field_name(field)
+        if child is not None:
+            return src_text[child.start_byte:child.end_byte]
+    for child in node.named_children:
+        if child.type in ("identifier", "name", "field_identifier", "type_identifier"):
+            return src_text[child.start_byte:child.end_byte]
+    return ""
+
+
+def _snippet_via_treesitter(full_path: str, lines: list, line: int, radius: int) -> str:
+    """Snippet berbasis AST pakai tree-sitter. '' kalau gagal/tak tersedia."""
+    try:
+        ext = os.path.splitext(full_path)[1]
+        lang = EXT_LANG.get(ext)
+        if not lang:
+            return ""
+        tree, _src, src_text = parse_with_cache(full_path, lang)
+        if tree is None:
+            return ""
+        root = tree.root_node
+
+        row = line - 1
+        col_hi = max(len(lines[row]) if 0 <= row < len(lines) else 0, 1)
+        node = root.named_descendant_for_point_range((row, 0), (row, col_hi))
+        if node is None:
+            return ""
+
+        # Naik ke node pemilik terluar yang masih masuk akal (fungsi/class/def).
+        owner = node
+        while (owner.parent is not None
+               and owner.parent.start_point[0] <= row <= owner.parent.end_point[0]
+               and (owner.parent.end_point[0] - owner.parent.start_point[0]) <= 60):
+            owner = owner.parent
+            if owner.parent is None or owner.type in ("module", "translation_unit", "program", "source_file"):
+                break
+
+        start_r = max(0, owner.start_point[0])
+        end_r = min(len(lines) - 1, owner.end_point[0])
+        if end_r - start_r > 15:
+            # owner terlalu panjang (file/modul) -> batasi ke sekitar error
+            start_r = max(0, row - radius)
+            end_r = min(len(lines) - 1, row + radius)
+
+        ctx = "\n".join(f"{i + 1:6d}\t{lines[i]}" for i in range(start_r, end_r + 1))
+        name = _node_name(owner, src_text)
+        name_part = f" '{name}'" if name else ""
+        return (f"[snippet] {os.path.basename(full_path)} — {owner.type}{name_part} "
+                f"(baris {start_r + 1}-{end_r + 1}):\n{ctx}")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _power_iteration_pagerank(nodes, edges, damping=0.85, iters=50,
+                              personalization=None, dangling=None):
+    """Power-iteration PageRank. edges: dict[(src, dst)] -> weight.
+
+    personalization: dict node->bobot personalisasi (default 1/n per node,
+    seperti nx.pagerank). dangling: dict node->distribusi untuk node tanpa
+    out-edge (default = personalization). Mengembalikan dict node->skor.
+    """
     n = len(nodes)
     if n == 0:
         return {}
@@ -442,36 +862,68 @@ def _power_iteration_pagerank(nodes, edges, damping=0.85, iters=50):
         out_weight[src] += w
         adj[dst].append((src, w))
 
+    # Personalization: default 1/n per node (konsisten nx.pagerank).
+    if personalization:
+        pers_sum = sum(personalization.values())
+        if pers_sum <= 0:
+            pers = {node: 1.0 / n for node in nodes}
+        else:
+            pers = {node: personalization.get(node, 0.0) / pers_sum for node in nodes}
+    else:
+        pers = {node: 1.0 / n for node in nodes}
+
+    # Dangling: node tanpa out-edge mendistribusikan rank ke pers (default).
+    if dangling is None:
+        dangling = pers
+
     rank = {node: 1.0 / n for node in nodes}
-    base = (1.0 - damping) / n
+    base = (1.0 - damping)
+
+    # Precompute dangling sum (total rank node tanpa out-edge).
+    dangling_nodes = [node for node in nodes if out_weight[node] <= 0]
 
     for _ in range(iters):
         new_rank = {}
+        dangling_sum = sum(rank[node] for node in dangling_nodes)
         for node in nodes:
             incoming = 0.0
             for src, w in adj.get(node, []):
                 if out_weight[src] > 0:
                     incoming += rank[src] * (w / out_weight[src])
-            new_rank[node] = base + damping * incoming
-
+            # Personalization teleport + dangling redistribution.
+            new_rank[node] = (base * pers[node]) + damping * (
+                incoming + dangling_sum * dangling.get(node, 0.0)
+            )
         rank = new_rank
 
     return rank
 
 
 def build_graph_and_rank(root: str, personalize: set = None, max_files: int = 2000):
-    """Kembalikan (file_defs: dict[rel_path]->list[def], ranks: dict[rel_path]->float)."""
+    """Kembalikan (file_defs, file_refs, ranked_definitions, ranks).
+
+    - file_defs: dict[rel_path] -> list[def]
+    - file_refs: dict[rel_path] -> set[nama identifier yang dirujuk]
+    - ranked_definitions: list[(rel_path, ident, rank_skor)] terurut menurun
+    - ranks: dict[rel_path] -> float (skor PageRank file)
+
+    Graph dibangun dari references AST (bukan regex \\bname\\b scan) sehingga
+    lebih akurat: nama yang kebetulan muncul di string/komentar tidak dihitung.
+    Personalization memberi bobot ekstra pada file yang sedang 'hangat'
+    (baru dibaca/diedit) dan pada file yang dirujuk dari file hangat.
+    """
     file_defs = {}
-    def_owner = {}  # identifier_name -> rel_path pemilik definisi (yang paling awal ditemukan)
+    file_refs = {}
+    def_owner = {}  # identifier_name -> rel_path pemilik definisi (yang paling awal)
     file_text = {}
 
     for rel, full, lang in _iter_source_files(root, max_files=max_files):
         try:
-            with open(full, "r", encoding="utf-8", errors="replace") as f:
-                text = f.read()
+            with open(full, "rb") as f:
+                raw = f.read()
         except Exception:
             continue
-        file_text[rel] = text
+        file_text[rel] = raw
         defs = extract_defs(full, lang)
         file_defs[rel] = defs
         for d in defs:
@@ -479,55 +931,192 @@ def build_graph_and_rank(root: str, personalize: set = None, max_files: int = 20
             if len(name) >= 3 and name not in def_owner:
                 def_owner[name] = rel
 
+        # References via AST (lebih akurat), fallback ke identifier regex scan.
+        refs = _collect_identifiers_treesitter(full, lang, raw)
+        if refs is None:
+            text = raw.decode("utf-8", errors="replace")
+            refs = set(re.findall(r"\b[A-Za-z_]\w{2,}\b", text))
+        file_refs[rel] = refs
+
     nodes = list(file_defs.keys())
     edges = defaultdict(float)
 
-    for rel, text in file_text.items():
-        for name, owner in def_owner.items():
-            if owner == rel:
+    # Bobot multiplier untuk identifier (mirip Aider): snake/kebab/camel case
+    # panjang lebih informatif; underscore-prefix (private) diturunkan.
+    def _ident_mul(name: str) -> float:
+        mul = 1.0
+        is_snake = ("_" in name) and any(c.isalpha() for c in name)
+        is_kebab = ("-" in name) and any(c.isalpha() for c in name)
+        is_camel = any(c.isupper() for c in name) and any(c.islower() for c in name)
+        if (is_snake or is_kebab or is_camel) and len(name) >= 8:
+            mul *= 10
+        if name.startswith("_"):
+            mul *= 0.1
+        return mul
+
+    for rel, refs in file_refs.items():
+        for name in refs:
+            owner = def_owner.get(name)
+            if owner is None or owner == rel:
                 continue
+            # Bobot: multiplier identitas + personalization + sqrt frekuensi.
+            mul = _ident_mul(name)
+            if personalize and rel in personalize:
+                mul *= 10.0
+            edges[(rel, owner)] += mul
 
-            if re.search(r"\b" + re.escape(name) + r"\b", text):
-                weight = 10.0 if (personalize and rel in personalize) else 1.0
-                edges[(rel, owner)] += weight
+    # Personalization: file hangat + file yang dirujuk dari file hangat.
+    personalization = {}
+    if personalize:
+        for rel in nodes:
+            if rel in personalize:
+                personalization[rel] = personalization.get(rel, 0.0) + 100.0
+        # File yang dirujuk dari file hangat ikut naik.
+        for rel in personalize:
+            for name in file_refs.get(rel, set()):
+                owner = def_owner.get(name)
+                if owner and owner != rel:
+                    personalization[owner] = personalization.get(owner, 0.0) + 10.0
 
-    ranks = _power_iteration_pagerank(nodes, edges)
-    return file_defs, ranks
+    ranks = _power_iteration_pagerank(
+        nodes, edges, personalization=personalization or None
+    )
+
+    # Distribusi rank ke definisi (mirip Aider): dari tiap node, sebarkan rank
+    # ke out-edges sesuai proporsi bobot. ranked_definitions = list[(dst, ident, skor)].
+    ranked_definitions = defaultdict(float)
+    for (src, dst), w in edges.items():
+        total_out = sum(
+            ww for (ss, dd), ww in edges.items() if ss == src
+        )
+        if total_out <= 0:
+            continue
+        src_rank = ranks.get(src, 0.0)
+        ident = next(
+            (name for name, owner in def_owner.items()
+             if owner == dst and name in file_refs.get(src, set())),
+            None,
+        )
+        if ident is None:
+            continue
+        ranked_definitions[(dst, ident)] += src_rank * w / total_out
+
+    ranked_definitions = sorted(
+        ranked_definitions.items(), reverse=True, key=lambda x: (x[1], x[0])
+    )
+    # Bentuk list[(rel, ident, skor)]
+    ranked_definitions = [(rel, ident, skor) for (rel, ident), skor in ranked_definitions]
+
+    return file_defs, file_refs, ranked_definitions, ranks
 
 
 def generate(root: str, token_budget: int = 1024, personalize_files=None, max_files: int = 2000) -> str:
     """Hasilkan repo map dalam bentuk teks, dibatasi token_budget (estimasi kasar
     4 char/token). personalize_files: set path relatif file yang lagi 'hangat'
-    (baru dibaca/diedit) supaya diberi bobot lebih di ranking."""
+    (baru dibaca/diedit) supaya diberi bobot lebih di ranking.
+
+    Mengikuti pendekatan Aider: (1) graph references -> PageRank dengan
+    personalization; (2) distribusi rank ke definisi; (3) binary search untuk
+    menemukan jumlah definisi optimal yang muat dalam budget; (4) file penting
+    (README/Makefile/LICENSE/dll) selalu disertakan.
+    """
     personalize = set(personalize_files or [])
-    file_defs, ranks = build_graph_and_rank(root, personalize=personalize, max_files=max_files)
+    file_defs, file_refs, ranked_definitions, ranks = build_graph_and_rank(
+        root, personalize=personalize, max_files=max_files
+    )
 
     if not file_defs:
         return "(tidak ditemukan file source yang dikenali di direktori ini)"
 
-    ranked_files = sorted(file_defs.keys(), key=lambda f: ranks.get(f, 0.0), reverse=True)
+    engine = "tree-sitter" if _TS_AVAILABLE else "regex-fallback"
+    header = f"# Repo map ({engine}, top simbol oleh relevansi/PageRank, budget ~{token_budget} token)\n"
+
+    # File penting selalu disertakan (P3): README/Makefile/LICENSE/dll.
+    important = _filter_important_files(list(file_defs.keys()))
+
+    # Bangun daftar definisi terurut berdasarkan skor rank (definisi dulu,
+    # lalu file tanpa definisi, lalu file penting yang belum masuk).
+    ordered = []
+    seen = set()
+    for rel, ident, skor in ranked_definitions:
+        key = (rel, ident)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append((rel, ident, float(skor)))
+
+    # File yang dirujuk tapi tak punya definisi ter-ranking -> tambahkan file-nya.
+    ranked_file_set = {rel for rel, _, _ in ordered}
+    for rel in sorted(file_defs.keys(), key=lambda f: ranks.get(f, 0.0), reverse=True):
+        if rel not in ranked_file_set and rel not in seen:
+            seen.add((rel, None))
+            ordered.append((rel, None, float(ranks.get(rel, 0.0))))
+
+    # File penting yang belum masuk -> tambahkan di akhir (selalu disertakan).
+    for rel in important:
+        if (rel, None) not in seen and rel not in {r for r, _, _ in ordered}:
+            seen.add((rel, None))
+            ordered.append((rel, None, 1e9))  # skor besar -> pasti masuk
 
     budget_chars = token_budget * 4
-    out_lines = []
-    used_chars = 0
-    engine = "tree-sitter" if _TS_AVAILABLE else "regex-fallback"
-    header = f"# Repo map ({engine}, top file oleh relevansi/PageRank, budget ~{token_budget} token)\n"
-    used_chars += len(header)
-    out_lines.append(header)
 
-    for rel in ranked_files:
-        defs = file_defs[rel]
-        if not defs:
-            continue
+    def _render(ordered_subset):
+        """Render daftar (rel, ident, skor) menjadi teks map. Kembalikan (teks, char_count)."""
+        out_lines = [header]
+        used_chars = len(header)
+        file_blocks = {}
+        order = []
+        for rel, ident, _skor in ordered_subset:
+            if rel not in file_blocks:
+                file_blocks[rel] = []
+                order.append(rel)
+            file_blocks[rel].append(ident)
+        for rel in order:
+            defs = file_defs.get(rel, [])
+            block_lines = [f"{rel}:"]
+            idents = [i for i in file_blocks[rel] if i is not None]
+            if idents:
+                # Tampilkan signature dari definisi yang ter-ranking.
+                by_name = {d["name"]: d for d in defs}
+                for ident in idents:
+                    d = by_name.get(ident)
+                    if d:
+                        block_lines.append(f"    {d['sig']}")
+            else:
+                # File tanpa definisi ter-ranking: tampilkan beberapa defs pertama.
+                for d in defs[:8]:
+                    block_lines.append(f"    {d['sig']}")
+                if not defs:
+                    # File penting tanpa simbol (README/LICENSE/dll): tampilkan
+                    # preview baris pertama yang informatif (P4).
+                    preview = _preview_text(root, rel)
+                    if preview:
+                        block_lines.extend(f"    {ln}" for ln in preview)
+            block = "\n".join(block_lines) + "\n"
+            if used_chars + len(block) > budget_chars and out_lines:
+                break
+            out_lines.append(block)
+            used_chars += len(block)
+        return "\n".join(out_lines).strip(), used_chars
 
-        block_lines = [f"{rel}:"]
-        for d in defs[:8]:
-            block_lines.append(f"    {d['sig']}")
-        block = "\n".join(block_lines) + "\n"
+    # Binary search (P2a): cari jumlah definisi terbaik yang muat dalam budget.
+    # Karena ordered sudah diurutkan menurun oleh rank, binary search pada
+    # jumlah item yang diambil.
+    lo, hi = 0, len(ordered)
+    best_text = ""
+    best_chars = 0
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        text, used = _render(ordered[:mid])
+        if used <= budget_chars:
+            if used > best_chars:
+                best_text = text
+                best_chars = used
+            lo = mid + 1
+        else:
+            hi = mid - 1
 
-        if used_chars + len(block) > budget_chars and out_lines:
-            break
-        out_lines.append(block)
-        used_chars += len(block)
-
-    return "\n".join(out_lines).strip()
+    if not best_text:
+        # Bahkan header saja melebihi budget? Kembalikan header minimal.
+        return header.strip()
+    return best_text

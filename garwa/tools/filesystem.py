@@ -253,7 +253,32 @@ def tool_edit_file(path: str, old_str: str, new_str: str) -> str:
             fromfile=path, tofile=path, lineterm="", n=2
         )
     )
-    return f"[OK] File diedit: {p}\n{diff[:2000]}"
+    result = f"[OK] File diedit: {p}\n{diff[:2000]}"
+
+    # P3: auto-check cepat setelah edit (poor-man's LSP). Hanya untuk bahasa
+    # yang dikenali & file yang isinya berubah sejak check terakhir (cache
+    # hash). Hasil error disisipkan supaya model langsung tahu edit-nya
+    # valid atau tidak — tanpa menunggu user menjalankan check manual.
+    try:
+        from .compile_tools import maybe_auto_check
+        auto = maybe_auto_check(p)
+        if auto and "OK —" not in auto.splitlines()[0]:
+            result += "\n\n[auto-check] setelah edit:\n" + auto
+    except Exception:
+        pass  # auto-check tidak boleh pernah menggagalkan edit
+
+    # Fitur git: auto-commit setelah edit (opsional, default OFF). Best-effort;
+    # kalau gagal (bukan repo / auto-commit nonaktif / error git) tidak pernah
+    # menggagalkan edit.
+    try:
+        from .git_tools import maybe_auto_commit
+        ac = maybe_auto_commit(path)
+        if ac:
+            result += "\n\n" + ac
+    except Exception:
+        pass  # auto-commit tidak boleh pernah menggagalkan edit
+
+    return result
 
 
 def tool_list_dir(path: str = ".") -> str:

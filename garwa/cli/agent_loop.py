@@ -2,6 +2,8 @@
 Dipecah otomatis dari cli.py (lihat cli/_state.py untuk state bersama).
 """
 import json
+import os
+import re
 import time
 
 try:
@@ -689,6 +691,23 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                     time.sleep(state.LOOP_BREAK_COOLDOWN_SECONDS)
                     _emit_summary()
                     return last_visible
+
+        # P3 poor-man's LSP: kalau tool 'check'/'snippet' gagal dan hasilnya
+        # belum memuat snippet konteks AST, sisipkan otomatis supaya model
+        # langsung melihat kode bermasalah pada iterasi berikutnya. Guard
+        # '[snippet]' mencegah duplikasi (tool_check sendiri sudah menambahkannya).
+        if name in ("check", "snippet") and _is_error and "[snippet]" not in result:
+            try:
+                from ..tools.compile_tools import snippet_for_position
+                m = re.search(r"^([^:\n]+):(\d+):", result, re.M)
+                if m:
+                    err_file = m.group(1)
+                    err_line = int(m.group(2))
+                    err_path = err_file if os.path.isabs(err_file) else os.path.join(state.WORKDIR, err_file)
+                    if os.path.isfile(err_path):
+                        result += "\n" + snippet_for_position(err_path, err_line)
+            except Exception:  # noqa: BLE001 — snippet tambahan tidak boleh crash loop
+                pass
 
         tool_result_msg = f"<tool_result>\n{result}\n</tool_result>"
         # Poin #5 rilis v0.5.0: simpan metadata tool call di kolom `meta`

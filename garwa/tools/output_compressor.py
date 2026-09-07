@@ -479,6 +479,88 @@ def _compress_linter(lines: list[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Processor compiler error (rustc / clang / gcc / javac / go build / tsc)
+# ---------------------------------------------------------------------------
+# Output compiler hampir selalu exit_code != 0. Routing utama TIDAK kompres
+# output gagal (hanya cleanup ringan) -- jadi processor ini dipanggil secara
+# eksplisit oleh routing untuk command compiler yang GAGAL, dengan mode AMAN:
+# pertahankan SEMUA baris error utama (file:line:col), summary, dan garis
+# kritis; buang hanya baris konteks visual (indentasi 4+ spasi, caret ^~,
+# garis "  |", " -->", dll.) yang redundan untuk model.
+
+_COMPILER_CMD_RE = re.compile(
+    r"\b(rustc|cargo\s+(?:check|build)|clang|g\+\+|gcc|javac|go\s+build|tsc|npx\s+tsc|node\s+--check)\b"
+)
+# Baris error utama: "file:line:col: error[E0308]: ...", "file:line: error: ...",
+# "file(line,col): error TS2322: ...", "go build ./..." dll.
+_CE_ERR_RE = re.compile(
+    r"^(?:error|warning|note|help)\b|"
+    r"^[^\s:][^:\n]*:\d+(?::\d+)?:\s*(?:error|warning)\b|"
+    r"^[^\s(]+\(\d+,\d+\):\s*(?:error|warning)\b|"
+    r"^[^\s:][^:\n]*\.go:\d+(?::\d+)?:\s|"
+    r"^\s*error\b"
+)
+_CE_VISUAL_RE = re.compile(r"^\s{2,}(\||\^|~|-->|>)\s|^\s{4,}\S|^ {2,}\d+\s*\|")
+_CE_SUMMARY_RE = re.compile(r"^error:|^warning:|^error\b|^warning\b|\berrors? (aborting|generated)|^Build FAILED|^Compilation failed|^Process exited with code")
+
+
+def _compress_compiler(lines: list[str]) -> str:
+    out: list[str] = []
+    err_count = 0
+    warn_count = 0
+    files: set[str] = set()
+    codes: dict[str, int] = {}
+    seen_first = False
+    for line in lines:
+        s = line.strip()
+        if not s:
+            continue
+        if _CE_ERR_RE.match(s):
+            out.append(line)
+            if re.search(r":\s*error\b|\berror\b", s, re.IGNORECASE):
+                err_count += 1
+            if re.search(r":\s*warning\b|\bwarning\b", s, re.IGNORECASE):
+                warn_count += 1
+            # file:line[:col] pertama dari baris (untuk kode/error code)
+            m = re.match(r"^([^:\s][^:\n]*):\d+", s)
+            if m:
+                files.add(m.group(1))
+            m = re.search(r"\b([A-Z]{1,4}\d{3,5})\b", s)
+            if m:
+                codes[m.group(1)] = codes.get(m.group(1), 0) + 1
+            if not seen_first:
+                seen_first = True
+            continue
+        # Baris kritis (summary/fatal) selalu dipertahankan
+        if _CE_SUMMARY_RE.search(s):
+            out.append(line)
+            continue
+        # Baris konteks visual (indentasi/caret) dibuang
+        if _CE_VISUAL_RE.match(line):
+            continue
+        # Baris pesan lanjutan (indentasi) yang tidak visual -> pertahankan
+        if s.startswith(("help:", "note:", "error:", "warning:", "Compiling", "Checking", "Finished", "warning: ")):
+            out.append(line)
+            continue
+        # baris lain yang tampak penting
+        if is_critical(line):
+            out.append(line)
+
+    summary: list[str] = []
+    if err_count or warn_count:
+        summary.append(f"[garwa] {err_count} error(s), {warn_count} warning(s)")
+    if files:
+        summary.append(f"[garwa] files: {', '.join(sorted(files)[:8])}")
+    if codes:
+        parts = [f"{k}:{v}" for k, v in sorted(codes.items(), key=lambda x: -x[1])]
+        summary.append(f"[garwa] codes: {', '.join(parts[:10])}")
+    result = out + summary
+    if result:
+        return "\n".join(result)
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Processor terraform apply / plan
 # ---------------------------------------------------------------------------
 
@@ -576,6 +658,24 @@ def compress_output(command: str, output: str, exit_code: int | None = None) -> 
     """
     if not output:
         return output
+
+    # Command compiler GAGAL: pakai processor compiler khusus (aman) supaya
+    # error utama (file:line:col) tetap utuh tapi konteks visual redundan
+    # dibuang. Jalankan SEBELUM early-return exit_code != 0.
+    if exit_code is not None and exit_code != 0 and _COMPILER_CMD_RE.search(command):
+        if len(output) >= MIN_INPUT_LENGTH:
+            comp = _compress_compiler(output.splitlines())
+            if comp and comp != output:
+                comp = "\n".join(_clean(comp.splitlines()))
+                missing = _missing_critical(output, comp)[:RECOVER_CRITICAL_LINES]
+                if missing:
+                    comp = "\n".join([comp, f"[garwa] {len(missing)} error line(s) recovered", *missing])
+                gain = (len(output) - len(comp)) / len(output) if len(output) > 0 else 0
+                if gain >= MIN_COMPRESSION_RATIO:
+                    return comp
+        # fallback: cleanup ringan
+        cleaned = "\n".join(_clean(output.splitlines()))
+        return cleaned if len(cleaned) < len(output) else output
 
     # Command gagal: jangan kompres agresif. Hanya strip ANSI + collapse blank.
     if exit_code is not None and exit_code != 0:

@@ -10,6 +10,9 @@ env/
 # Build artifacts / logs
 *.log
 pynacl_build.log
+.ts-wheels/
+pytest_out.txt
+pytest_out_tmp.txt
 
 # OS / editor
 .DS_Store

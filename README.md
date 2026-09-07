@@ -96,10 +96,29 @@ Dependensi Python (lihat `requirements.txt`):
 |-------|--------|--------|
 | `requests>=2.31` | ✅ Wajib | HTTP client ke server model & API |
 | `beautifulsoup4>=4.12` | ⭕ Opsional | Parsing HTML lebih akurat di `webfetch` (ada fallback regex) |
-| `tiktoken>=0.7` | ⭕ Opsional | Estimasi token lebih presisi (ada fallback ~3.5 char/token) |
-| `tree-sitter>=0.21` + `tree-sitter-language-pack>=0.2` | ⭕ Opsional | Outline simbol lebih akurat di `repo_map` (ada fallback regex) |
+| `tiktoken>=0.7` | ✅ Wajib | Penghitungan penggunaan token yang akurat (estimasi berbasis BPE, bukan perkiraan char) |
+| `tree-sitter>=0.21` + grammar (lihat di bawah) | ✅ Wajib | Outline simbol AST + tool `check`/`snippet` (poor-man's LSP) di `repo_map` (ada fallback regex bila grammar bahasa belum terpasang) |
 
-> Semua dependensi opsional punya fallback otomatis jika tidak terinstall,
+> **Grammar tree-sitter (untuk AST multi-bahasa):** Garwa memakai
+> loader berjenjang: `tree-sitter-language-pack` bila tersedia, lalu grammar
+> individual per-bahasa (`tree-sitter-python`, `tree-sitter-javascript`, dll),
+> lalu `tree_sitter_languages`, lalu regex.
+>
+> ⚠️ **Catatan arsitektur penting (Termux/Android):** `tree-sitter-language-pack`
+> (mis. 1.16.2) *panic* di Termux/Android — `get_parser()` memicu panic Rust
+> (`rustls-platform-verifier`) yang muncul sebagai `pyo3 PanicException`
+> (subclass `BaseException`). Karena itu, di perangkat tersebut grammar
+> individual yang di-build dari source (non-abi3, tanpa hide-symbols) adalah
+> **jalur andal utama**, bukan sekadar fallback. Semua pemanggilan tree-sitter
+> menangkap `BaseException` (bukan hanya `Exception`) sehingga panic tidak
+> pernah membuat Garwa crash — cukup fallback ke regex. Bangun grammar dengan:
+> `bash scripts/build_ts_grammars.sh`. Tool `check` (compiler error locator)
+> dan `snippet` (konteks AST posisi) aktif otomatis untuk file dengan grammar
+> terpasang.
+
+> `tiktoken` dan `tree-sitter` adalah **wajib** — keduanya inti dari akurasi
+> penghitungan token dan kemampuan AST (poor-man's LSP). Dependensi opsional
+> lain (mis. `beautifulsoup4`) punya fallback otomatis jika tidak terinstall,
 > jadi Garwa tetap berjalan tanpa paket tersebut.
 
 ---

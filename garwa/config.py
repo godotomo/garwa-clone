@@ -54,6 +54,8 @@ _USER_CONFIG_KEYS = (
     "reserve_for_response",
     "summarize_threshold_ratio",
     "keep_tail_messages",
+    "auto_commit",
+    "auto_commit_author",
 )
 
 
@@ -69,6 +71,8 @@ def save_user_config(
     reserve_for_response: int | None = None,
     summarize_threshold_ratio: float | None = None,
     keep_tail_messages: int | None = None,
+    auto_commit: bool | None = None,
+    auto_commit_author: str | None = None,
 ) -> None:
     """Tulis nilai konfigurasi ke file konfigurasi pengguna.
 
@@ -98,6 +102,10 @@ def save_user_config(
         cfg["summarize_threshold_ratio"] = str(float(summarize_threshold_ratio))
     if keep_tail_messages is not None:
         cfg["keep_tail_messages"] = str(int(keep_tail_messages))
+    if auto_commit is not None:
+        cfg["auto_commit"] = "1" if auto_commit else "0"
+    if auto_commit_author is not None:
+        cfg["auto_commit_author"] = auto_commit_author
     try:
         os.makedirs(os.path.dirname(USER_CONFIG_PATH), exist_ok=True)
         with open(USER_CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -182,6 +190,7 @@ def _reload_values() -> None:
     global FIRECRAWL_API_KEY, FIRECRAWL_API_URL
     global CONTEXT_WINDOW, RESERVE_FOR_RESPONSE
     global SUMMARIZE_THRESHOLD_RATIO, KEEP_TAIL_MESSAGES
+    global AUTO_COMMIT, AUTO_COMMIT_AUTHOR
 
     _USER_CFG = load_user_config()
 
@@ -239,6 +248,15 @@ def _reload_values() -> None:
         "GARWA_KEEP_TAIL_MESSAGES", _USER_CFG.get("keep_tail_messages"),
         DEFAULT_KEEP_TAIL_MESSAGES,
     )
+
+    # Auto-commit: default OFF. Diaktifkan via /auto-commit on|off.
+    _auto_raw = os.environ.get("GARWA_AUTO_COMMIT") or _USER_CFG.get("auto_commit") or "0"
+    AUTO_COMMIT = str(_auto_raw).strip().lower() in ("1", "true", "yes", "on")
+    AUTO_COMMIT_AUTHOR = (
+        os.environ.get("GARWA_AUTO_COMMIT_AUTHOR")
+        or _USER_CFG.get("auto_commit_author")
+        or ""
+    ).strip()
 
 
 def _read_int_env_or_cfg(env_name: str, cfg_value, default: int) -> int:

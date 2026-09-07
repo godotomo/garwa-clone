@@ -21,6 +21,8 @@ from .webfetch import _webfetch_accept_header, _webfetch_mime_from, _webfetch_is
 from .security_tool import tool_security_scan
 from .bash_tool import _cap_output, _bash_is_risky, _restore_terminal_mode, tool_bash
 from .repo_tools import tool_repo_map, tool_outline_file
+from .compile_tools import tool_check, tool_snippet
+from .git_tools import tool_git_status, tool_git_diff, tool_git_log, tool_git_add, tool_git_commit, tool_git_undo, tool_git_run
 from .session_tools import _require_session, tool_todo_write, tool_todo_read, tool_remember, tool_recall
 from .sub_agent import tool_spawn_agent, tool_spawn_agents_parallel
 
@@ -499,6 +501,151 @@ TOOLS = {
                     "timeout": {"type": "integer", "default": 30, "maximum": 120, "description": "timeout dalam detik"},
                 },
                 "required": ["url"],
+            },
+        },
+    },
+    "check": {
+        "handler": tool_check,
+        "destructive": False,
+        "schema": {
+            "name": "check",
+            "description": "Jalankan compiler cepat untuk satu file dan kembalikan error terstruktur (file:line:col + kode + pesan) plus snippet konteks baris error pertama. Tanpa LSP, tanpa daemon: memakai compiler lokal (python compile, rustc/clang -fsyntax-only, go build, javac, tsc). Berguna untuk memverifikasi edit sebelum lanjut.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "path file yang akan dicek"},
+                    "timeout": {"type": "integer", "default": 120, "description": "timeout detik untuk compiler (max 1800)"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    "snippet": {
+        "handler": tool_snippet,
+        "destructive": False,
+        "schema": {
+            "name": "snippet",
+            "description": "Ambil konteks AST di sekitar posisi (baris) tertentu pada sebuah file. Memakai tree-sitter bila tersedia (menemukan node terkecil + simbol pemilik); fallback: N baris di sekitar posisi. Berguna untuk melihat konteks kode di lokasi error tanpa baca seluruh file.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "path file"},
+                    "line": {"type": "integer", "description": "nomor baris (1-based)"},
+                    "radius": {"type": "integer", "default": 5, "description": "jumlah baris konteks di sekitar (default 5)"},
+                },
+                "required": ["path", "line"],
+            },
+        },
+    },
+    "git_status": {
+        "handler": tool_git_status,
+        "destructive": False,
+        "schema": {
+            "name": "git_status",
+            "description": "Tampilkan status repository git di working directory: branch, commit HEAD, file staged/modified/untracked. Membutuhkan repo git (git init dulu bila belum ada).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "description": "direktori repo (default: working directory)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    "git_diff": {
+        "handler": tool_git_diff,
+        "destructive": False,
+        "schema": {
+            "name": "git_diff",
+            "description": "Tampilkan diff perubahan di working tree (default), atau staged (--staged), atau ringkasan statistik (--stat).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "staged": {"type": "boolean", "default": False, "description": "tampilkan diff yang sudah di-stage (--cached)"},
+                    "stat": {"type": "boolean", "default": False, "description": "tampilkan ringkasan statistik, bukan diff penuh"},
+                    "cwd": {"type": "string", "description": "direktori repo (default: working directory)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    "git_log": {
+        "handler": tool_git_log,
+        "destructive": False,
+        "schema": {
+            "name": "git_log",
+            "description": "Tampilkan riwayat commit terakhir (hash, tanggal, author, pesan).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "n": {"type": "integer", "default": 15, "description": "jumlah commit yang ditampilkan (maks 100)"},
+                    "cwd": {"type": "string", "description": "direktori repo (default: working directory)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    "git_add": {
+        "handler": tool_git_add,
+        "destructive": False,
+        "schema": {
+            "name": "git_add",
+            "description": "Stage file ke index git. Tanpa argumen paths, stage semua perubahan (git add -A).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "paths": {"type": "array", "items": {"type": "string"}, "description": "daftar file/path yang di-stage (default: semua)"},
+                    "cwd": {"type": "string", "description": "direktori repo (default: working directory)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    "git_commit": {
+        "handler": tool_git_commit,
+        "destructive": False,
+        "schema": {
+            "name": "git_commit",
+            "description": "Commit perubahan yang sudah di-stage dengan pesan tertentu. Gunakan --all untuk stage semua dulu lalu commit. Pesan commit yang baik: ringkas, imperatif, deskriptif.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "description": "pesan commit"},
+                    "all": {"type": "boolean", "default": False, "description": "stage semua perubahan (git add -A) sebelum commit"},
+                    "cwd": {"type": "string", "description": "direktori repo (default: working directory)"},
+                },
+                "required": ["message"],
+            },
+        },
+    },
+    "git_undo": {
+        "handler": tool_git_undo,
+        "destructive": False,
+        "schema": {
+            "name": "git_undo",
+            "description": "Batalkan commit terakhir (soft reset ke HEAD~1). Perubahan kembali ke staging area, tidak ada file yang dihapus. Aman: menolak bila commit sudah di-push ke remote.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "description": "direktori repo (default: working directory)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    "git_run": {
+        "handler": tool_git_run,
+        "destructive": False,
+        "schema": {
+            "name": "git_run",
+            "description": "Jalankan perintah git arbitrer (mis. /git branch, /git show). Setiap argumen dipisah spasi. Perintah berbahaya (force-push, reset --hard, clean -f) ditolak.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "perintah git (tanpa awalan 'git')"},
+                    "cwd": {"type": "string", "description": "direktori repo (default: working directory)"},
+                },
+                "required": ["command"],
             },
         },
     },

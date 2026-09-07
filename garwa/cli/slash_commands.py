@@ -23,6 +23,20 @@ from ..mcp import (
     set_global_registry,
 )
 from ..tools import TOOLS
+from ..tools.git_tools import (
+    GitError,
+    git_add,
+    git_commit,
+    git_commit_all,
+    git_diff,
+    git_dirty_files,
+    git_head_commit,
+    git_log,
+    git_status,
+    git_undo,
+    _is_repo,
+    _require_repo_root,
+)
 from .colors import C
 from .colors import c
 from .skills import build_system_prompt
@@ -66,10 +80,18 @@ COMMANDS = {
     "mcp-enable": "Aktifkan/nonaktifkan server MCP: /mcp-enable <nama> [on|off]",
     "exit": "Selesai & simpan sesi (alias: /quit)",
     "quit": "Selesai & simpan sesi (alias: /exit)",
+    "git": "Jalankan perintah git arbitrer: /git <perintah> (mis. /git branch, /git show). Perintah berbahaya (force-push, reset --hard, clean -f) ditolak.",
+    "git-status": "Tampilkan status repository git (branch, file staged/modified/untracked)",
+    "git-diff": "Tampilkan diff perubahan: /git-diff [--staged] [--stat]",
+    "git-log": "Tampilkan riwayat commit terakhir: /git-log [n]",
+    "git-add": "Stage file ke git: /git-add [path...] (tanpa argumen = stage semua)",
+    "git-commit": "Commit perubahan yang sudah di-stage: /git-commit <pesan> (atau /git-commit --all <pesan> untuk stage semua dulu)",
+    "git-undo": "Batalkan commit terakhir (soft reset ke HEAD~1)",
+    "auto-commit": "Aktifkan/nonaktifkan commit otomatis setelah edit: /auto-commit on|off",
 }
 
 # Command yang butuh argumen tambahan.
-_COMMANDS_WITH_ARGS = {"resume", "api-model", "api-url", "api-key", "ctx", "reserve", "summarize-threshold", "keep-tail", "github-token", "github-max", "firecrawl-key", "news-lang", "pin", "unpin", "model", "memory"}
+_COMMANDS_WITH_ARGS = {"resume", "api-model", "api-url", "api-key", "ctx", "reserve", "summarize-threshold", "keep-tail", "github-token", "github-max", "firecrawl-key", "news-lang", "pin", "unpin", "model", "memory", "git", "git-diff", "git-log", "git-add", "git-commit"}
 
 
 def _print_help() -> None:
@@ -559,6 +581,166 @@ def _handle_mcp_enable(arg: str, args) -> dict:
     return {"action": "skip"}
 
 
+# ---------------------------------------------------------------------------
+# Slash commands git
+# ---------------------------------------------------------------------------
+
+GIT_COMMIT_SYSTEM = (
+    "Kamu adalah asisten yang menulis pesan commit git yang ringkas dan jelas. "
+    "Analisis diff berikut dan tulis SATU pesan commit (subject baris tunggal, "
+    "imperatif, maksimal ~72 karakter). Jangan tambahkan penjelasan lain, "
+    "jangan pakai markdown, jangan kutip. Fokus pada 'apa' yang berubah dan "
+    "'kenapa' secara singkat."
+)
+
+
+def _generate_commit_message(diff_text: str, args) -> str:
+    """Hasilkan pesan commit dari diff via LLM nonstream (best-effort).
+
+    Kalau LLM gagal / tidak tersedia, fallback ke pesan generik dari daftar
+    file yang berubah. Mengembalikan string pesan commit (tanpa trailing).
+    """
+    diff_text = (diff_text or "").strip()
+    if not diff_text:
+        return "update"
+
+    url = getattr(args, "url", None) or config.LLAMA_URL
+    model = getattr(args, "model", None) or config.LLAMA_MODEL
+    api_key = getattr(args, "api_key", None) or config.LLAMA_API_KEY
+
+    # Batasi diff agar tidak overflow context (potong ke tail).
+    max_chars = 12000
+    if len(diff_text) > max_chars:
+        diff_text = diff_text[-max_chars:]
+
+    try:
+        import requests
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": GIT_COMMIT_SYSTEM},
+                {"role": "user", "content": diff_text},
+            ],
+            "temperature": 0.2,
+            "stream": False,
+        }
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        resp = requests.post(url, json=payload, headers=headers, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"]
+        msg = (content or "").strip().splitlines()[0].strip()
+        if msg:
+            return msg[:200]
+    except Exception:  # noqa: BLE001 - best-effort, jangan crash
+        pass
+
+    # Fallback: daftar file yang berubah.
+    files = git_dirty_files()
+    if files:
+        return "update: " + ", ".join(files[:5])
+    return "update"
+
+
+def _handle_git_status(args, arg: str) -> None:
+    try:
+        print(git_status())
+    except GitError as e:
+        print(c(f"[git-status] {e}", C.RED))
+
+
+def _handle_git_diff(args, arg: str) -> None:
+    staged = "--staged" in arg or "--cached" in arg
+    stat = "--stat" in arg
+    try:
+        print(git_diff(staged=staged, stat=stat))
+    except GitError as e:
+        print(c(f"[git-diff] {e}", C.RED))
+
+
+def _handle_git_log(args, arg: str) -> None:
+    n = 15
+    for tok in arg.split():
+        if tok.isdigit():
+            n = int(tok)
+            break
+    try:
+        print(git_log(n=n))
+    except GitError as e:
+        print(c(f"[git-log] {e}", C.RED))
+
+
+def _handle_git_add(args, arg: str) -> None:
+    paths = [p for p in arg.split() if p.strip()]
+    try:
+        git_add(paths or None)
+        print(c("[git-add] file di-stage.", C.GREEN))
+    except GitError as e:
+        print(c(f"[git-add] {e}", C.RED))
+
+
+def _handle_git_commit(args, arg: str) -> None:
+    # Dukungan /git-commit (pesan manual) dan /git-commit (AI) dan
+    # /git-commit --all <pesan>.
+    if not _is_repo():
+        print(c("[git-commit] bukan repository git.", C.RED))
+        return
+
+    message = arg.strip()
+    if message.startswith("--all"):
+        message = message[len("--all"):].strip()
+
+    # Cek apakah ada perubahan yang belum di-stage.
+    dirty = git_dirty_files()
+    if not dirty:
+        print(c("[git-commit] tidak ada perubahan untuk di-commit.", C.DIM))
+        return
+
+    # Kalau tidak ada pesan -> generate AI dari diff working tree.
+    if not message:
+        diff_text = git_diff()
+        message = _generate_commit_message(diff_text, args)
+        print(c(f"[git-commit] pesan AI: {message}", C.DIM))
+
+    # Selalu stage semua lalu commit (perilaku /commit aider).
+    try:
+        result = git_commit_all(message)
+        print(c(f"[git-commit] {result}", C.GREEN))
+    except GitError as e:
+        print(c(f"[git-commit] {e}", C.RED))
+
+
+def _handle_git_undo(args, arg: str) -> None:
+    try:
+        print(c(f"[git-undo] {git_undo()}", C.GREEN))
+    except GitError as e:
+        print(c(f"[git-undo] {e}", C.RED))
+
+
+def _handle_git(args, arg: str) -> None:
+    from ..tools.git_tools import tool_git_run
+    print(tool_git_run(arg))
+
+
+def _handle_auto_commit(args, arg: str) -> None:
+    flag = arg.strip().lower()
+    if flag in ("on", "1", "true", "yes"):
+        enabled = True
+    elif flag in ("off", "0", "false", "no"):
+        enabled = False
+    else:
+        print(c("[auto-commit] gunakan: /auto-commit on|off", C.YELLOW))
+        return
+    config.save_user_config(auto_commit=enabled)
+    config._reload_values()
+    status = "AKTIF" if enabled else "nonaktif"
+    print(c(f"[auto-commit] commit otomatis setelah edit sekarang {status}.", C.GREEN))
+    if enabled:
+        print(c("[auto-commit] setiap edit yang sukses akan di-commit otomatis dengan pesan AI.", C.DIM))
+
+
 def handle_slash_command(cmd_line: str, args, session_id: str, system_content: str) -> dict:
     """Proses satu baris slash-command.
 
@@ -879,6 +1061,38 @@ def handle_slash_command(cmd_line: str, args, session_id: str, system_content: s
 
     if name == "export":
         _handle_export(args, session_id)
+        return {"action": "skip"}
+
+    if name == "git-status":
+        _handle_git_status(args, arg)
+        return {"action": "skip"}
+
+    if name == "git-diff":
+        _handle_git_diff(args, arg)
+        return {"action": "skip"}
+
+    if name == "git-log":
+        _handle_git_log(args, arg)
+        return {"action": "skip"}
+
+    if name == "git-add":
+        _handle_git_add(args, arg)
+        return {"action": "skip"}
+
+    if name == "git-commit":
+        _handle_git_commit(args, arg)
+        return {"action": "skip"}
+
+    if name == "git-undo":
+        _handle_git_undo(args, arg)
+        return {"action": "skip"}
+
+    if name == "git":
+        _handle_git(args, arg)
+        return {"action": "skip"}
+
+    if name == "auto-commit":
+        _handle_auto_commit(args, arg)
         return {"action": "skip"}
 
     if name == "new":
