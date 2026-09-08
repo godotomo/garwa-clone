@@ -92,6 +92,15 @@ CREATE TABLE IF NOT EXISTS file_cache (
     updated_at  REAL NOT NULL,
     UNIQUE(workdir, path)
 );
+
+-- Pemetaan chat Telegram -> sesi Garwa. Dipakai oleh gateway Telegram
+-- (garwa/telegram_gateway.py) supaya tiap chat punya riwayat percakapan
+-- sendiri (session_id terpisah), dan bisa di-resume antar sesi bot.
+CREATE TABLE IF NOT EXISTS telegram_bindings (
+    chat_id     TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    updated_at  REAL NOT NULL
+);
 """
 
 
@@ -497,3 +506,37 @@ def set_cached_outline(db_path: str, workdir: str, path: str, mtime: float, size
             "outline=excluded.outline, lang=excluded.lang, updated_at=excluded.updated_at",
             (workdir, path, mtime, size, outline, lang, now),
         )
+
+
+# ---------------------------------------------------------------------------
+# Binding chat Telegram -> sesi Garwa (dipakai gateway Telegram)
+# ---------------------------------------------------------------------------
+def get_telegram_binding(db_path: str, chat_id: str):
+    """Ambil binding chat_id -> session_id. Return dict atau None."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM telegram_bindings WHERE chat_id = ?", (str(chat_id),)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def set_telegram_binding(db_path: str, chat_id: str, session_id: str):
+    """Simpan (atau perbarui) binding chat_id -> session_id."""
+    now = time.time()
+    with connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO telegram_bindings (chat_id, session_id, updated_at) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(chat_id) DO UPDATE SET session_id=excluded.session_id, "
+            "updated_at=excluded.updated_at",
+            (str(chat_id), session_id, now),
+        )
+
+
+def delete_telegram_binding(db_path: str, chat_id: str) -> bool:
+    """Hapus binding satu chat. Return True kalau ada baris terhapus."""
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "DELETE FROM telegram_bindings WHERE chat_id = ?", (str(chat_id),)
+        )
+        return cur.rowcount > 0

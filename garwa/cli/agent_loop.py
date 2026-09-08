@@ -161,6 +161,12 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
 
     for _ in range(args.max_tool_iters):
         _iteration_count += 1
+        # Interrupt (mis. /stop dari gateway Telegram): hentikan giliran
+        # secepatnya tanpa mematikan proses. Flag dibersihkan oleh caller.
+        if state.interrupt_requested(session_id):
+            print(c("  ⏹ interrupt diterima -- menghentikan giliran.", C.YELLOW))
+            dbmod.touch_session(args.db_path, session_id)
+            return last_visible
         print(c("─" * 60, C.DIM))
         attempt_budget = args.context_window
         messages = _build_context_messages(attempt_budget)

@@ -113,3 +113,27 @@ def test_agent_loop_injects_snippet_on_check_error(fake_llm, env):
     assert "error" in combined.lower()
     # snippet konteks AST disisipkan (dari tool_check atau guard loop)
     assert "[snippet]" in combined or "def foo(:" in combined
+
+
+def test_agent_loop_stops_on_interrupt(env, monkeypatch):
+    """Interrupt (mis. /stop dari gateway) menghentikan agent loop secepatnya
+    tanpa memanggil model, dan membersihkan via clear_interrupt."""
+    args, db_path, sid = env
+    called = {"n": 0}
+
+    def boom(*a, **k):
+        called["n"] += 1
+        return "tidak boleh dipanggil"
+
+    monkeypatch.setattr("garwa.cli.agent_loop.call_llama_server", boom)
+    # Tandai interrupt untuk sesi ini sebelum loop dimulai.
+    state.request_interrupt(sid)
+    assert state.interrupt_requested(sid) is True
+    al.run_agent_loop(args, sid, "test system")
+    # Loop berhenti di iterasi pertama sebelum memanggil model.
+    assert called["n"] == 0
+    # Flag tidak otomatis dibersihkan oleh loop (caller yang membersihkan),
+    # tapi kita pastikan masih bisa dibersihkan.
+    state.clear_interrupt(sid)
+    assert state.interrupt_requested(sid) is False
+    state._INTERRUPT_FLAGS.clear()

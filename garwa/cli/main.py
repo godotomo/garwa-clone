@@ -258,6 +258,12 @@ def main():
     parser.add_argument("--overnight-log", default=None,
                          help="Path file log untuk mode --overnight (default: "
                               "<workdir>/.garwa_overnight/overnight_<timestamp>.log)")
+    parser.add_argument("--bot", action="store_true",
+                         help="Mode gateway Telegram: jalankan agent Garwa dari chat Telegram "
+                              "(polling sekali lalu keluar; pakai --forever untuk polling terus). "
+                              "Otomatis mengaktifkan --auto-approve.")
+    parser.add_argument("--forever", action="store_true",
+                         help="Mode --bot: polling getUpdates terus-menerus (long-running).")
     parser.add_argument("--stop-on-error", action="store_true",
                          help="Mode --overnight: hentikan seluruh antrian task begitu satu task "
                               "gagal, alih-alih lanjut ke task berikutnya (default: lanjut).")
@@ -282,15 +288,20 @@ def main():
         print(c("[ERROR] --auto dan --overnight tidak bisa dipakai bersamaan.", C.RED))
         sys.exit(2)
 
+    if args.bot and (args.auto or args.overnight):
+        print(c("[ERROR] --bot tidak bisa dipakai bersamaan dengan --auto/--overnight.", C.RED))
+        sys.exit(2)
+
     if args.max_image_mb <= 0:
         print(c("[ERROR] --max-image-mb harus lebih besar dari 0.", C.RED))
         sys.exit(2)
     state.MAX_VISION_IMAGE_BYTES = int(args.max_image_mb * 1024 * 1024)
 
-    if (args.auto or args.overnight) and not args.auto_approve:
+    if (args.auto or args.overnight or args.bot) and not args.auto_approve:
         print(c(
-            f"[INFO] Mode {'--auto' if args.auto else '--overnight'} aktif -> --auto-approve "
-            "otomatis diaktifkan (tidak ada manusia untuk menjawab konfirmasi).",
+            f"[INFO] Mode {'--bot' if args.bot else ('--auto' if args.auto else '--overnight')} "
+            "aktif -> --auto-approve otomatis diaktifkan (tidak ada manusia untuk menjawab "
+            "konfirmasi).",
             C.YELLOW,
         ))
         args.auto_approve = True
@@ -340,6 +351,17 @@ def main():
             title = r["title"] or "(tanpa judul)"
             print(f"{r['id']}  [{status}]  {title}")
         _close_mcp(_mcp_registry)
+        return
+
+    if args.bot:
+        # Gateway Telegram: lazy-import (konsisten pola lazy-load codebase,
+        # menghindari beban import requests + cli untuk pemakai CLI biasa).
+        from ..telegram_gateway import run_gateway
+
+        try:
+            run_gateway(args, forever=args.forever)
+        finally:
+            _close_mcp(_mcp_registry)
         return
 
     model_id = None

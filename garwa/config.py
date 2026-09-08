@@ -21,6 +21,37 @@ import os
 USER_CONFIG_PATH = os.path.expanduser("~/.config/garwa/config")
 
 
+def _load_dotenv() -> None:
+    """Muat variabel dari file `.env` di root proyek (jika ada) ke os.environ.
+
+    Dipanggil sekali saat import. TIDAK menimpa env yang sudah ada (prioritas:
+    env proses > .env). Dipakai agar fitur email/telegram/cron Garwa bisa
+    membaca kredensial yang tersimpan di `.env` tanpa harus export manual.
+    Format: satu `KEY=value` per baris; baris '#'/kosong diabaikan; tanda
+    kutip pembungkus nilai dibuang.
+    """
+    # Root proyek = parent dari direktori paket `garwa` (garwa/config.py ->
+    # garwa/ -> root).
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env_path = os.path.join(root, ".env")
+    try:
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k:
+                    os.environ.setdefault(k, v)
+    except (FileNotFoundError, OSError):
+        pass
+
+
+_load_dotenv()
+
+
 def load_user_config() -> dict:
     """Baca file konfigurasi pengguna (~/.config/garwa/config).
 
@@ -191,6 +222,9 @@ def _reload_values() -> None:
     global CONTEXT_WINDOW, RESERVE_FOR_RESPONSE
     global SUMMARIZE_THRESHOLD_RATIO, KEEP_TAIL_MESSAGES
     global AUTO_COMMIT, AUTO_COMMIT_AUTHOR
+    global EMAIL_USER, EMAIL_PASS, EMAIL_RECIPIENT
+    global EMAIL_SMTP_HOST, EMAIL_SMTP_PORT, EMAIL_IMAP_HOST, EMAIL_IMAP_PORT
+    global TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_ADMIN_ID
 
     _USER_CFG = load_user_config()
 
@@ -257,6 +291,35 @@ def _reload_values() -> None:
         or _USER_CFG.get("auto_commit_author")
         or ""
     ).strip()
+
+    # --- Email (SMTP untuk kirim, IMAP untuk baca/balas) ---
+    # Prioritas: env proses > .env (dimuat oleh _load_dotenv) > kosong.
+    # Mendukung dua prefiks: `GARWA_EMAIL_*` (khusus Garwa) dan `JOB_EMAIL_*`/
+    # `EMAIL_*` (kompatibel dengan konfigurasi jobbot yang sudah ada).
+    def _pick(*names: str) -> str:
+        for n in names:
+            v = os.environ.get(n)
+            if v and v.strip():
+                return v.strip()
+        return ""
+
+    EMAIL_USER = _pick("GARWA_EMAIL_USER", "JOB_EMAIL_USER", "EMAIL_USER")
+    EMAIL_PASS = _pick("GARWA_EMAIL_PASS", "JOB_EMAIL_PASS", "EMAIL_PASS")
+    EMAIL_RECIPIENT = _pick("GARWA_EMAIL_RECIPIENT", "JOB_EMAIL_RECIPIENT", "EMAIL_RECIPIENT")
+    EMAIL_SMTP_HOST = _pick("GARWA_EMAIL_SMTP", "JOB_EMAIL_SMTP") or "smtp.gmail.com"
+    EMAIL_SMTP_PORT = _read_int_env_or_cfg("GARWA_EMAIL_SMTP_PORT", None, 587)
+    EMAIL_IMAP_HOST = _pick("GARWA_EMAIL_IMAP", "JOB_EMAIL_IMAP") or "imap.gmail.com"
+    EMAIL_IMAP_PORT = _read_int_env_or_cfg("GARWA_EMAIL_IMAP_PORT", None, 993)
+
+    # --- Telegram ---
+    TELEGRAM_TOKEN = _pick("GARWA_TELEGRAM_TOKEN", "JOB_TELEGRAM_TOKEN", "TELEGRAM_TOKEN")
+    TELEGRAM_CHAT_ID = _pick(
+        "GARWA_TELEGRAM_CHAT_ID",
+        "GARWA_TELEGRAM_CHANNEL_ID",
+        "JOB_TELEGRAM_CHANNEL_ID",
+        "TELEGRAM_CHANNEL_ID",
+    )
+    TELEGRAM_ADMIN_ID = _pick("GARWA_TELEGRAM_ADMIN_ID", "JOB_TELEGRAM_ADMIN_ID", "TELEGRAM_ADMIN_ID")
 
 
 def _read_int_env_or_cfg(env_name: str, cfg_value, default: int) -> int:

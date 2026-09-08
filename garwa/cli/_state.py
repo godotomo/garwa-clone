@@ -87,6 +87,43 @@ def reset_session_state(session_id=None):
     return s
 
 
+# Flag interrupt per-session (module-level dict, bukan ContextVar).
+#
+# Dipakai gateway Telegram untuk fitur `/stop`: membatalkan agent turn yang
+# sedang berjalan tanpa mematikan proses. Agent turn berjalan di thread worker,
+# sedangkan `/stop` diproses di thread utama gateway, jadi flag TIDAK boleh
+# disimpan di ContextVar (context tidak menular antar thread). Dict module-level
+# aman diakses lintas thread karena GIL. Key = session_id.
+_INTERRUPT_FLAGS: dict = {}
+
+
+def request_interrupt(session_id: str = None):
+    """Tandai sebuah sesi agar agent loop berhenti secepatnya.
+
+    Dipanggil dari thread mana pun (mis. gateway Telegram saat `/stop`).
+    Kalau `session_id` None, tandai sesi aktif pada context saat ini.
+    """
+    if session_id is None:
+        session_id = get_session_state().get("session_id")
+    if session_id:
+        _INTERRUPT_FLAGS[session_id] = True
+
+
+def interrupt_requested(session_id: str = None) -> bool:
+    """True kalau sesi meminta interrupt (untuk di-cek agent loop)."""
+    if session_id is None:
+        session_id = get_session_state().get("session_id")
+    return bool(session_id and _INTERRUPT_FLAGS.get(session_id))
+
+
+def clear_interrupt(session_id: str = None):
+    """Bersihkan flag interrupt sebuah sesi."""
+    if session_id is None:
+        session_id = get_session_state().get("session_id")
+    if session_id:
+        _INTERRUPT_FLAGS.pop(session_id, None)
+
+
 def _accumulate_usage(usage):
     """Akumulasi dict usage (dari respon model) ke state token sesi aktif.
 

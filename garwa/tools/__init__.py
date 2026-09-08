@@ -25,6 +25,12 @@ from .compile_tools import tool_check, tool_snippet
 from .git_tools import tool_git_status, tool_git_diff, tool_git_log, tool_git_add, tool_git_commit, tool_git_undo, tool_git_run, tool_git_branch, tool_git_blame, tool_git_show, tool_git_reset, tool_git_stash, tool_git_log_graph
 from .session_tools import _require_session, tool_todo_write, tool_todo_read, tool_remember, tool_recall
 from .sub_agent import tool_spawn_agent, tool_spawn_agents_parallel
+from .comm_tools import (
+    tool_send_email, tool_read_inbox, tool_read_email, tool_reply_email,
+    tool_send_telegram,
+    tool_schedule_task, tool_list_schedules, tool_remove_schedule,
+    tool_enable_schedule, tool_disable_schedule,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -748,6 +754,162 @@ TOOLS = {
                     "cwd": {"type": "string", "description": "direktori repo (default: working directory)"},
                 },
                 "required": [],
+            },
+        },
+    },
+    "send_email": {
+        "handler": tool_send_email,
+        "destructive": True,
+        "schema": {
+            "name": "send_email",
+            "description": "Kirim email via SMTP (default smtp.gmail.com:587 + STARTTLS). `to` opsional (fallback EMAIL_RECIPIENT dari env/.env). Membutuhkan GARWA_EMAIL_USER dan GARWA_EMAIL_PASS.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string", "description": "alamat penerima (opsional)"},
+                    "subject": {"type": "string", "description": "subjek email"},
+                    "body": {"type": "string", "description": "isi email"},
+                    "html": {"type": "boolean", "default": False, "description": "kirim body sebagai HTML"},
+                },
+                "required": ["body"],
+            },
+        },
+    },
+    "read_inbox": {
+        "handler": tool_read_inbox,
+        "destructive": False,
+        "schema": {
+            "name": "read_inbox",
+            "description": "Baca email masuk (belum dibaca) via IMAP. Mengembalikan daftar ringkas (nomor, tanggal, pengirim, subjek).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "default": 10, "description": "jumlah email maksimum"},
+                },
+                "required": [],
+            },
+        },
+    },
+    "read_email": {
+        "handler": tool_read_email,
+        "destructive": False,
+        "schema": {
+            "name": "read_email",
+            "description": "Baca isi lengkap satu email masuk (by nomor urut dari read_inbox).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "num": {"type": "string", "description": "nomor urut email"},
+                },
+                "required": ["num"],
+            },
+        },
+    },
+    "reply_email": {
+        "handler": tool_reply_email,
+        "destructive": True,
+        "schema": {
+            "name": "reply_email",
+            "description": "Balas email masuk (baca via IMAP, kirim via SMTP). `num` = nomor urut dari read_inbox.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "num": {"type": "string", "description": "nomor urut email yang dibalas"},
+                    "body": {"type": "string", "description": "isi balasan"},
+                },
+                "required": ["num", "body"],
+            },
+        },
+    },
+    "send_telegram": {
+        "handler": tool_send_telegram,
+        "destructive": True,
+        "schema": {
+            "name": "send_telegram",
+            "description": "Kirim pesan teks ke Telegram via Bot API. `chat_id` opsional (fallback TELEGRAM_CHAT_ID dari env/.env). Membutuhkan GARWA_TELEGRAM_TOKEN.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "isi pesan"},
+                    "chat_id": {"type": "string", "description": "chat/channel id tujuan (opsional)"},
+                },
+                "required": ["text"],
+            },
+        },
+    },
+    "schedule_task": {
+        "handler": tool_schedule_task,
+        "destructive": False,
+        "schema": {
+            "name": "schedule_task",
+            "description": "Daftarkan jadwal tugas berulang (cron 5-field). Persisten di DB Garwa (tabel scheduled_tasks). action: send_email | send_telegram | bash. Eksekusi nyata butuh runner (python -m garwa.tools.cron_runner).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "nama unik jadwal"},
+                    "schedule_expr": {"type": "string", "description": "cron 5-field, mis. '0 9 * * *' = tiap 09:00"},
+                    "action": {"type": "string", "enum": ["send_email", "send_telegram", "bash"], "description": "jenis aksi"},
+                    "payload": {"type": "object", "description": "argumen aksi (JSON dict): send_email={to,subject,body}; send_telegram={text,chat_id}; bash={command}"},
+                },
+                "required": ["name", "schedule_expr", "action"],
+            },
+        },
+    },
+    "list_schedules": {
+        "handler": tool_list_schedules,
+        "destructive": False,
+        "schema": {
+            "name": "list_schedules",
+            "description": "Tampilkan semua jadwal cron yang terdaftar di DB.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    "remove_schedule": {
+        "handler": tool_remove_schedule,
+        "destructive": True,
+        "schema": {
+            "name": "remove_schedule",
+            "description": "Hapus jadwal cron berdasarkan nama.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "nama jadwal yang dihapus"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    "enable_schedule": {
+        "handler": tool_enable_schedule,
+        "destructive": False,
+        "schema": {
+            "name": "enable_schedule",
+            "description": "Aktifkan kembali jadwal cron yang sebelumnya dinonaktifkan.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "nama jadwal yang diaktifkan"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    "disable_schedule": {
+        "handler": tool_disable_schedule,
+        "destructive": False,
+        "schema": {
+            "name": "disable_schedule",
+            "description": "Nonaktifkan sementara jadwal cron (tanpa menghapusnya).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "nama jadwal yang dinonaktifkan"},
+                },
+                "required": ["name"],
             },
         },
     },

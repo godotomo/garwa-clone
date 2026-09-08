@@ -25,15 +25,16 @@ natural atau mode otomatis (auto / overnight) tanpa pengawasan.
 5. [Mode Interaktif](#mode-interaktif)
 6. [Mode Auto](#mode-auto)
 7. [Mode Overnight](#mode-overnight)
-8. [Tool yang Tersedia](#tool-yang-tersedia)
-9. [Skills](#skills)
-10. [Penyimpanan Sesi & Memori](#penyimpanan-sesi--memori)
-11. [Konfigurasi (Environment Variable)](#konfigurasi-environment-variable)
-12. [Struktur Proyek](#struktur-proyek)
-13. [Pengembangan & Testing](#pengembangan--testing)
-14. [Keamanan & Sandbox](#keamanan--sandbox)
-15. [Dibuat oleh AI](#dibuat-oleh-ai)
-16. [FAQ](#faq)
+8. [Mode Telegram Gateway](#mode-telegram-gateway)
+9. [Tool yang Tersedia](#tool-yang-tersedia)
+10. [Skills](#skills)
+11. [Penyimpanan Sesi & Memori](#penyimpanan-sesi--memori)
+12. [Konfigurasi (Environment Variable)](#konfigurasi-environment-variable)
+13. [Struktur Proyek](#struktur-proyek)
+14. [Pengembangan & Testing](#pengembangan--testing)
+15. [Keamanan & Sandbox](#keamanan--sandbox)
+16. [Dibuat oleh AI](#dibuat-oleh-ai)
+17. [FAQ](#faq)
 
 ---
 
@@ -319,6 +320,10 @@ garwa [opsi]
                           Claude Desktop). Default: ~/.config/garwa/mcp.json.
                           Tool dari server MCP didaftarkan dengan prefix
                           'mcp.<server>.<tool>'.
+  --bot                   Mode gateway Telegram: jalankan agent Garwa dari chat
+                          Telegram (polling sekali lalu keluar). Otomatis
+                          mengaktifkan --auto-approve.
+  --forever               Mode --bot: polling getUpdates terus-menerus.
 ```
 
 ---
@@ -434,6 +439,126 @@ garwa --overnight --plan-file tasks.md --repeat-until-done
 - `--max-repeats`: batas jumlah pengulangan (default 50).
 - `--stop-on-error`: hentikan seluruh antrean begitu satu task gagal.
 - `--overnight-log`: path log (default `<workdir>/.garwa_overnight/overnight_<timestamp>.log`).
+
+---
+
+## Mode Telegram Gateway
+
+Jalankan Garwa dari **chat Telegram** — kirim perintah/pertanyaan, Garwa
+menjalankan agent loop (baca/tulis file, bash, git, dll) di mesin lokal, lalu
+membalas hasilnya kembali ke chat asal. Ini gateway **dua arah** (bukan hanya
+kirim notifikasi satu arah).
+
+```bash
+garwa --bot                # polling sekali lalu keluar
+garwa --bot --forever      # polling terus-menerus (long-running)
+```
+
+Saat `--bot` aktif, `--auto-approve` otomatis diaktifkan (tidak ada manusia
+untuk menjawab konfirmasi). Gunakan `--skip-server-check` jika server model
+tidak punya endpoint `/v1/models`.
+
+### Setup Telegram
+
+1. Buat bot lewat [@BotFather](https://t.me/BotFather) di Telegram untuk
+   mendapat **token bot**.
+2. Dapatkan **ID akun admin** Anda (chat_id). Cara mudah: kirim pesan ke bot
+   lalu cek via `getUpdates`, atau pakai bot seperti
+   [@userinfobot](https://t.me/userinfobot).
+3. Set kredensial (env atau `.env`):
+
+```bash
+# Token bot dari @BotFather
+export TELEGRAM_TOKEN="123456:ABC-DEF..."
+
+# ID akun Telegram yang BOLEH memerintah bot (chat_id)
+export TELEGRAM_ADMIN_ID="854200656"
+
+# Opsional: izinkan SEMUA user (hanya untuk development!)
+# export GARWA_TELEGRAM_ALLOW_ALL="true"
+```
+
+   Garwa juga menerima prefiks `GARWA_TELEGRAM_*` dan `JOB_TELEGRAM_*`
+   (kompatibel dengan konfigurasi jobbot yang sudah ada).
+
+4. Jalankan gateway:
+
+```bash
+garwa --bot --forever --skip-server-check
+```
+
+5. Di Telegram, buka bot Anda (mis. `@garwaidbot`) dan kirim perintah.
+
+### Perintah di chat bot
+
+| Perintah | Fungsi |
+|----------|--------|
+| `/start` | Mulai / tampilkan bantuan |
+| `/help` | Tampilkan bantuan |
+| `/new` | Mulai sesi percakapan baru |
+| `/status` | Info sesi saat ini (ID, judul, jumlah pesan, workdir) |
+| `/todos` | Tampilkan todo list sesi ini |
+| `/memory` | Kelola catatan proyek: `/memory list`, `/memory show <key>`, `/memory forget <key>` |
+| `/sessions` | Daftar sesi tersimpan untuk workdir ini |
+| `/model` | Lihat/ganti model aktif: `/model <nama>` |
+| `/stop` | Batalkan proses yang sedang berjalan (interrupt agent turn) |
+| `/exit` | Tutup sesi bot |
+
+Perintah slash lain (mis. `/git-status`, `/git-log`, `/api-model`, `/clear`,
+`/compact`, `/cost`, `/summary`, dll) ditangani oleh handler slash-command CLI
+Garwa yang sama dengan mode interaktif — jadi hasilnya konsisten. Hanya
+perintah slash yang **tidak dikenal** yang jatuh ke agent sebagai pesan biasa
+(mis. `/email`), supaya user tetap bisa bicara bebas dengan model.
+
+### Cara kerja
+
+- **Long polling** `getUpdates` (hanya butuh `requests`, tanpa library
+  eksternal).
+- **Allowlist admin**: hanya `TELEGRAM_ADMIN_ID` (atau `--allow-all`) yang
+  boleh memerintah bot; yang lain ditolak.
+- **Sesi per chat**: tiap chat Telegram punya session Garwa sendiri (tabel
+  `telegram_bindings` di database Garwa), jadi riwayat per-chat terpisah dan
+  bisa di-resume antar sesi bot.
+- **Busy-ack**: bot membalas `⏳ Garwa sedang memproses...` sebelum proses,
+  lalu hasil `run_agent_loop` menyusul setelah selesai.
+- **Agent turn berjalan di thread daemon** sehingga polling tetap memproses
+  update lain (termasuk `/stop`) selama sebuah turn sedang berjalan. `/stop`
+  menandai interrupt per-sesi yang dicek agent loop di tiap iterasi, jadi
+  turn berhenti secepatnya tanpa mematikan proses.
+- **Cron delivery**: saat `--bot --forever` aktif, jadwal cron (lihat
+  [Mode Cron](#mode-cron-scheduling)) ikut dieksekusi tiap menit, dan hasilnya
+  dikirim ke chat admin Telegram (bukan cuma log stdout).
+- **Tanpa `parse_mode=HTML`**: hasil agent sering mengandung karakter HTML
+  mentah (`<path>`, `<file>`, dll) yang bikin API Telegram 400 kalau
+  `parse_mode=HTML` diaktifkan, jadi pesan dikirim sebagai plain text.
+
+---
+
+## Mode Cron (Scheduling)
+
+Garwa punya **scheduler cron berbasis SQLite** (stdlib-only, ringan, robust)
+yang bisa menjadwalkan eksekusi `bash`, `send_email`, dan `send_telegram` tanpa
+proses/crontab eksternal. Saat gateway `--bot --forever` berjalan, jadwal cron
+ikut dieksekusi tiap menit, dan hasilnya dikirim ke chat admin Telegram.
+
+Fitur utama:
+
+- **Validasi ekspresi cron ketat** saat insert (modul `garwa/tools/_cron_expr.py`)
+  — menolak field di luar rentang / sintaks salah.
+- **Anti-double-run** via claim atomik (kolom `running`/`claimed_at`, stale
+  `300s`) supaya task tidak dijalankan dua kali walau ada banyak runner.
+- **Catch-up / missed-run**: kalau runner sempat mati beberapa menit, slot menit
+  yang terlewat ikut dieksekusi (dibatasi `MAX_CATCHUP_MINUTES=60`).
+- **Timeout seragam** semua aksi (bash 120s, email/telegram 60s) via thread.
+- **Retry/backoff transien** untuk `send_email`/`send_telegram`
+  (`MAX_RETRIES=3`, backoff + jitter); bash tidak di-retry.
+- **Audit trail** ke tabel `schedule_runs` (memakai koneksi yang sama untuk
+  hindari deadlock SQLite).
+- **Guard keamanan** `_DANGEROUS_BASH_RE` untuk aksi `bash` cron (pola berbahaya
+  ditolak langsung, bukan di-force).
+
+Tool terkait (dipanggil model): `schedule_task`, `list_schedules`,
+`remove_schedule`, `enable_schedule`, `disable_schedule`.
 
 ---
 
@@ -598,6 +723,10 @@ Semua variabel dibaca dari environment (lihat `garwa/config.py`):
 | `GARWA_RESERVE_FOR_RESPONSE` | `2048` | Token cadangan untuk respons |
 | `GARWA_SUMMARIZE_THRESHOLD_RATIO` | `0.2` | Rasio ambang ringkasan (0.0–1.0) |
 | `GARWA_KEEP_TAIL_MESSAGES` | `8` | Jumlah pesan akhir yang dipertahankan saat ringkas |
+| `TELEGRAM_TOKEN` | *(kosong)* | Token bot Telegram (dari @BotFather); gateway `--bot` |
+| `TELEGRAM_ADMIN_ID` | *(kosong)* | ID akun (chat_id) yang boleh memerintah bot; kosong = tolak semua |
+| `GARWA_TELEGRAM_ALLOW_ALL` | *(kosong)* | `true` = izinkan SEMUA user memerintah bot (dev only) |
+| `GARWA_TELEGRAM_OFFSET_FILE` | `~/.garwa/telegram_offset.txt` | File penanda offset polling (hindari duplikasi update) |
 
 > **Prioritas nilai:** environment variable > file config pengguna
 > (`~/.config/garwa/config`, diatur lewat slash-command `/api-model`, `/api-url`,
@@ -753,6 +882,16 @@ env > config pengguna > default.
 Gunakan `/api-key <kunci>` untuk menyimpan, atau `/api-key` tanpa argumen
 untuk menghapusnya dari `~/.config/garwa/config`. Model (`/api-model`) dan
 endpoint (`/api-url`) juga tersimpan lintas sesi di file yang sama.
+
+**Bagaimana cara memakai Garwa dari Telegram?**
+Jalankan `garwa --bot --forever` (lihat [Mode Telegram Gateway](#mode-telegram-gateway)).
+Pastikan `TELEGRAM_TOKEN` dan `TELEGRAM_ADMIN_ID` diset, lalu buka bot Anda
+di Telegram dan kirim perintah. Bot membalas hasil agent ke chat asal.
+
+**Kenapa bot tidak merespons pesan saya?**
+Kemungkinan: (1) `TELEGRAM_TOKEN` belum diset, (2) chat Anda bukan
+`TELEGRAM_ADMIN_ID` (akun lain ditolak), atau (3) gateway belum berjalan
+(`garwa --bot --forever`). Cek juga bahwa server model aktif di `LLAMA_URL`.
 
 ---
 
