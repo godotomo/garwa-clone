@@ -86,17 +86,55 @@ def _repair_unquoted_json_values(raw_json: str) -> str:
         di sini -- itu di luar cakupan pola umum model kecil yang biasanya
         memakai value sederhana (bash/ls/pwd/dst).
     """
-    def _quote(m):
-        val = m.group(2).strip()
-        if val in ("true", "false", "null") or re.fullmatch(r"-?\d+(\.\d+)?", val):
-            return m.group(1) + val + m.group(3)
-        return m.group(1) + '"' + val + '"' + m.group(3)
-
-    return re.sub(
-        r'(:\s*)([^"{}][^,{}]*?)(\s*[,}])',
-        _quote,
-        raw_json,
-    )
+    # Implementasi tokenizer state-machine (bukan regex): regex naif tidak bisa
+    # membedakan kolon STRUKTURAL (`"key": value`) dari kolon DI DALAM string
+    # value yang sudah dikutip (mis. path `"C:/Users/a"`), sehingga bisa salah
+    # mengutip value yang SUDAH dikutip dan menghasilkan JSON rusak yang tidak
+    # bisa diperbaiki fungsi lain. Tokenizer di bawah hanya mengutip bareword
+    # yang muncul di LEVEL TOP (di luar string), jadi value yang sudah dikutip
+    # dan literal true/false/null/angka tidak pernah disentuh.
+    out = []
+    i = 0
+    n = len(raw_json)
+    in_string = False
+    while i < n:
+        ch = raw_json[i]
+        if ch == '"':
+            # toggle status string (abaikan escape \\")
+            if in_string and i > 0 and raw_json[i - 1] == "\\":
+                pass  # escaped quote, tetap di dalam string
+            else:
+                in_string = not in_string
+            out.append(ch)
+            i += 1
+            continue
+        if in_string:
+            out.append(ch)
+            i += 1
+            continue
+        # Di level top: cari kolon yang diikuti bareword value.
+        if ch == ":":
+            j = i + 1
+            while j < n and raw_json[j] in " \t\r\n":
+                j += 1
+            # Value harus bareword: bukan kutip, bukan kurung kurawal, bukan
+            # spasi, bukan koma/penutup. Kalau bukan bareword, biarkan apa adanya.
+            if j < n and raw_json[j] not in '"{}[],: \t\r\n':
+                k = j
+                while k < n and raw_json[k] not in ',{} \t\r\n':
+                    k += 1
+                val = raw_json[j:k]
+                if val not in ("true", "false", "null") and not re.fullmatch(r"-?\d+(\.\d+)?", val):
+                    out.append(":")
+                    out.append(raw_json[i + 1:j])  # spasi setelah kolon
+                    out.append('"')
+                    out.append(val)
+                    out.append('"')
+                    i = k
+                    continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _repair_single_quoted_json(raw_json: str) -> str:

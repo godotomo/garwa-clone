@@ -62,6 +62,33 @@ class TestRepairUnquotedValues:
         raw = '{"ok": true, "n": 42, "x": null}'
         assert json_repair._repair_unquoted_json_values(raw) == raw
 
+    def test_does_not_double_quote_already_quoted_values(self):
+        # Bug: regex lama mengutip ulang value yang SUDAH dikutip dalam JSON
+        # campuran, menghasilkan `""bash""` yang tidak valid.
+        raw = '{"name": "bash", "command": "ls -la"}'
+        assert json_repair._repair_unquoted_json_values(raw) == raw
+
+    def test_mixed_quoted_and_unquoted_values(self):
+        # Value sudah dikutip + value bareword dalam satu objek.
+        raw = '{"name": "bash", "arguments": {"command": ls}}'
+        assert json_repair._repair_unquoted_json_values(raw) == (
+            '{"name": "bash", "arguments": {"command": "ls"}}'
+        )
+
+    def test_does_not_touch_colon_inside_quoted_string(self):
+        # Kolon di dalam string value (mis. path C:/Users/a) tidak boleh
+        # dianggap kolon struktural.
+        raw = '{"path": "C:/Users/a", "x": hello}'
+        assert json_repair._repair_unquoted_json_values(raw) == (
+            '{"path": "C:/Users/a", "x": "hello"}'
+        )
+
+    def test_quotes_nested_bareword_values(self):
+        raw = '{"nested": {"deep": {"cmd": pwd}}}'
+        assert json_repair._repair_unquoted_json_values(raw) == (
+            '{"nested": {"deep": {"cmd": "pwd"}}}'
+        )
+
 
 class TestRepairSingleQuoted:
     def test_converts_single_to_double_quotes(self):

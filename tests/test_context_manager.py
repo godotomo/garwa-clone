@@ -319,6 +319,12 @@ def test_prepare_context_messages_summarizes_instead_of_trim(db_path, session_id
     # Banyak pesan panjang + window kecil -> harus DIRINGKAS (summarize),
     # BUKAN dipotong/trim pesan mentah. Semua pesan lama harus lewat jalur
     # summarize supaya tidak ada konteks yang hilang diam-diam.
+    #
+    # Keputusan desain (per komitmen): meskipun summarize sudah berhasil,
+    # kalau total masih melebihi hard budget, pesan mentah TIDAK BOLEH
+    # di-trim/dipotong (memotong = menghilangkan konteks). Pesan dikirim
+    # apa adanya; ContextExceededError ditangani agent_loop dengan retry
+    # budget lebih ketat.
     for i in range(50):
         dbmod.add_message(db_path, session_id, "user", "kata " * 100)
 
@@ -329,14 +335,19 @@ def test_prepare_context_messages_summarizes_instead_of_trim(db_path, session_id
     msgs = cm.prepare_context_messages(
         db_path, session_id, "SYS", "http://x", "model", context_window_tokens=3000
     )
-    total = cm.token_utils.count_messages_tokens(msgs)
-    assert total <= 3000 - cm.RESERVE_FOR_RESPONSE
     # system message selalu dipertahankan.
     assert msgs[0]["role"] == "system"
     # Harus ada ringkasan tersimpan (bukti pesan di-summarize, bukan di-trim).
     summary = dbmod.get_latest_summary(db_path, session_id)
     assert summary is not None
     assert summary["summary_text"] == "RINGKASAN"
+    # TIDAK ada trim tambahan setelah summarize: meskipun total melebihi hard
+    # budget, pesan yang dikembalikan harus IDENTIK dengan build_context_messages
+    # (system + summary + ack + keep_tail pesan mentah). Konteks tidak boleh
+    # hilang diam-diam; ContextExceededError ditangani agent_loop dengan retry.
+    expected = cm.build_context_messages(db_path, session_id, "SYS")
+    assert msgs == expected
+    assert len(msgs) == 3 + cm.KEEP_TAIL_MESSAGES  # system+summary+ack+keep_tail
 
 
 def test_prepare_context_messages_no_trim_when_summarize_fails(db_path, session_id, monkeypatch):

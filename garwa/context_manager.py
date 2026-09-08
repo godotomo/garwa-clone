@@ -1029,7 +1029,11 @@ def prepare_context_messages(
         logger.warning("gagal memastikan ringkasan catatan utk session_id=%s", session_id,
                        exc_info=True)
 
-    summarized = maybe_summarize(
+    # Ringkas riwayat lama via LLM (efek samping: menyimpan summary ke DB
+    # yang dipakai build_context_messages). Return value (apakah summarize
+    # terjadi) tidak lagi dibutuhkan -- sejak keputusan desain "tanpa trim",
+    # kita selalu mengirim pesan apa adanya, tidak memotong tail.
+    maybe_summarize(
         db_path=db_path,
         session_id=session_id,
         url=url,
@@ -1057,28 +1061,17 @@ def prepare_context_messages(
     if len(messages) <= 1:
         return messages
 
-    # Hanya potong TAIL (pesan terbaru) bila ringkasan BERHASIL. Kalau
-    # summarize gagal, pesan mentah tetap dikirim apa adanya agar
-    # server/agent_loop yang menangani ContextExceededError -- bukan
-    # dibuang diam-diam. Konteks lama yang sudah tercakup summary aman
-    # tersimpan di summary, jadi memotong tail terbaru tidak menghilangkan
-    # konteks yang belum terangkum.
-    if not summarized:
-        return messages
-
-    system_message = messages[0]
-    tail = messages[1:]
-
-    system_tokens = token_utils.count_messages_tokens([system_message])
-    tail_tokens = [token_utils.count_messages_tokens([m]) for m in tail]
-    total = system_tokens + sum(tail_tokens)
-
-    start = 0
-    while start < len(tail) and total > hard_budget:
-        total -= tail_tokens[start]
-        start += 1
-
-    while start < len(tail) and tail[start].get("kind") == "tool_result":
-        start += 1
-
-    return [system_message] + tail[start:]
+    # KEPUTUSAN DESAIN (per komitmen): JANGAN pernah memotong/trim pesan
+    # mentah untuk menghemat konteks. Trim di sini dulu memotong `tail`
+    # (= messages[1:]) dari index 0, yaitu menghapus SUMMARY + pesan-pesan
+    # PALING LAMA yang justru sudah diringkas -- menghilangkan konteks lama
+    # yang sudah terangkum tanpa manfaat apa pun (konteks yang tersisa justru
+    # pesan terbaru yang belum terangkum). Ini bertentangan dengan prinsip
+    # "konteks tidak boleh hilang diam-diam".
+    #
+    # Yang benar: kalau summarize sudah berhasil tapi total masih melebihi
+    # hard budget, kirim pesan APA ADANYA (seperti saat summarize gagal).
+    # Server/agent_loop yang menangani ContextExceededError dengan retry
+    # budget lebih ketat -- yang memicu summarize lebih agresif pada giliran
+    # berikutnya. DB penuh tetap utuh; tidak ada konteks yang dibuang.
+    return messages
