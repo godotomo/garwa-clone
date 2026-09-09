@@ -36,3 +36,9 @@ logs/
 verify_build.py
 garwa_cli.py
 tmp_*.py
+
+# Local artifacts / clones (JANGAN commit)
+.audit_test/
+node_modules/
+termux-browser-pilot/
+.venv-test-311/

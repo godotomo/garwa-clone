@@ -34,6 +34,7 @@ PREFIX="${HOME}/.local/bin"
 USE_VENV=1
 UNINSTALL=0
 PURGE=0
+SKIP_SYSTEM_DEPS=0
 
 usage() {
     # Tampilkan blok komentar header (baris yang diawali '#') dari file ini,
@@ -43,6 +44,7 @@ usage() {
     echo "Opsi:"
     echo "  --prefix DIR    folder tempat launcher 'garwa' dibuat (default: ~/.local/bin)"
     echo "  --no-venv       jangan buat venv; pakai python3 sistem"
+    echo "  --skip-system-deps   lewati instalasi pustaka sistem (Termux: pkg install)"
     echo "  --uninstall     hapus launcher 'garwa' saja"
     echo "  --purge         hapus launcher 'garwa' + folder venv"
     echo "  -h, --help      tampilkan bantuan ini"
@@ -55,6 +57,8 @@ while [[ $# -gt 0 ]]; do
             PREFIX="$2"; shift 2;;
         --no-venv)
             USE_VENV=0; shift;;
+        --skip-system-deps)
+            SKIP_SYSTEM_DEPS=1; shift;;
         --uninstall)
             UNINSTALL=1; shift;;
         --purge)
@@ -114,6 +118,40 @@ fi
 if [[ ! -f "$REPO_ROOT/requirements.txt" ]]; then
     echo "ERROR: requirements.txt tidak ditemukan di $REPO_ROOT." >&2
     exit 1
+fi
+
+# --- Pustaka sistem Termux (opsional, otomatis dideteksi) ----------------------
+# Di Termux/Android, beberapa pustaka C native TIDAK bisa diinstall lewat pip
+# (wheel .abi3.so tidak kompatibel dengan CPython 3.14 di sana). Pustaka ini
+# harus diinstall lewat `pkg install`. Yang dibutuhkan:
+#   - libexpat : WAJIB supaya pyexpat/pip bekerja (tanpa ini `pip install`
+#                gagal dengan error "cannot locate symbol PyExc_TypeError").
+#   - tree-sitter-<lang> : grammar native untuk repo_map / poor-man's LSP.
+#   - binutils + rust : toolchain kalau ada wheel yang perlu di-build.
+# Deteksi Termux: folder $PREFIX ada dan berisi file usr/bin/pkg.
+if [[ -d "/data/data/com.termux/files/usr" && -x "/data/data/com.termux/files/usr/bin/pkg" ]]; then
+    IS_TERMUX=1
+else
+    IS_TERMUX=0
+fi
+
+if [[ "$IS_TERMUX" == "1" && "$SKIP_SYSTEM_DEPS" == "0" ]]; then
+    echo "==> Deteksi Termux: menginstal pustaka sistem yang dibutuhkan via pkg install"
+    echo "    (lewati dengan --skip-system-deps kalau sudah terinstall)"
+    PKG="pkg"
+    # libexpat wajib untuk pip/pyexpat; sisanya opsional tapi memperkaya repo_map.
+    # pkg install lanjut walau salah satu paket tidak tersedia (--yes).
+    "$PKG" install -y \
+        libexpat \
+        binutils rust \
+        tree-sitter-python tree-sitter-javascript tree-sitter-go tree-sitter-rust \
+        tree-sitter-c tree-sitter-java tree-sitter-json tree-sitter-yaml \
+        tree-sitter-html tree-sitter-css tree-sitter-bash \
+        || echo "  [..] Sebagian paket sistem gagal diinstall (tidak fatal; lanjut)."
+    echo "  [ok] Pustaka sistem Termux siap."
+else
+    echo "  [..] Bukan Termux (atau --skip-system-deps): lewati instalasi pustaka sistem."
+    echo "       Di Linux/macOS, pastikan libexpat & toolchain tersedia di sistem."
 fi
 
 # --- Siapkan folder launcher --------------------------------------------------
