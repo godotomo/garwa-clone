@@ -85,3 +85,30 @@ padding minimal 0.4"-0.5" dari tepi.
 
 `npm install pptxgenjs` (jalur Node, direkomendasikan untuk desain) · `pip install python-pptx` (jalur Python) · 
 `soffice`/LibreOffice (convert & verifikasi) · `poppler-utils` (render ke gambar).
+
+## Dukungan Termux (Android) — garwa ringan & robust
+
+Skill pptx berjalan penuh di Termux. **Inti (buat deck, isi template, baca slide) hanya butuh `python-pptx`** (jalur Python) — murni Python, ringan. Jalur Node (`pptxgenjs`) juga tersedia karena `nodejs` ada di repo Termux. Tool berat (`soffice`, `poppler-utils`) hanya untuk verifikasi visual dan **opsional**.
+
+```bash
+# 0. PENTING — perbaiki pip dulu bila error "No module named 'pip._internal.operations.install.wheel'".
+#    Itu BUKAN pip rusak permanen: akar masalahnya libexpat terlalu lama (2.7.x) yang tidak punya
+#    simbol XML_SetHashSalt16Bytes yang dibutuhkan pyexpat Python 3.14. Upgrade libexpat:
+pkg install -y libexpat        # upgrade ke 2.8.4 → pyexpat OK → pip install bekerja (TERUJI 2026-09)
+# 1. Wajib — pustaka inti (pip; python-pptx TIDAK ada di repo Termux, tapi wheel pip TERUJI berhasil)
+pip3 install --break-system-packages python-pptx
+# 2. Opsional — jalur Node untuk desain custom (nodejs ada di repo Termux, versi 24/26 LTS)
+pkg install -y nodejs && npm install pptxgenjs
+# 3. Opsional — verifikasi visual (libreoffice + poppler-utils, TERSEDIA di repo Termux:
+#    libreoffice di repo x11, poppler di stable). Berat (~ratusan MB) — hanya install bila QA visual dibutuhkan.
+pkg install -y x11-repo && pkg install -y libreoffice poppler
+```
+
+**Fallback ringan (tanpa soffice/poppler):**
+- **Baca isi slide cepat** tanpa tool eksternal: `python-pptx` (`slide.shapes`, `.text_frame.text`) — sudah cukup.
+- **Verifikasi tanpa render gambar**: buka ulang file hasil dengan `python-pptx` dan cek jumlah slide (`len(prs.slides)`), jumlah shape, dan teks — pastikan tidak raise exception (file tidak korup). Ini QA struktural yang cukup untuk deck sederhana.
+- **Convert `.ppt` lama** tanpa `soffice`: minta user meng-upload versi `.pptx`, atau gunakan layanan konversi online. `.ppt` (format biner lama) tidak bisa ditangani `python-pptx`.
+- **Render slide jadi gambar** (QA visual penuh) tetap butuh `soffice` + `poppler-utils` — kalau tidak terinstall, lewati langkah render dan andalkan QA struktural di atas.
+- **SVG/EMF → PNG** tanpa `soffice`/`cairosvg`: pakai `cairosvg` (pip) untuk SVG, atau `python-pymupdf` (paket Termux) untuk render. Kalau tidak ada, beri tahu user bahwa ikon SVG perlu dikonversi manual.
+
+> **Catatan pip di Termux (TERUJI):** `python-pptx` adalah wheel murni — `pip3 install --break-system-packages python-pptx` berhasil diinstall & di-import SETELAH `libexpat` di-upgrade (lihat langkah 0). Kalau muncul error `install_wheel`, JANGAN asumsikan pip rusak — upgrade `libexpat` dulu. Gunakan `--break-system-packages` karena Termux memakai sistem Python.

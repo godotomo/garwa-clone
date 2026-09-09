@@ -148,3 +148,31 @@ Before delivering media processing scripts or Mermaid diagrams, verify against t
 2. **Image Color & Orientation**: Does the converted/resized image maintain its original orientation (EXIF) and display correctly without transparency artifacts?
 3. **Mermaid Parser Validity**: Is the generated Mermaid syntax valid and free of syntax-breaking special characters?
 4. **Diagram Readability**: Is the graph direction (`TD` vs `LR`) logical, with clean node relationships and no overlapping link paths?
+
+---
+
+## 6. Dukungan Termux (Android) — garwa ringan & robust
+
+Skill design-media berjalan di Termux. **Inti (PDF text/table extraction, merge/split, image processing) hanya butuh pustaka Python murni** (`pdfplumber`, `pypdf`, `Pillow`) — ringan. OCR (`pytesseract`) butuh `tesseract` (paket Termux, opsional). Mermaid cukup ditulis sebagai teks (render butuh tool eksternal, opsional).
+
+```bash
+# 0. PENTING — perbaiki pip dulu bila error "No module named 'pip._internal.operations.install.wheel'".
+#    Itu BUKAN pip rusak permanen: akar masalahnya libexpat terlalu lama (2.7.x) yang tidak punya
+#    simbol XML_SetHashSalt16Bytes yang dibutuhkan pyexpat Python 3.14. Upgrade libexpat:
+pkg install -y libexpat        # upgrade ke 2.8.4 → pyexpat OK → pip install bekerja (TERUJI 2026-09)
+# 1. Wajib — pustaka inti (pip; TERUJI berhasil diinstall & di-import)
+pip3 install --break-system-packages pdfplumber pypdf Pillow
+# 2. Opsional — OCR: tesseract TERSEDIA di repo Termux + pytesseract via pip
+pkg install -y tesseract && pip3 install --break-system-packages pytesseract
+# 3. Opsional — render PDF halaman jadi gambar: python-pymupdf (PyMuPDF/fitz) TERSEDIA sebagai paket Termux
+pkg install -y python-pymupdf
+# 4. Opsional — image resize/convert cepat via CLI: imagemagick (convert) TERSEDIA di repo Termux
+pkg install -y imagemagick
+```
+
+**Fallback ringan:**
+- **OCR** tanpa `tesseract`: untuk teks digital (bukan scan), `pdfplumber`/`pypdf` sudah cukup. Untuk scan, `easyocr` (pip, murni Python tapi berat — butuh torch) atau beri tahu user bahwa OCR butuh `tesseract` (paket Termux).
+- **Render PDF → gambar** tanpa `poppler-utils`: pakai `python-pymupdf` (paket Termux, `fitz`) — lebih ringan & tanpa poppler.
+- **Mermaid render**: Mermaid biasanya di-render di browser/Node. Di Termux, cukup tulis sintaks Mermaid yang valid sebagai teks; render visual bisa dilakukan nanti di desktop/browser.
+
+> **Catatan pip di Termux (TERUJI):** `pdfplumber`, `pypdf`, `Pillow` adalah wheel murni — `pip3 install --break-system-packages` berhasil SETELAH `libexpat` di-upgrade (lihat langkah 0). Kalau muncul error `install_wheel`, JANGAN asumsikan pip rusak — upgrade `libexpat` dulu. Gunakan `--break-system-packages` karena Termux memakai sistem Python.

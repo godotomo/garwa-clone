@@ -192,3 +192,28 @@ Before delivering analysis, charts, or SQL queries, verify against these checks:
 2. **Null & Edge Case Safety**: Are division-by-zero risks mitigated (`np.where` or `NULLIF(val, 0)`)?
 3. **Visual Verification**: Is the generated plot clean, unclipped, correctly labeled, and readable?
 4. **SQL Determinism**: Does running the SQL query multiple times on static data yield identical results?
+
+---
+
+## 6. Dukungan Termux (Android) — garwa ringan & robust
+
+Skill data-analytics berjalan di Termux. **`pandas`/`numpy` tersedia sebagai paket Termux** (`python-pandas`, `python-numpy`) — lebih ringan & stabil daripada pip untuk library ber-C-extension. `matplotlib`/`seaborn`/`plotly` TIDAK ada di repo Termux (harus pip) dan cukup berat — untuk chart ringan, pertimbangkan alternatif.
+
+```bash
+# 0. PENTING — perbaiki pip dulu bila error "No module named 'pip._internal.operations.install.wheel'".
+#    Itu BUKAN pip rusak permanen: akar masalahnya libexpat terlalu lama (2.7.x) yang tidak punya
+#    simbol XML_SetHashSalt16Bytes yang dibutuhkan pyexpat Python 3.14. Upgrade libexpat:
+pkg install -y libexpat        # upgrade ke 2.8.4 → pyexpat OK → pip install bekerja (TERUJI 2026-09)
+# 1. Wajib — pandas & numpy via paket Termux (TERSEDIA, lebih ringan daripada pip untuk C-extension)
+pkg install -y python-pandas python-numpy
+# 2. Opsional — chart: matplotlib/seaborn TIDAK ada di repo Termux, install via pip (berat, butuh wheel)
+pip3 install --break-system-packages matplotlib seaborn
+# 3. Alternatif ringan untuk chart: plotly (pip) atau output CSV/JSON + baris ASCII untuk data besar
+```
+
+**Fallback ringan (tanpa matplotlib/seaborn):**
+- **Chart ringan**: untuk laporan cepat, gunakan `plotly` (pip) yang bisa output HTML interaktif, atau render SVG/ASCII sederhana. `matplotlib` butuh banyak wheel (numpy, pillow, etc.) — install hanya bila chart publikasi-grade benar-benar dibutuhkan.
+- **Analisis data besar**: `python-polars` TERSEDIA sebagai paket Termux (lebih cepat & hemat memori daripada pandas untuk data besar).
+- **Verifikasi tanpa plot**: gunakan statistik ringkasan (mean/median/std/min/max) + cek `df.describe()` — cukup untuk QA tanpa visual.
+
+> **Catatan pip di Termux (TERUJI):** `matplotlib`/`seaborn` adalah wheel dengan C-extension — `pip3 install --break-system-packages` bekerja SETELAH `libexpat` di-upgrade (lihat langkah 0). Kalau muncul error `install_wheel`, JANGAN asumsikan pip rusak — upgrade `libexpat` dulu. Gunakan `--break-system-packages` karena Termux memakai sistem Python.

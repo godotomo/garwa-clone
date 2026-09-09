@@ -84,3 +84,37 @@ table-header-group; }` di `weasyprint`) — jangan biarkan tabel terpotong tanpa
 `pip install pypdf pdfplumber reportlab weasyprint pytesseract pdf2image pandas` · `poppler-utils` (`pdftoppm`, 
 `pdftotext`) · Tesseract OCR (untuk `pytesseract`) · `qpdf` (opsional, operasi command-line cepat: 
 merge/split/rotate/decrypt).
+
+## Dukungan Termux (Android) — garwa ringan & robust
+
+Skill pdf berjalan penuh di Termux. **Inti (buat/gabung/split/enkripsi/ekstrak teks&tabel) hanya butuh pustaka Python murni** (`reportlab`, `pypdf`, `pdfplumber`) — ringan, tanpa tool eksternal. Tool sistem (`poppler-utils`, `tesseract`, `qpdf`, `weasyprint`) hanya untuk kasus spesifik dan **opsional**.
+
+```bash
+# 0. PENTING — perbaiki pip dulu bila error "No module named 'pip._internal.operations.install.wheel'".
+#    Itu BUKAN pip rusak permanen: akar masalahnya libexpat terlalu lama (2.7.x) yang tidak punya
+#    simbol XML_SetHashSalt16Bytes yang dibutuhkan pyexpat Python 3.14. Upgrade libexpat:
+pkg install -y libexpat        # upgrade ke 2.8.4 → pyexpat OK → pip install bekerja (TERUJI 2026-09)
+# 1. Wajib — pustaka inti (pip; wheel murni, TERUJI berhasil diinstall)
+pip3 install --break-system-packages reportlab pypdf pdfplumber
+# 2. Opsional — render halaman jadi gambar & ekstrak teks: pakai python-pymupdf (PyMuPDF/fitz),
+#    TERSEDIA sebagai paket Termux (lebih ringan & tanpa poppler):
+pkg install -y python-pymupdf
+# 3. Opsional — ekstrak teks via CLI & render: poppler TERSEDIA di repo Termux
+pkg install -y poppler
+# 4. Opsional — OCR PDF scan: tesseract TERSEDIA di repo Termux
+pkg install -y tesseract && pip3 install --break-system-packages pytesseract pdf2image
+# 5. Opsional — operasi CLI cepat merge/split: qpdf TERSEDIA di repo Termux
+pkg install -y qpdf
+# 6. Opsional — PDF berlayout kompleks via HTML/CSS: weasyprint butuh libs sistem pango/cairo.
+#    pango & cairo tersedia di Termux; install lib lalu pip. (Belum teruji penuh di Termux — fallback
+#    utama tetap reportlab.)
+pkg install -y pango && pip3 install --break-system-packages weasyprint
+```
+
+**Fallback ringan (tanpa weasyprint/poppler/tesseract/qpdf):**
+- **Buat PDF berlayout** tanpa `weasyprint`: pakai `reportlab.platypus` (`SimpleDocTemplate` + `Paragraph`/`Table`) — sudah cukup untuk laporan, tabel, gambar. Kurangi ketergantungan pada HTML/CSS.
+- **Render halaman jadi gambar** tanpa `poppler-utils` (`pdftoppm`): gunakan `python-pymupdf` (paket Termux, `fitz`) atau `pdf2image` bila poppler ada. Paling ringan: verifikasi struktural dengan `pypdf.PdfReader` — cek `len(reader.pages)` + tidak raise exception (buka ulang hasil yang di-generate).
+- **OCR** tanpa `tesseract`: untuk PDF scan, beri tahu user bahwa OCR butuh `tesseract` (paket Termux) — atau gunakan `easyocr` (murni Python, tapi lebih berat & butuh torch). Untuk teks digital (bukan scan), `pdfplumber`/`pypdf` sudah cukup.
+- **Merge/split cepat** tanpa `qpdf`: `pypdf` (`PdfWriter.add_page`) sudah menangani merge/split/rotate/enkripsi — qpdf hanya alternatif CLI yang lebih cepat untuk file besar.
+
+> **Catatan pip di Termux (TERUJI):** `reportlab`, `pypdf`, `pdfplumber` adalah wheel murni — `pip3 install --break-system-packages` langsung jalan SETELAH `libexpat` di-upgrade (lihat langkah 0). Kalau muncul error `install_wheel`, JANGAN asumsikan pip rusak — upgrade `libexpat` dulu. Gunakan `--break-system-packages` karena Termux memakai sistem Python.

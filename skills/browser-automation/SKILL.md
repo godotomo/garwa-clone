@@ -42,7 +42,7 @@ chmod +x $PREFIX/bin/tbp
 **Catatan penting:**
 - **Firefox lebih ringan** (~67MB paket / ~276MB terinstall) vs Chromium (~128–144MB / ~570–640MB). Pilih Firefox untuk hemat.
 - **Firefox mode diklaim "passes Cloudflare natively via TLS fingerprint"**; Chromium punya Turnstile handler. Terverifikasi berhasil di 9inference.cloud (Turnstile tidak memblokir registrasi).
-- **pip build isolation rusak** di Termux Python 3.14 (`pip._internal.operations.install.wheel` hilang). Solusi: install via wrapper manual (langkah 4), bukan `pip install .`.
+- **pip di Termux Python 3.14 bisa error** `No module named 'pip._internal.operations.install.wheel'` — ini BUKAN pip rusak permanen. Akar masalahnya `libexpat` terlalu lama (2.7.x) yang tidak punya simbol `XML_SetHashSalt16Bytes` yang dibutuhkan `pyexpat`. Solusi: `pkg install -y libexpat` (upgrade ke 2.8.4) → pyexpat OK → pip install bekerja (TERUJI 2026-09). Untuk `termux-browser-pilot` tetap pakai wrapper manual (langkah 4) karena paketnya tidak di PyPI.
 - Browser teks (`lynx`, `w3m`, `links`) TIDAK bisa menembus Turnstile (tanpa JS penuh).
 
 **Perintah dasar `tbp`:**

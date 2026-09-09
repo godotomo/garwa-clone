@@ -75,3 +75,25 @@ tiap sel. Negatif dalam kurung `(#,##0)`. Persentase disimpan sebagai pecahan (`
 ## Dependensi
 
 `pip install openpyxl pandas` · `soffice`/LibreOffice (untuk memaksa recalculation formula).
+
+## Dukungan Termux (Android) — garwa ringan & robust
+
+Skill xlsx berjalan penuh di Termux. **Inti (buat/edit/baca workbook, formula, formatting) hanya butuh `openpyxl`** — murni Python, ringan. `pandas` untuk data massal tersedia sebagai paket Termux. `soffice` hanya untuk recalc formula dan **opsional**.
+
+```bash
+# 0. PENTING — perbaiki pip dulu bila error "No module named 'pip._internal.operations.install.wheel'".
+#    Itu BUKAN pip rusak permanen: akar masalahnya libexpat terlalu lama (2.7.x) yang tidak punya
+#    simbol XML_SetHashSalt16Bytes yang dibutuhkan pyexpat Python 3.14. Upgrade libexpat:
+pkg install -y libexpat        # upgrade ke 2.8.4 → pyexpat OK → pip install bekerja (TERUJI 2026-09)
+# 1. Wajib — pustaka inti (openpyxl via pip TERUJI; pandas tersedia sebagai paket Termux python-pandas)
+pip3 install --break-system-packages openpyxl
+pkg install -y python-pandas   # opsional, untuk baca/tulis data massal (pandas TERSEDIA di repo Termux)
+# 2. Opsional — recalc formula (libreoffice TERSEDIA di repo x11; berat ~ratusan MB — hanya bila recalc dibutuhkan)
+pkg install -y x11-repo && pkg install -y libreoffice
+```
+
+**Fallback ringan (tanpa soffice):**
+- **Recalc formula** tanpa `soffice`: beri tahu user bahwa formula yang ditulis `openpyxl` TIDAK punya cached value sampai dibuka & dihitung ulang oleh aplikasi spreadsheet asli. Kalau tidak ada LibreOffice, user perlu membuka file di Excel/Google Sheets sekali untuk memicu recalc — atau gunakan `formulas` (pip) / `pycel` untuk menghitung subset formula secara programatik.
+- **Verifikasi tanpa recalc**: buka ulang dengan `openpyxl` (`data_only=False`) dan cek formula string + referensi tidak salah (`#REF!`/`#NAME?` baru muncul setelah recalc). Untuk angka, hitung manual subset.
+
+> **Catatan pip di Termux (TERUJI):** `openpyxl` adalah wheel murni — `pip3 install --break-system-packages openpyxl` berhasil diinstall & di-import SETELAH `libexpat` di-upgrade (lihat langkah 0). Kalau muncul error `install_wheel`, JANGAN asumsikan pip rusak — upgrade `libexpat` dulu. Gunakan `--break-system-packages` karena Termux memakai sistem Python.

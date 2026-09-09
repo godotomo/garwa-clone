@@ -106,3 +106,29 @@ tanpa border sama sekali untuk data numerik.
 
 `pip install python-docx` · `pandoc` (baca cepat) · `soffice`/LibreOffice (convert & verifikasi) · `poppler-utils` 
 (`pdftoppm`, untuk render halaman jadi gambar).
+
+## Dukungan Termux (Android) — garwa ringan & robust
+
+Termux bisa menjalankan skill docx penuh. **Inti (membuat/mengedit .docx) hanya butuh `python-docx`** — murni Python, ringan, tanpa tool eksternal. Tool berat (`pandoc`, `soffice`, `poppler-utils`) hanya untuk kenyamanan (baca cepat & verifikasi visual) dan **opsional**.
+
+```bash
+# 0. PENTING — perbaiki pip dulu bila error "No module named 'pip._internal.operations.install.wheel'".
+#    Itu BUKAN pip rusak permanen: akar masalahnya libexpat terlalu lama (2.7.x) yang tidak punya
+#    simbol XML_SetHashSalt16Bytes yang dibutuhkan pyexpat Python 3.14. Upgrade libexpat:
+pkg install -y libexpat        # upgrade ke 2.8.4 → pyexpat OK → pip install bekerja (TERUJI 2026-09)
+# 1. Wajib — pustaka inti (pip; python-docx TIDAK ada di repo Termux, tapi wheel pip TERUJI berhasil)
+pip3 install --break-system-packages python-docx
+# 2. Opsional — baca cepat (pandoc tersedia di repo Termux)
+pkg install -y pandoc
+# 3. Opsional — verifikasi visual (libreoffice + poppler-utils, TERSEDIA di repo Termux:
+#    libreoffice di repo x11, poppler di stable). Berat (~ratusan MB) — hanya install bila QA visual dibutuhkan.
+pkg install -y x11-repo && pkg install -y libreoffice poppler
+```
+
+**Fallback ringan (tanpa soffice/pandoc/poppler):**
+- **Baca isi cepat** tanpa `pandoc`: gunakan `python-docx` langsung (`doc.paragraphs`, `doc.tables`) — sudah cukup untuk paragraf/tabel terstruktur.
+- **Verifikasi tanpa render gambar**: buka ulang file hasil dengan `python-docx` dan cek `len(doc.paragraphs)`, jumlah tabel, dan isi sel — pastikan tidak raise exception (file tidak korup). Ini QA struktural yang cukup untuk dokumen sederhana.
+- **Convert `.doc` lama** tanpa `soffice`: minta user meng-upload versi `.docx`, atau gunakan layanan konversi online. `.doc` (format biner lama) tidak bisa ditangani `python-docx`.
+- **Render halaman jadi gambar** (QA visual penuh) tetap butuh `soffice` + `poppler-utils` — kalau tidak terinstall, lewati langkah render dan andalkan QA struktural di atas.
+
+> **Catatan pip di Termux (TERUJI):** `python-docx` adalah wheel murni — `pip3 install --break-system-packages python-docx` berhasil diinstall & di-import SETELAH `libexpat` di-upgrade (lihat langkah 0). Kalau muncul error `install_wheel`, JANGAN asumsikan pip rusak — upgrade `libexpat` dulu. Gunakan `--break-system-packages` karena Termux memakai sistem Python.

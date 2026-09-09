@@ -15,7 +15,7 @@ pkg install -y firefox xorg-server-xvfb xdotool xclip openbox imagemagick python
 git clone https://github.com/salviz/termux-browser-pilot.git
 cd termux-browser-pilot
 
-# 4. Buat wrapper `tbp` manual (karena pip build isolation rusak di Termux py3.14)
+# 4. Buat wrapper `tbp` manual (karena paket tidak di PyPI; pip umumnya sudah OK setelah upgrade libexpat)
 cat > $PREFIX/bin/tbp <<'EOF'
 #!/usr/bin/env bash
 export PYTHONPATH="/data/data/com.termux/files/home/garwa-coder-v2/termux-browser-pilot${PYTHONPATH:+:$PYTHONPATH}"
@@ -27,7 +27,7 @@ chmod +x $PREFIX/bin/tbp
 tbp --version   # → tbp 0.1.0a1
 ```
 
-> **Catatan pip:** `pip install .` gagal di Termux Python 3.14 karena modul `pip._internal.operations.install.wheel` hilang. Jangan coba perbaiki pip — pakai wrapper manual di atas.
+> **Catatan pip:** `pip install .` untuk `termux-browser-pilot` tidak dipakai karena paketnya tidak di PyPI — pakai wrapper manual di atas. (Catatan: error pip `install_wheel` di Termux Python 3.14 umumnya karena `libexpat` lama — `pkg install -y libexpat` memperbaikinya, bukan pip rusak permanen.)
 
 ## 2. Siklus hidup daemon
 
@@ -111,7 +111,7 @@ tbp text   # mis. "Kode verifikasi sudah dikirim ke ..."
 
 ## 7. Batasan
 
-- **Tidak ada `pip install`** — pakai wrapper manual.
+- **Tidak ada `pip install`** untuk `termux-browser-pilot` — pakai wrapper manual (paket tidak di PyPI).
 - **Chromium** butuh `websockets` (mode CDP) dan jauh lebih berat (~570–640MB) — prefer Firefox.
 - Turnstile tetap menolak **datacenter IP**; browser di perangkat fisik (termasuk Termux Android) memakai IP perangkat asli → lolos.
 - Browser teks (`lynx`/`w3m`/`links`) TIDAK bisa menembus Turnstile.
