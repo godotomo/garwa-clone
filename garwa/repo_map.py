@@ -142,6 +142,49 @@ def _individual_parser(lang: str):
     return parser
 
 
+def _native_termux_parser(lang: str):
+    """Buat parser dari grammar C native Termux (paket `tree-sitter-<lang>`),
+    atau None.
+
+    Di Termux/Android, wheel .abi3.so (tree_sitter_language_pack dan grammar
+    individual pip) sering gagal dimuat di Python 3.14 dengan
+    "dlopen failed: cannot locate symbol ...". Solusi andal: pakai grammar C
+    native yang diinstall via `pkg install tree-sitter-<lang>`, yang tersedia
+    di $PREFIX/lib/libtree-sitter-<lang>.so. Dimuat via ctypes lalu dibungkus
+    `Language(ptr)` (int pointer; deprecated tapi stabil & aman untuk grammar
+    static native).
+
+    Cache per-thread (thread-local) konsisten dengan loader lain.
+    """
+    cache = _native_termux_parser_cache.__dict__
+    if lang in cache:
+        return cache[lang]
+    parser = None
+    try:
+        import ctypes
+        prefix = os.environ.get("PREFIX", "/data/data/com.termux/files/usr")
+        so = os.path.join(prefix, "lib", f"libtree-sitter-{lang}.so")
+        if not os.path.exists(so):
+            cache[lang] = None
+            return None
+        lib = ctypes.CDLL(so)
+        fn = getattr(lib, f"tree_sitter_{lang}")
+        fn.restype = ctypes.c_void_p
+        ptr = fn()
+        if not ptr:
+            cache[lang] = None
+            return None
+        from tree_sitter import Language, Parser
+        lang_obj = Language(ptr)
+        parser = Parser(lang_obj)
+    except BaseException:  # noqa: BLE001 — grammar tak tersedia/berbeda API
+        parser = None
+    cache[lang] = parser
+    return parser
+
+
+_native_termux_parser_cache: "threading.local" = threading.local()
+
 _get_parser_cache: "threading.local" = threading.local()
 
 
@@ -168,7 +211,11 @@ def _get_parser(lang: str):
     # 2. grammar individual (andal di Termux/Android)
     if parser is None:
         parser = _individual_parser(lang)
-    # 3. tree_sitter_languages (fallback lama)
+    # 3. grammar C native Termux (pkg install tree-sitter-<lang>) — paling
+    #    andal di Termux Python 3.14, di mana wheel .abi3.so gagal dimuat
+    if parser is None:
+        parser = _native_termux_parser(lang)
+    # 4. tree_sitter_languages (fallback lama)
     if parser is None and _tl_get_parser is not None:
         try:
             parser = _tl_get_parser(lang)
