@@ -61,7 +61,24 @@ def _new_session_state() -> dict:
                         "reasoning_tokens": 0, "total": 0},
         "error_total": 0,
         "start_time": None,
+        # Mode agent aktif: "act" (default, boleh memakai SEMUA tool) atau
+        # "plan" (hanya tool read-only untuk eksplorasi & menyusun rencana;
+        # tool yang mengubah file/sistem diblokir). Di-set via /plan dan /act.
+        "mode": "act",
     }
+
+
+def get_mode() -> str:
+    """Mode agent aktif untuk context saat ini: "plan" atau "act"."""
+    return get_session_state().get("mode", "act")
+
+
+def set_mode(mode: str) -> str:
+    """Set mode agent ("plan" atau "act") untuk context saat ini."""
+    if mode not in ("plan", "act"):
+        raise ValueError(f"mode tidak valid: {mode!r} (harus 'plan' atau 'act')")
+    get_session_state()["mode"] = mode
+    return mode
 
 
 def get_session_state() -> dict:

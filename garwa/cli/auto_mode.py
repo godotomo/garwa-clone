@@ -47,6 +47,8 @@ def run_auto_mode(args, session_id: str, system_content: str):
         dbmod.touch_session(args.db_path, session_id)
         sys.exit(130)
     except Exception as e:
+        from .ndjson import emit as _ndjson_emit
+        _ndjson_emit("error", message=f"auto: {type(e).__name__}: {e}")
         print(c(f"\n[ERROR] Mode auto berhenti karena error: {type(e).__name__}: {e}", C.RED))
         dbmod.touch_session(args.db_path, session_id)
         sys.exit(1)

@@ -72,8 +72,21 @@ def build_openai_tools_payload() -> list:
     memberi type "string" untuk semua argumen. tools.py tetap melakukan
     validasi/konversi akhir, jadi payload ini hanya panduan bentuk untuk
     model.
+
+    Saat plan mode aktif (state.get_mode() == "plan"), tool yang mengubah
+    file/sistem dihilangkan dari payload sehingga model tidak melihatnya
+    sebagai opsi (layer 1 dari plan mode -- lihat cli/plan_mode.py).
     """
-    return tool_runtime.build_openai_tools_payload(TOOLS)
+    payload = tool_runtime.build_openai_tools_payload(TOOLS)
+    try:
+        from .. import _state as _st
+        mode = _st.get_mode()
+    except Exception:  # noqa: BLE001 - mode default act kalau state belum siap
+        mode = "act"
+    if mode == "plan":
+        from ..plan_mode import filter_tools_payload
+        return filter_tools_payload(payload, mode)
+    return payload
 
 
 def _build_tool_signature(name: str, spec: dict) -> str:

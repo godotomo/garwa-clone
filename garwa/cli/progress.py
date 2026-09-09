@@ -123,22 +123,38 @@ class ProgressBar:
     def _render(self) -> None:
         if self._finished:
             return
-        bar = _render_bar(self._fraction, self._width)
+        term_w = self._width
         pct = int(self._fraction * 100)
-        line = f"[{bar}] {pct:>3}%  {self._message}"
+        pct_str = f"{pct:>3}%"
+        # Kolom tetap: "[", "]", pct, dan dua spasi sebelum pesan.
+        fixed = len("[") + len("]") + len(pct_str) + 2
+        # Sediakan ruang untuk pesan, sisakan 1 kolom buffer agar bar tidak
+        # menyentuh tepi layar.
+        msg_space = max(1, term_w - fixed - 1)
+        msg = self._message
+        if len(msg) > msg_space:
+            msg = msg[: max(0, msg_space - 1)] + "…"
+        # Lebar bar = sisa kolom setelah fixed + pesan, sehingga total baris
+        # TIDAK pernah melebihi lebar terminal.
+        bar_w = max(1, term_w - fixed - len(msg))
+        bar = _render_bar(self._fraction, bar_w)
+        line = f"[{bar}] {pct_str}  {msg}"
+        line = line[:term_w]  # jaga-jaga tetap dalam batas layar
         if _is_tty(self._stream):
-            # Tulis ulang baris via `\r`, lalu padding trailing untuk menimpa
-            # sisa karakter dari baris sebelumnya yang lebih panjang (tanpa
-            # ini, sisa teks lama bisa tertinggal di ujung baris).
+            # Tulis ulang baris via `\r` (timpa baris yang sama), lalu padding
+            # trailing untuk menimpa sisa karakter dari baris sebelumnya yang
+            # lebih panjang. Tidak pernah menambah baris baru.
             prev_len = len(self._last_rendered) if self._last_rendered else 0
             pad = " " * max(0, prev_len - len(line))
             self._stream.write("\r" + line + pad)
             self._stream.flush()
             self._last_rendered = line
         else:
-            # non-TTY: cetak satu baris status untuk setiap pembaruan,
-            # tanpa `\r` (spam-safe). Tiap status berbeda menjadi baris
-            # baru yang normal -- tidak ada spam carriage-return.
-            self._stream.write(line + "\n")
-            self._stream.flush()
-            self._last_rendered = line
+            # non-TTY (pipe/redirect): cetak SATU baris status saja (yang
+            # pertama) supaya tidak menumpuk jadi banyak baris berantakan.
+            # Update berikutnya diabaikan -- tidak ada cara menimpa baris di
+            # stream non-terminal.
+            if self._last_rendered is None:
+                self._stream.write(line + "\n")
+                self._stream.flush()
+                self._last_rendered = line

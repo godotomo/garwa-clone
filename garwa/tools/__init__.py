@@ -25,6 +25,7 @@ from .compile_tools import tool_check, tool_snippet
 from .git_tools import tool_git_status, tool_git_diff, tool_git_log, tool_git_add, tool_git_commit, tool_git_undo, tool_git_run, tool_git_branch, tool_git_blame, tool_git_show, tool_git_reset, tool_git_stash, tool_git_log_graph
 from .session_tools import _require_session, tool_todo_write, tool_todo_read, tool_remember, tool_recall
 from .sub_agent import tool_spawn_agent, tool_spawn_agents_parallel
+from .team_agent import tool_team_run
 from .comm_tools import (
     tool_send_email, tool_read_inbox, tool_read_email, tool_reply_email,
     tool_send_telegram, tool_send_document, tool_text_to_speech,
@@ -283,6 +284,36 @@ TOOLS = {
                     "max_workers": {"type": "integer", "description": "Jumlah thread paralel maksimum (default 4)"},
                 },
                 "required": ["tasks"],
+            },
+        },
+    },
+    "team_run": {
+        "handler": tool_team_run,
+        "destructive": False,
+        "schema": {
+            "name": "team_run",
+            "description": "Jalankan koordinator Agent Teams: beberapa anggota tim (masing-masing dengan rolePrompt/system prompt CUSTOM) menyelesaikan task-nya secara PARALEL (thread pool), lalu hasil digabung menjadi satu laporan terstruktur. Berbeda dari spawn_agents_parallel (yang memakai role sama untuk semua), team_run memungkinkan tim HETEROGEN -- mis. satu anggota 'arsitek', satu 'reviewer', satu 'implementor' -- yang bekerja pada task berbeda lalu hasilnya dikonvergensikan oleh agent induk. Gunakan untuk memecah pekerjaan besar menjadi beberapa peran spesialis yang bekerja serentak.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "members": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "agentId": {"type": "string", "description": "Nama/ID unik anggota tim (wajib)"},
+                                "rolePrompt": {"type": "string", "description": "System prompt khusus peran anggota ini (wajib); menentukan fokus/tujuan anggota"},
+                                "task": {"type": "string", "description": "Task yang harus diselesaikan anggota ini (wajib)"},
+                                "max_iters": {"type": "integer", "description": "Batas maksimum pemanggilan tool oleh anggota (default 40, maks 100)"},
+                            },
+                            "required": ["agentId", "rolePrompt", "task"],
+                        },
+                        "description": "Daftar anggota tim; tiap anggota punya rolePrompt sendiri",
+                    },
+                    "objective": {"type": "string", "description": "Tujuan keseluruhan tim (opsional, untuk konteks)"},
+                    "max_workers": {"type": "integer", "description": "Jumlah thread paralel maksimum (default 4)"},
+                },
+                "required": ["members"],
             },
         },
     },

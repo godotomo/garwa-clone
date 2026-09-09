@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS summaries (
 CREATE TABLE IF NOT EXISTS todos (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id  TEXT NOT NULL,
+    workdir     TEXT NOT NULL DEFAULT '',
     position    INTEGER NOT NULL,
     content     TEXT NOT NULL,
     status      TEXT NOT NULL DEFAULT 'pending',  -- pending | in_progress | done | cancelled
@@ -179,6 +180,24 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
         ncol = [r[1] for r in conn.execute("PRAGMA table_info(project_notes)").fetchall()]
         if "summary" not in ncol:
             conn.execute("ALTER TABLE project_notes ADD COLUMN summary TEXT")
+
+        # Migrasi ringan: kolom `workdir` di tabel todos. DB lama (sebelum
+        # kolom ini ada) hanya punya `session_id`. Todo seharusnya milik
+        # PROYEK (workdir), bukan sesi, supaya sesi baru di workdir yang sama
+        # tetap bisa mengakses todo pending. Tambahkan kolom secara idempoten.
+        tcol = [r[1] for r in conn.execute("PRAGMA table_info(todos)").fetchall()]
+        if "workdir" not in tcol:
+            conn.execute("ALTER TABLE todos ADD COLUMN workdir TEXT NOT NULL DEFAULT ''")
+            # Backfill: isi workdir dari tabel sessions berdasarkan session_id
+            # untuk todo lama yang masih punya sesi terkait.
+            try:
+                conn.execute(
+                    "UPDATE todos SET workdir = COALESCE("
+                    "(SELECT s.workdir FROM sessions s WHERE s.id = todos.session_id), '') "
+                    "WHERE workdir = ''"
+                )
+            except Exception:
+                pass
 
 
 
@@ -549,8 +568,13 @@ def get_latest_summary(db_path: str, session_id: str):
 
 
 
-def replace_todos(db_path: str, session_id: str, items: list):
+def replace_todos(db_path: str, workdir: str, items: list, session_id: str = None):
     """items: list of {"content": str, "status": str}. Full replace (mirip TodoWrite).
+
+    Todo disimpan per WORKDIR (milik proyek), bukan per sesi, sehingga sesi
+    baru di workdir yang sama tetap bisa mengakses todo pending. `workdir`
+    adalah kunci utama; `session_id` (opsional) tetap dicatat untuk jejak
+    asal dan backward-compat.
 
     Raises:
         ValueError: kalau ada item yang bukan dict, tidak punya key
@@ -567,19 +591,50 @@ def replace_todos(db_path: str, session_id: str, items: list):
 
     now = time.time()
     with connect(db_path) as conn:
-        conn.execute("DELETE FROM todos WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM todos WHERE workdir = ?", (workdir,))
         for i, item in enumerate(items):
             conn.execute(
-                "INSERT INTO todos (session_id, position, content, status, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (session_id, i, item["content"], item.get("status", "pending"), now, now),
+                "INSERT INTO todos (session_id, workdir, position, content, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (session_id or "", workdir, i, item["content"], item.get("status", "pending"), now, now),
             )
 
 
-def get_todos(db_path: str, session_id: str):
+def get_todos(db_path: str, workdir: str = None, session_id: str = None):
+    """Ambil todo. Prioritas: workdir (milik proyek, lintas sesi).
+
+    Kalau `workdir` diberikan, kembalikan todo untuk workdir itu (terlepas
+    dari sesi mana yang menulisnya). Kalau hanya `session_id` diberikan
+    (backward-compat), kembalikan todo sesi itu (yang workdir-nya kosong
+    atau cocok). Kalau keduanya None, kembalikan semua.
+    """
+    with connect(db_path) as conn:
+        if workdir:
+            rows = conn.execute(
+                "SELECT * FROM todos WHERE workdir = ? ORDER BY position ASC", (workdir,)
+            ).fetchall()
+        elif session_id:
+            rows = conn.execute(
+                "SELECT * FROM todos WHERE session_id = ? ORDER BY position ASC", (session_id,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM todos ORDER BY position ASC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_pending_todos(db_path: str, workdir: str):
+    """Todo yang masih pending/in_progress untuk sebuah workdir (lintas sesi).
+
+    Dipakai untuk memberi tahu pengguna kalau ada rencana yang belum selesai
+    di proyek yang sama, walau mereka masuk lewat sesi baru (tanpa --resume).
+    """
     with connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM todos WHERE session_id = ? ORDER BY position ASC", (session_id,)
+            "SELECT * FROM todos WHERE workdir = ? AND status IN ('pending', 'in_progress') "
+            "ORDER BY position ASC",
+            (workdir,),
         ).fetchall()
         return [dict(r) for r in rows]
 

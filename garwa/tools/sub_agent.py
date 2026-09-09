@@ -109,12 +109,14 @@ def _make_sub_config() -> "object":
     return cfg
 
 
-def tool_spawn_agent(task: str, role: str = "general", max_iters: int = 40) -> str:
-    """Jalankan sub-agent in-process untuk menyelesaikan `task`.
+def _run_sub_agent_with_system(task: str, system_content: str,
+                               role: str = "general",
+                               max_iters: int = 40) -> str:
+    """Jalankan sub-agent in-process dengan system prompt EKSPLISIT.
 
-    Membuat sub-session terpisah (context window sendiri), memanggil
-    `run_agent_loop` rekursif, dan mengembalikan final report sub-agent
-    sebagai hasil tool.
+    Dipakai oleh `tool_spawn_agent` (via `_resolve_role`) dan koordinator
+    Agent Teams (role prompt custom per anggota tim). Mengembalikan final
+    report sub-agent, atau pesan error bila gagal.
     """
     task = str(task or "").strip()
     if not task:
@@ -154,9 +156,6 @@ def tool_spawn_agent(task: str, role: str = "general", max_iters: int = 40) -> s
     except (TypeError, ValueError):
         cfg.max_tool_iters = 40
 
-    # System prompt khusus role.
-    system_content = _resolve_role(role)
-
     # Simpan state sesi aktif sub-agent selama loop berjalan, lalu pulihkan.
     # Memakai set_session_id/get_session_id (ContextVar) supaya isolasi
     # per-thread/context berfungsi saat sub-agent dijalankan paralel.
@@ -180,6 +179,17 @@ def tool_spawn_agent(task: str, role: str = "general", max_iters: int = 40) -> s
         f"[SUB-AGENT:{role}] selesai (session {sub_sid}).\n"
         f"FINAL REPORT:\n{final_report}"
     )
+
+
+def tool_spawn_agent(task: str, role: str = "general", max_iters: int = 40) -> str:
+    """Jalankan sub-agent in-process untuk menyelesaikan `task`.
+
+    Membuat sub-session terpisah (context window sendiri), memanggil
+    `run_agent_loop` rekursif, dan mengembalikan final report sub-agent
+    sebagai hasil tool.
+    """
+    return _run_sub_agent_with_system(task, _resolve_role(role), role=role,
+                                      max_iters=max_iters)
 
 
 # ---------------------------------------------------------------------------

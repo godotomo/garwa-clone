@@ -123,12 +123,14 @@ def _clear_screen() -> None:
     print("\x1b[2J\x1b[H", end="")
 
 
-def _print_todos(db_path: str, session_id: str) -> None:
-    todos = dbmod.get_todos(db_path, session_id)
+def _print_todos(db_path: str, session_id: str, workdir: str = None) -> None:
+    # Todo milik PROYEK (workdir), bukan sesi -- jadi baca per workdir supaya
+    # sesi baru di workdir yang sama tetap melihat todo pending.
+    todos = dbmod.get_todos(db_path, workdir=workdir or getattr(state, "WORKDIR", None))
     if not todos:
-        print(c("(belum ada plan/todo tersimpan untuk sesi ini)", C.DIM))
+        print(c("(belum ada plan/todo tersimpan untuk proyek ini)", C.DIM))
         return
-    print(c(f"Plan sesi ({len(todos)} item):", C.BOLD))
+    print(c(f"Plan proyek ({len(todos)} item):", C.BOLD))
     mark_by_status = {
         "pending": "[ ]",
         "in_progress": "[~]",
@@ -919,7 +921,7 @@ def handle_slash_command(cmd_line: str, args, session_id: str, system_content: s
         return {"action": "skip"}
 
     if name == "todos":
-        _print_todos(args.db_path, session_id)
+        _print_todos(args.db_path, session_id, workdir=getattr(args, "workdir", None))
         return {"action": "skip"}
 
     if name == "tools":
@@ -1258,16 +1260,53 @@ def handle_slash_command(cmd_line: str, args, session_id: str, system_content: s
         _handle_auto_commit(args, arg)
         return {"action": "skip"}
 
+    if name == "plan":
+        state.set_mode("plan")
+        print(c("[plan] PLAN MODE AKTIF -- agent hanya bisa eksplorasi & "
+                "menyusun rencana (tool yang mengubah file/sistem diblokir). "
+                "Ketik /act untuk beralih ke mode eksekusi.", C.BOLD_MAGENTA))
+        return {"action": "skip"}
+
+    if name == "act":
+        state.set_mode("act")
+        print(c("[act] ACT MODE AKTIF -- agent bisa memakai semua tool "
+                "(termasuk yang mengubah file/sistem). Ketik /plan untuk "
+                "kembali ke mode perencanaan.", C.BOLD_GREEN))
+        return {"action": "skip"}
+
+    if name == "mode":
+        print(c(f"[mode] mode aktif saat ini: {state.get_mode()}", C.DIM))
+        print(c("Gunakan: /plan untuk masuk plan mode, /act untuk act mode.", C.DIM))
+        return {"action": "skip"}
+
     if name == "undo":
         span = dbmod.get_last_turn_span(args.db_path, session_id)
         if not span:
             print(c("[undo] tidak ada giliran user untuk dibatalkan.", C.YELLOW))
             return {"action": "skip"}
         deleted = dbmod.delete_messages_after(args.db_path, session_id, span["start_id"])
+        # Restore checkpoint git (perubahan file yang dilakukan agent pada
+        # giliran ini) -- best-effort, tidak gagal kalau bukan repo / tidak ada
+        # checkpoint. Ini melengkapi /undo yang sebelumnya hanya menghapus
+        # pesan dari DB.
+        cp_result = None
+        try:
+            from ..checkpoints import restore_checkpoint
+            cp_result = restore_checkpoint(args.db_path, session_id, cwd=args.workdir)
+        except Exception:  # noqa: BLE001 - restore checkpoint opsional
+            cp_result = None
         if deleted:
             print(c(f"[undo] giliran terakhir dibatalkan ({deleted} pesan dihapus).", C.GREEN))
         else:
             print(c("[undo] giliran terakhir dibatalkan.", C.GREEN))
+        if cp_result and cp_result.get("restored"):
+            print(c(f"[undo] perubahan file di-restore dari checkpoint ({cp_result.get('kind', '')}).", C.GREEN))
+        elif cp_result and not cp_result.get("restored"):
+            reason = cp_result.get("reason", "unknown")
+            if reason == "no_checkpoint":
+                print(c("[undo] tidak ada checkpoint git untuk di-restore (file tidak dikembalikan).", C.DIM))
+            elif reason in ("not_a_repo", "restore_failed"):
+                print(c(f"[undo] checkpoint git tidak bisa di-restore ({reason}).", C.YELLOW))
         dbmod.touch_session(args.db_path, session_id)
         return {"action": "skip"}
 

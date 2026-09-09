@@ -1675,12 +1675,12 @@ class TestSlashCommands:
         dbmod.init_db(args.db_path)
         sid = dbmod.create_session(args.db_path, args.workdir)
         dbmod.add_message(args.db_path, sid, "user", "buat plan", kind="chat")
-        dbmod.replace_todos(args.db_path, sid, [
+        dbmod.replace_todos(args.db_path, args.workdir, [
             {"content": "task pending", "status": "pending"},
             {"content": "task selesai", "status": "done"},
             {"content": "task jalan", "status": "in_progress"},
             {"content": "task batal", "status": "cancelled"},
-        ])
+        ], session_id=sid)
         r = slash_commands.handle_slash_command("/todos", args, sid, "sys")
         assert r["action"] == "skip"
         out = capsys.readouterr().out

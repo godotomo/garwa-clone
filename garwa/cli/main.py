@@ -209,6 +209,11 @@ def main():
                               "murah, giliran utama memakai model kuat.")
     parser.add_argument("--no-stream", action="store_true",
                          help="Matikan SSE streaming dan gunakan response JSON biasa")
+    parser.add_argument("--json", action="store_true",
+                         help="Output terstruktur NDJSON (Newline-Delimited JSON): satu objek "
+                              "JSON per baris di stdout (event session_start/assistant/tool_call/"
+                              "tool_result/summary/error). Output manusia (banner, status, warna) "
+                              "diredam. Cocok untuk konsumsi programatik / pipeline.")
     parser.add_argument("--full-tool-schema-text", action="store_true",
                          help="Tulis skema argumen tool LENGKAP sebagai teks di system "
                               "prompt (perilaku lama), selain field \"tools\" JSON. "
@@ -283,6 +288,18 @@ def main():
                              "Desktop). Default: ~/.config/garwa/mcp.json. Tool dari server "
                              "MCP didaftarkan dengan prefix 'mcp.<server>.<tool>'.")
     args = parser.parse_args()
+
+    # --- NDJSON output (--json) ---
+    # Aktifkan emitter SEBELUM apa pun dicetak, lalu arahkan sys.stdout
+    # (output manusia: banner, status, warna) ke null supaya stdout bersih
+    # hanya berisi NDJSON. Emitter menulis ke sys.__stdout__ sehingga tidak
+    # ikut teredam. Output debug tetap ke STDERR.
+    if args.json:
+        from .ndjson import setup as _ndjson_setup
+        from .ndjson import suppress_human_output as _suppress_human
+        _ndjson_setup()
+        _suppress = _suppress_human()
+        _suppress.__enter__()
 
     if args.auto and args.overnight:
         print(c("[ERROR] --auto dan --overnight tidak bisa dipakai bersamaan.", C.RED))
@@ -439,6 +456,10 @@ def main():
     os.environ["GARWA_DB_PATH"] = args.db_path
     os.environ["GARWA_SESSION_ID"] = session_id
 
+    from .ndjson import emit as _ndjson_emit
+    _ndjson_emit("session_start", session_id=session_id, workdir=args.workdir,
+                 model=model_id or args.model, resumed=resumed)
+
     print(c(f"{state.AGENT_NAME} CLI — coding agent lokal (Ctrl+C untuk keluar)", C.BOLD_CYAN))
     print(c(f"server model: {args.url}", C.DIM))
     print(c(f"model       : {model_id or args.model}", C.BOLD_BLUE))
@@ -469,9 +490,20 @@ def main():
         )
 
     if resumed:
-        todos = dbmod.get_todos(args.db_path, session_id)
+        todos = dbmod.get_todos(args.db_path, workdir=args.workdir)
         if todos:
             print(c(f"({len(todos)} item plan tersimpan -- gunakan tool todo_read untuk melihatnya)", C.DIM))
+    else:
+        # Sesi BARU di workdir yang sama: beri tahu kalau ada todo pending
+        # dari sesi sebelumnya (milik proyek/workdir, bukan sesi).
+        pending = dbmod.get_pending_todos(args.db_path, args.workdir)
+        if pending:
+            print(c(
+                f"[INFO] Ada {len(pending)} item rencana yang masih pending di proyek "
+                f"ini (dari sesi sebelumnya). Gunakan tool todo_read untuk melihatnya, "
+                f"atau /todos untuk mencetaknya.",
+                C.YELLOW,
+            ))
 
     if args.auto:
         try:
@@ -609,10 +641,70 @@ def main():
                     dbmod.touch_session(args.db_path, session_id)
                     continue
 
+            # --- Checkpoint git sebelum giliran diproses (best-effort) ---
+            # Snapshot working tree supaya /undo bisa mengembalikan perubahan
+            # file yang dilakukan agent pada giliran ini. Tidak menggagalkan
+            # giliran kalau bukan repo git / git tidak tersedia.
+            try:
+                from ..checkpoints import create_checkpoint
+                create_checkpoint(
+                    args.db_path,
+                    session_id,
+                    cwd=args.workdir,
+                    message=message_to_store[:80],
+                )
+            except Exception:  # noqa: BLE001 - checkpoint opsional
+                pass
+
+            # --- Hooks: UserPromptSubmit ---
+            # Jalankan skrip hook sebelum pesan user diproses. Hook bisa cancel
+            # (membatalkan giliran ini) atau overrideInput (mengganti pesan).
+            # Best-effort: tidak ada hook -> pesan berjalan normal.
+            try:
+                from ..hooks import HookControl as _HC
+                from ..hooks import build_payload
+                from ..hooks import run_hooks
+                _submit_hook = run_hooks(
+                    "prompt_submit",
+                    build_payload(
+                        event="prompt_submit",
+                        user_message=message_to_store,
+                        session_id=session_id,
+                    ),
+                    workdir=args.workdir,
+                )
+            except Exception:  # noqa: BLE001 - hook opsional
+                _submit_hook = None
+
+            if _submit_hook is not None and _submit_hook.cancel:
+                _reason = _submit_hook.cancelReason or "dibatalkan oleh UserPromptSubmit hook"
+                print(c(f"[hook] Pesan user dibatalkan: {_reason}", C.YELLOW))
+                dbmod.touch_session(args.db_path, session_id)
+                continue
+            if _submit_hook is not None and _submit_hook.overrideInput is not None:
+                message_to_store = _submit_hook.overrideInput
+                print(c("[hook] Pesan user di-override oleh hook.", C.DIM))
+
             dbmod.add_message(args.db_path, session_id, "user", message_to_store, kind="chat")
 
             try:
-                run_agent_loop(args, session_id, system_content)
+                _last_visible = run_agent_loop(args, session_id, system_content)
+                # --- Hooks: TaskComplete ---
+                # Jalankan skrip hook di akhir giliran yang berhasil. Best-effort.
+                try:
+                    from ..hooks import build_payload
+                    from ..hooks import run_hooks
+                    run_hooks(
+                        "agent_end",
+                        build_payload(
+                            event="agent_end",
+                            output_text=_last_visible,
+                            session_id=session_id,
+                        ),
+                        workdir=args.workdir,
+                    )
+                except Exception:  # noqa: BLE001 - hook opsional
+                    pass
             except KeyboardInterrupt:
 
                 print(c(
@@ -623,6 +715,8 @@ def main():
             except _get_requests().exceptions.RequestException as e:
 
                 state._accumulate_error()
+                from .ndjson import emit as _ndjson_emit
+                _ndjson_emit("error", message=f"koneksi/streaming: {type(e).__name__}: {e}")
                 print(c(
                     f"\n[ERROR] Giliran ini gagal karena masalah koneksi/streaming "
                     f"ke server model ({type(e).__name__}: {e}). Sesi tetap "
@@ -634,6 +728,8 @@ def main():
             except Exception as e:
 
                 state._accumulate_error()
+                from .ndjson import emit as _ndjson_emit
+                _ndjson_emit("error", message=f"tak terduga: {type(e).__name__}: {e}")
                 print(c(
                     f"\n[ERROR] Giliran ini berhenti karena error tak terduga: "
                     f"{type(e).__name__}: {e}. Kembali ke prompt.",
@@ -684,6 +780,13 @@ def _build_status_info(args, session_id):
         parts.append(f"tail:{keep_tail}")
     parts.append(f"ses:{session_id[:8]}")
     parts.append(f"tools:{tools_count}")
+    # Mode agent aktif (plan/act) -- tampil eksplisit supaya user sadar kalau
+    # sedang dalam plan mode (tool mutating diblokir).
+    try:
+        _mode = state.get_mode()
+    except Exception:  # noqa: BLE001
+        _mode = "act"
+    parts.append(f"mode:{_mode}")
     # Pemakaian token global (akumulasi lintas giliran dalam sesi ini).
     usage_total = getattr(state, "TOKEN_USAGE_TOTAL", None)
     if usage_total:

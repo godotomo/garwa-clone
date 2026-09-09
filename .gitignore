@@ -27,6 +27,9 @@ skills/job-tracker/scripts/jobbot/service_account.json
 skills/job-tracker/scripts/jobbot/credentials.json
 skills/job-tracker/scripts/jobbot/token.json
 
+# Riset clone repo Cline (besar, bukan source garwa)
+.cline-riset/
+
 # Generated deliverables (large, not source)
 deliverables/
 skills/job-tracker/scripts/jobbot/deliverables/

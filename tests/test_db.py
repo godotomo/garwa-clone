@@ -266,6 +266,45 @@ def test_get_todos_empty(db_path, session_id):
     assert dbmod.get_todos(db_path, session_id) == []
 
 
+# ---------------------------------------------------------------- todos per-workdir
+# Todo milik PROYEK (workdir), bukan sesi. Sesi baru di workdir yang sama
+# harus tetap bisa mengakses todo pending (tanpa --resume).
+
+def test_todos_are_per_workdir_cross_session(db_path):
+    # Dua sesi di workdir yang SAMA.
+    sid1 = dbmod.create_session(db_path, workdir="/proj/x")
+    sid2 = dbmod.create_session(db_path, workdir="/proj/x")
+    dbmod.replace_todos(db_path, "/proj/x", [
+        {"content": "rencana A", "status": "pending"},
+        {"content": "rencana B", "status": "done"},
+    ], session_id=sid1)
+    # Sesi lain di workdir yang sama tetap melihat todo.
+    todos = dbmod.get_todos(db_path, workdir="/proj/x")
+    assert [t["content"] for t in todos] == ["rencana A", "rencana B"]
+
+
+def test_todos_isolated_between_workdirs(db_path):
+    dbmod.replace_todos(db_path, "/proj/x", [{"content": "x-task"}])
+    dbmod.replace_todos(db_path, "/proj/y", [{"content": "y-task"}])
+    assert [t["content"] for t in dbmod.get_todos(db_path, workdir="/proj/x")] == ["x-task"]
+    assert [t["content"] for t in dbmod.get_todos(db_path, workdir="/proj/y")] == ["y-task"]
+
+
+def test_get_pending_todos_only_active(db_path):
+    dbmod.replace_todos(db_path, "/proj/x", [
+        {"content": "pending", "status": "pending"},
+        {"content": "inprog", "status": "in_progress"},
+        {"content": "done", "status": "done"},
+        {"content": "cancelled", "status": "cancelled"},
+    ])
+    pending = dbmod.get_pending_todos(db_path, "/proj/x")
+    assert [t["content"] for t in pending] == ["pending", "inprog"]
+
+
+def test_get_pending_todos_none(db_path):
+    assert dbmod.get_pending_todos(db_path, "/proj/x") == []
+
+
 # ---------------------------------------------------------------- notes
 
 def test_set_note_upsert(db_path):

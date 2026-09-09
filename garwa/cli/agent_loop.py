@@ -22,6 +22,7 @@ from .colors import C
 from .colors import c
 from .json_repair import extract_tool_call
 from .llm_client import call_llama_server
+from .ndjson import emit as ndjson_emit
 from .llm_errors import ContextExceededError
 from .llm_errors import RepetitionLoopError
 from .llm_errors import TruncatedGenerationError
@@ -105,6 +106,8 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
         _t_total = time.monotonic() - _t_start
         _success = _tool_call_seq - _error_count
         _tokens = state.TOKEN_USAGE_TOTAL.get("total", 0) - _token_start
+        ndjson_emit("summary", tool_calls=_tool_call_seq, errors=_error_count,
+                    duration=_t_total, iterations=_iteration_count, tokens=_tokens)
         print(c("─" * 60, C.DIM))
         print(c("  Ringkasan giliran", C.BOLD))
         print(c(
@@ -146,6 +149,14 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
             api_key=args.api_key,
             tools_payload=build_openai_tools_payload(),
         )
+        # Plan mode: tambahkan instruksi eksplisit ke system prompt (layer 3)
+        # supaya model tahu sedang dalam plan mode dan tidak boleh mengubah
+        # file/sistem. build_openai_tools_payload() di atas sudah memfilter
+        # tool yang diblokir dari field "tools" (layer 1).
+        _pm = state.get_mode()
+        if _pm == "plan":
+            from .plan_mode import plan_mode_system_prompt
+            kwargs["system_prompt"] = system_content + "\n\n" + plan_mode_system_prompt(_pm)
         # Hanya teruskan parameter tuning kalau benar-benar diset user
         # (melalui flag CLI atau config); kalau None, biarkan context_manager
         # memakai defaultnya sendiri supaya tidak menimpa dengan None.
@@ -469,6 +480,8 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
         ).strip()
         if visible_text:
             last_visible = visible_text
+        if visible_text:
+            ndjson_emit("assistant", text=visible_text)
         if args.no_stream and visible_text:
             _render_markdown_once(visible_text)
 
@@ -581,7 +594,95 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
 
         _tool_call_seq += 1
         state._tool_call_index.set(_tool_call_seq)
+        ndjson_emit("tool_call", name=name, arguments=arguments)
+
+        # --- Plan mode: blokir tool yang mengubah file/sistem (layer 2) ---
+        # Kalau model tetap memanggil tool yang diblokir (mis. payload di-cache
+        # atau model menyimpang), tolak eksekusi dan kembalikan pesan error
+        # sebagai tool_result supaya model tahu sedang di plan mode.
+        if state.get_mode() == "plan":
+            from .plan_mode import is_tool_blocked_in_plan_mode, format_plan_blocked_tool_error
+            if is_tool_blocked_in_plan_mode(name):
+                print(c(
+                    f"  ⛔ {name} diblokir di PLAN MODE (tool mengubah file/sistem).",
+                    C.YELLOW,
+                ))
+                dbmod.add_message(
+                    args.db_path,
+                    session_id,
+                    "user",
+                    format_plan_blocked_tool_error(name),
+                    kind="tool_result",
+                )
+                continue
+
         _t0 = time.monotonic()
+
+        # --- Hooks: PreToolUse (tool_call) ---
+        # Jalankan skrip hook sebelum tool dieksekusi. Hook bisa cancel
+        # (hentikan tool), minta review (konfirmasi user), atau override
+        # argumen tool (overrideInput). Best-effort: kalau tidak ada hook,
+        # HookControl() kosong dan eksekusi berjalan normal.
+        _hook = None
+        try:
+            from ..hooks import HookControl as _HC
+            from ..hooks import build_payload
+            from ..hooks import run_hooks
+            _hook = run_hooks(
+                "tool_call",
+                build_payload(
+                    event="tool_call",
+                    tool_name=name,
+                    tool_input=arguments,
+                    session_id=session_id,
+                ),
+                workdir=args.workdir,
+            )
+        except Exception:  # noqa: BLE001 - hook opsional, jangan gagalkan giliran
+            _hook = None
+        if _hook is None:
+            from ..hooks import HookControl as _HC
+            _hook = _HC()
+
+        if _hook.cancel:
+            _reason = _hook.cancelReason or "dibatalkan oleh hook"
+            print(c(f"  ⛔ {name} dibatalkan oleh PreToolUse hook: {_reason}", C.YELLOW))
+            dbmod.add_message(
+                args.db_path,
+                session_id,
+                "user",
+                f"<tool_result>\n[HOOK-CANCEL] Tool `{name}` dibatalkan oleh PreToolUse hook: {_reason}\n</tool_result>",
+                kind="tool_result",
+            )
+            continue
+
+        # overrideInput: ganti argumen tool sebelum dieksekusi.
+        if _hook.overrideInput is not None:
+            arguments = _hook.overrideInput
+            print(c(f"  ↻ {name} argumen di-override oleh hook.", C.DIM))
+
+        # review: minta konfirmasi user sebelum tool yang mengubah file.
+        if _hook.review and not args.auto_approve:
+            print(c(
+                f"  🔍 {name} diminta review oleh hook. "
+                f"Ketik 'y' untuk lanjut, lainnya untuk batal.",
+                C.BOLD_YELLOW,
+            ))
+            try:
+                _ans = input("  review ❯ ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                _ans = ""
+            if _ans != "y":
+                print(c(f"  ⛔ {name} dibatalkan oleh user (review hook).", C.YELLOW))
+                dbmod.add_message(
+                    args.db_path,
+                    session_id,
+                    "user",
+                    f"<tool_result>\n[HOOK-REVIEW] Tool `{name}` dibatalkan oleh user saat review hook.\n</tool_result>",
+                    kind="tool_result",
+                )
+                continue
+
         # Nyalakan spinner HANYA kalau tool ini tidak berpotensi memunculkan
         # prompt konfirmasi ke stdin. Meskipun auto_approve aktif, beberapa
         # tool TETAP meminta konfirmasi (path eksternal saat sandbox aktif,
@@ -593,6 +694,37 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
         else:
             result = execute_tool(name, arguments, args.auto_approve)
         _elapsed = time.monotonic() - _t0
+
+        # --- Hooks: PostToolUse (tool_result) ---
+        # Jalankan skrip hook setelah tool dieksekusi. Hook bisa cancel
+        # (mengganti hasil jadi error) atau menambah konteks (context) yang
+        # disuntikkan ke pesan berikutnya. Best-effort.
+        try:
+            from ..hooks import build_payload
+            from ..hooks import run_hooks
+            _post_hook = run_hooks(
+                "tool_result",
+                build_payload(
+                    event="tool_result",
+                    tool_name=name,
+                    tool_input=arguments,
+                    tool_output=result,
+                    is_error=_is_error,
+                    session_id=session_id,
+                ),
+                workdir=args.workdir,
+            )
+        except Exception:  # noqa: BLE001 - hook opsional
+            _post_hook = None
+
+        if _post_hook is not None and _post_hook.cancel:
+            _reason = _post_hook.cancelReason or "dibatalkan oleh PostToolUse hook"
+            print(c(f"  ⛔ {name} hasil dibatalkan oleh PostToolUse hook: {_reason}", C.YELLOW))
+            result = f"[ERROR] {_reason}"
+            _is_error = True
+        elif _post_hook is not None and _post_hook.context:
+            # Suntikkan konteks tambahan dari hook ke tool_result.
+            result = f"{result}\n\n[HOOK-CONTEXT] {_post_hook.context}"
         _is_error = result.strip().startswith("[ERROR]") or result.strip().startswith("[DITOLAK]")
         _icon = "✗" if _is_error else "✓"
         _status_color = C.BOLD_RED if _is_error else C.BOLD_GREEN
@@ -605,6 +737,7 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
         print(c(preview, C.DIM))
 
         _is_error = result.strip().startswith("[ERROR]") or result.strip().startswith("[DITOLAK]")
+        ndjson_emit("tool_result", name=name, ok=not _is_error, result=result)
         if _is_error:
             _error_count += 1
 

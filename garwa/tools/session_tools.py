@@ -79,7 +79,8 @@ def tool_todo_write(todos: list) -> str:
     # ke dispatcher tool-call di cli.py, alih-alih dikembalikan sebagai
     # "[ERROR] ..." yang konsisten seperti handler lain.
     try:
-        dbmod.replace_todos(state.DB_PATH, state.SESSION_ID, normalized)
+        dbmod.replace_todos(state.DB_PATH, state.WORKDIR, normalized,
+                            session_id=state.SESSION_ID)
     except ValueError as e:
         return f"[ERROR] Data todo tidak valid: {e}"
     except Exception as e:
@@ -100,7 +101,7 @@ def tool_todo_read() -> str:
     # SQLite mentah (mis. "database is locked") bisa merambat sampai ke
     # dispatcher cli.py. Lihat catatan sama di tool_todo_write.
     try:
-        rows = dbmod.get_todos(state.DB_PATH, state.SESSION_ID)
+        rows = dbmod.get_todos(state.DB_PATH, workdir=state.WORKDIR)
     except Exception as e:
         return f"[ERROR] Gagal membaca plan/todo dari database: {type(e).__name__}: {e}"
     if not rows:
