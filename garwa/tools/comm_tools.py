@@ -42,7 +42,19 @@ except ImportError:
 # Helpers konfigurasi (baca dari garwa.config yang sudah menangani env+.env)
 # ---------------------------------------------------------------------------
 def _get(name: str, default: str = "") -> str:
-    """Baca nilai config dari modul config (fallback env langsung)."""
+    """Baca nilai config dengan prioritas: env proses > modul config > default.
+
+    Env proses MENANG atas nilai statis `config_mod` karena gateway Telegram
+    meng-override `GARWA_TELEGRAM_CHAT_ID` per-turn via os.environ (lihat
+    telegram_gateway._run_agent_turn_worker) supaya hasil agent (voice,
+    send_document, send_telegram) selalu terkirim balik ke chat asal. Nilai
+    `config_mod.TELEGRAM_CHAT_ID` di-freeze saat import (baris 357 config.py),
+    jadi kalau diutamakan, override env per-turn akan diabaikan dan pesan
+    nyasar ke channel default.
+    """
+    env = os.environ.get(name)
+    if env and env.strip():
+        return env.strip()
     if config_mod is not None:
         v = getattr(config_mod, name, None)
         if v:
@@ -552,3 +564,100 @@ def _get_requests():
         import requests
         _requests = requests
     return _requests
+
+
+# ---------------------------------------------------------------------------
+# Kirim file / audio ke Telegram (send_document, text_to_speech)
+# ---------------------------------------------------------------------------
+# `chat_id` default diambil dari env GARWA_TELEGRAM_CHAT_ID (konsisten dengan
+# tool_send_telegram). Di gateway, chat_id asal di-set via env per-turn supaya
+# hasil agent terkirim balik ke chat yang sama.
+def _tg_send_multipart(method: str, chat_id: str, files: dict, caption: str = "") -> str:
+    requests = _get_requests()
+    token = _telegram_token()
+    if not token or not chat_id:
+        return f"[ERROR: {method}] GARWA_TELEGRAM_TOKEN dan chat_id belum diset."
+    try:
+        data = {"chat_id": chat_id}
+        if caption:
+            data["caption"] = caption
+        resp = requests.post(
+            f"{_tg_api_url()}/{method}",
+            data=data,
+            files=files,
+            timeout=120,
+        )
+        resp.raise_for_status()
+        ok = resp.json().get("ok", False)
+        return f"[{method}] OK." if ok else f"[ERROR: {method}] respon tidak ok: {resp.text[:300]}"
+    except Exception as e:
+        return f"[ERROR: {method}] Gagal kirim: {e}"
+
+
+def _resolve_tg_target(chat_id: str) -> str:
+    return (chat_id or "").strip() or _telegram_chat_id()
+
+
+def tool_send_document(file_path: str, caption: str = "", chat_id: str = None) -> str:
+    """Kirim satu file (PDF, teks, gambar, dsb) ke Telegram sebagai attachment.
+
+    `file_path` wajib ada di disk. `caption` opsional. `chat_id` opsional
+    (fallback env GARWA_TELEGRAM_CHAT_ID). Untuk mengirim beberapa file /
+    proyek sekaligus, zip dulu lalu kirim zip-nya.
+    """
+    if not file_path:
+        return "[ERROR: send_document] `file_path` tidak boleh kosong."
+    if not os.path.isfile(file_path):
+        return f"[ERROR: send_document] file tidak ditemukan: {file_path}"
+    target = _resolve_tg_target(chat_id)
+    if not target:
+        return "[ERROR: send_document] chat_id tidak diset (env GARWA_TELEGRAM_CHAT_ID)."
+    fname = os.path.basename(file_path)
+    with open(file_path, "rb") as f:
+        return _tg_send_multipart(
+            "sendDocument", target,
+            {"document": (fname, f)},
+            caption=caption,
+        )
+
+
+def tool_text_to_speech(text: str, output_path: str = "", voice: str = None,
+                        chat_id: str = None) -> str:
+    """Sintesis teks jadi audio (TTS) lalu kirim ke Telegram sebagai voice/audio.
+
+    `output_path` opsional (default: file temp mp3). `voice` opsional (edge-tts).
+    `chat_id` opsional (fallback env). Provider diatur via GARWA_TTS_PROVIDER.
+    """
+    text = (text or "").strip()
+    if not text:
+        return "[ERROR: text_to_speech] `text` tidak boleh kosong."
+    target = _resolve_tg_target(chat_id)
+    if not target:
+        return "[ERROR: text_to_speech] chat_id tidak diset (env GARWA_TELEGRAM_CHAT_ID)."
+
+    # Import lazy supaya gateway tetap jalan tanpa dependensi TTS.
+    from .tts import text_to_speech as _tts
+
+    if not output_path:
+        output_path = os.path.join(
+            os.environ.get("TMPDIR", "/tmp"), f"garwa_tts_{int(time.time())}.mp3"
+        )
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    res = _tts(text, output_path, voice=voice)
+    if not res.get("success"):
+        return f"[ERROR: text_to_speech] {res.get('error', 'gagal')}"
+    audio_path = res["path"]
+    ext = os.path.splitext(audio_path)[1].lower()
+    with open(audio_path, "rb") as f:
+        # .ogg/.opus -> sendVoice (voice bubble); .mp3/.m4a -> sendAudio; else document.
+        if ext in (".ogg", ".opus"):
+            return _tg_send_multipart(
+                "sendVoice", target, {"voice": (os.path.basename(audio_path), f)}
+            )
+        if ext in (".mp3", ".m4a"):
+            return _tg_send_multipart(
+                "sendAudio", target, {"audio": (os.path.basename(audio_path), f)}
+            )
+        return _tg_send_multipart(
+            "sendDocument", target, {"document": (os.path.basename(audio_path), f)}
+        )

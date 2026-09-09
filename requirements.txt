@@ -46,6 +46,23 @@ pytest>=7.0
 pytest-cov>=4.0
 coverage>=7.0
 
+# --- STT/TTS (opsional, lazy-import + fallback otomatis) ---
+# Dipakai untuk voice command (STT) dan balasan suara (TTS) via Telegram.
+# Tanpa paket ini gateway tetap berjalan (voice/file ditolak dengan pesan
+# jelas; send_document tetap jalan karena hanya butuh requests).
+#
+# STT: pilih salah satu.
+#  - groq: cloud Whisper (butuh GARWA_GROQ_API_KEY). Ringan, tanpa model lokal.
+#  - faster-whisper: lokal, gratis, offline, tapi butuh RAM/CPU.
+#    (sengaja dikomentari: berat, hanya pasang manual kalau mau STT lokal)
+groq>=0.11
+# faster-whisper>=1.0
+#
+# TTS: pilih salah satu.
+#  - edge-tts: gratis, tanpa API key, kualitas bagus (default).
+#  - espeak-ng: sistem (pkg install espeak-ng), tanpa dependensi Python.
+edge-tts>=6.1
+
 # --- Jobbot (job scraper & reporter) ---
 # Opsional -- hanya dipakai saat integrasi Google Sheets/Drive (setup-oauth).
 # Tanpa ini, CLI jobbot tetap berjalan (scraper/reporter/email/cron).

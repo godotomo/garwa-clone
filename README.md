@@ -537,6 +537,63 @@ perintah slash yang **tidak dikenal** yang jatuh ke agent sebagai pesan biasa
   mentah (`<path>`, `<file>`, dll) yang bikin API Telegram 400 kalau
   `parse_mode=HTML` diaktifkan, jadi pesan dikirim sebagai plain text.
 
+### Voice, file, dan gambar (STT/TTS + transfer file)
+
+Gateway Telegram Garwa mendukung **voice command (STT)**, **balasan suara
+(TTS)**, **kirim/terima file**, dan **analisis gambar (vision)**:
+
+- **🎤 Voice message** → diunduh lalu ditranskripsi (STT) → teksnya diteruskan
+  ke agent sebagai perintah. Provider STT pluggable (lihat tabel env di bawah).
+- **📄 Document (PDF/teks/dll)** → diunduh ke folder `inbox/` lalu path-nya
+  dicatat ke agent sebagai `<file_attachment>`; agent bisa membaca/menganalisa
+  file itu via tool `read_file`.
+- **🖼️ Photo** → diunduh lalu di-inject sebagai tag `<file_attachment
+  kind="gambar">`. Pipeline vision Garwa meng-encode pikselnya jadi base64
+  content block, sehingga model **yang mendukung vision** benar-benar "melihat"
+  gambarnya (bukan cuma metadata).
+- **📤 Kirim file hasil** → agent bisa memakai tool `send_document(file_path)`
+  untuk mengirim PDF/teks/gambar/zip balik ke chat asal. Untuk proyek/multi-file,
+  zip dulu lalu kirim zip-nya.
+- **🗣️ Balasan suara** → tool `text_to_speech(text)` menyintesis teks jadi
+  audio dan mengirimnya ke chat asal sebagai voice/audio message.
+
+Semua dependensi STT/TTS bersifat **opsional** (lazy-import + fallback
+otomatis): tanpa paket terinstall, gateway tetap berjalan — voice/file ditolak
+dengan pesan jelas, dan `send_document` tetap jalan (hanya butuh `requests`).
+
+**Routing hasil ke chat asal:** gateway meng-override env
+`GARWA_TELEGRAM_CHAT_ID` per-turn ke chat tempat pesan masuk, dan tool
+`text_to_speech` / `send_document` / `send_telegram` mengutamakan env proses
+tersebut (bukan nilai statis dari `config.py`). Ini memastikan balasan suara
+dan file selalu kembali ke **chat yang sedang Anda buka**, bukan nyasar ke
+channel default.
+
+| Variabel | Default | Fungsi |
+|----------|---------|--------|
+| `GARWA_STT_PROVIDER` | `auto` | Provider STT: `auto` (groq→lokal), `groq`, `local`, `none` |
+| `GARWA_GROQ_API_KEY` | *(kosong)* | API key Groq untuk STT cloud Whisper |
+| `GARWA_STT_MODEL` | `tiny` | Model lokal faster-whisper (ringan) |
+| `GARWA_STT_LANGUAGE` | *(auto)* | Hint bahasa STT lokal (mis. `id`) |
+| `GARWA_TTS_PROVIDER` | `auto` | Provider TTS: `auto` (edge-tts→espeak), `edge-tts`, `espeak`, `none` |
+| `GARWA_TTS_VOICE` | `id-ID-ArdiNeural` | Voice edge-tts |
+| `GARWA_TTS_LANG` | `id` | Bahasa espeak-ng |
+| `GARWA_INBOX_DIR` | `<workdir>/inbox` | Folder tempat file dari Telegram disimpan |
+
+Install dependensi opsional:
+
+```bash
+# STT cloud (ringan, butuh GARWA_GROQ_API_KEY)
+pip install groq
+
+# STT lokal (gratis, offline, tapi butuh RAM/CPU)
+pip install faster-whisper
+
+# TTS gratis tanpa API key
+pip install edge-tts
+# atau TTS sistem tanpa dependensi Python (Termux)
+pkg install espeak-ng
+```
+
 ---
 
 ## Mode Cron (Scheduling)

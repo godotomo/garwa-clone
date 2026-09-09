@@ -27,7 +27,7 @@ from .session_tools import _require_session, tool_todo_write, tool_todo_read, to
 from .sub_agent import tool_spawn_agent, tool_spawn_agents_parallel
 from .comm_tools import (
     tool_send_email, tool_read_inbox, tool_read_email, tool_reply_email,
-    tool_send_telegram,
+    tool_send_telegram, tool_send_document, tool_text_to_speech,
     tool_schedule_task, tool_list_schedules, tool_remove_schedule,
     tool_enable_schedule, tool_disable_schedule,
 )
@@ -831,6 +831,41 @@ TOOLS = {
                 "type": "object",
                 "properties": {
                     "text": {"type": "string", "description": "isi pesan"},
+                    "chat_id": {"type": "string", "description": "chat/channel id tujuan (opsional)"},
+                },
+                "required": ["text"],
+            },
+        },
+    },
+    "send_document": {
+        "handler": tool_send_document,
+        "destructive": True,
+        "schema": {
+            "name": "send_document",
+            "description": "Kirim satu file (PDF, teks, gambar, dsb) ke Telegram sebagai attachment. `file_path` wajib ada di disk. `chat_id` opsional (fallback GARWA_TELEGRAM_CHAT_ID). Untuk mengirim beberapa file/proyek sekaligus, zip dulu lalu kirim zip-nya.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "path file yang akan dikirim"},
+                    "caption": {"type": "string", "description": "caption opsional"},
+                    "chat_id": {"type": "string", "description": "chat/channel id tujuan (opsional)"},
+                },
+                "required": ["file_path"],
+            },
+        },
+    },
+    "text_to_speech": {
+        "handler": tool_text_to_speech,
+        "destructive": True,
+        "schema": {
+            "name": "text_to_speech",
+            "description": "Sintesis teks jadi audio (TTS) lalu kirim ke Telegram sebagai voice/audio. `output_path` dan `voice` opsional. `chat_id` opsional (fallback GARWA_TELEGRAM_CHAT_ID). Provider diatur via GARWA_TTS_PROVIDER.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "teks yang akan disintesis"},
+                    "output_path": {"type": "string", "description": "path output opsional"},
+                    "voice": {"type": "string", "description": "voice edge-tts opsional"},
                     "chat_id": {"type": "string", "description": "chat/channel id tujuan (opsional)"},
                 },
                 "required": ["text"],

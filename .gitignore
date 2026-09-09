@@ -42,3 +42,6 @@ tmp_*.py
 node_modules/
 termux-browser-pilot/
 .venv-test-311/
+
+# Vendor source clone (pihak ketiga, 260M, bukan milik repo ini)
+hermes-agent-src/

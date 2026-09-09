@@ -26,6 +26,7 @@ from __future__ import annotations
 import contextlib
 import html
 import io
+import mimetypes
 import os
 import threading
 import time
@@ -152,7 +153,8 @@ class TelegramGateway:
     def get_updates(self, timeout: int = 30) -> list:
         data = self._call(
             "getUpdates", offset=self._offset,
-            timeout=timeout, allowed_updates='["message"]',
+            timeout=timeout,
+            allowed_updates='["message"]',
         )
         if not data or not data.get("ok"):
             return []
@@ -176,6 +178,43 @@ class TelegramGateway:
             data = self._call("sendMessage", **params)
             ok = ok and bool(data and data.get("ok"))
         return ok
+
+    # -- media: download file dari Telegram ------------------------------------
+    def _download_file(self, file_id: str, dest_path: str) -> bool:
+        """Unduh file Telegram (voice/audio/document/photo) ke `dest_path`."""
+        if not self.token:
+            return False
+        try:
+            data = self._call("getFile", file_id=file_id)
+            if not data or not data.get("ok"):
+                print(f"[telegram-gateway] _download_file: getFile gagal -> {data}")
+                return False
+            file_path = data["result"].get("file_path")
+            if not file_path:
+                print(f"[telegram-gateway] _download_file: getFile tanpa file_path -> {data}")
+                return False
+            url = f"https://api.telegram.org/file/bot{self.token}/{file_path}"
+            resp = requests.get(url, timeout=120)
+            resp.raise_for_status()
+            os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
+            with open(dest_path, "wb") as f:
+                f.write(resp.content)
+            return os.path.getsize(dest_path) > 0
+        except Exception as e:
+            print(f"[telegram-gateway] _download_file error: {type(e).__name__}: {e}")
+            return False
+
+    def _inbox_dir(self) -> str:
+        """Folder tempat file yang dikirim user ke Telegram disimpan."""
+        base = os.environ.get("GARWA_INBOX_DIR") or os.path.join(self._workdir(), "inbox")
+        os.makedirs(base, exist_ok=True)
+        return base
+
+    def _is_image_ext(self, filename: str) -> bool:
+        return os.path.splitext(filename)[1].lower() in {
+            ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp",
+            ".tiff", ".tif", ".heic", ".heif", ".ico",
+        }
 
     # -- authorization --------------------------------------------------------
     def _allowed(self, chat_id, user_id=None) -> bool:
@@ -322,6 +361,10 @@ class TelegramGateway:
             "Kirim pertanyaan/perintah, Garwa akan menjalankannya di mesin "
             "lokal (baca/tulis file, jalankan bash, git, dll) lalu membalas "
             "hasilnya ke sini.\n\n"
+            "🎤 Voice: kirim voice message untuk perintah suara (STT).\n"
+            "📄 File: kirim PDF/teks/gambar/audio untuk dianalisa atau diolah;\n"
+            "   hasil berupa file dikirim balik sebagai attachment (send_document).\n"
+            "🖼️ Gambar: dianalisa via vision (jika model mendukung).\n\n"
             "Perintah:\n"
             "/start — mulai / bantuan\n"
             "/help — bantuan ini\n"
@@ -388,6 +431,11 @@ class TelegramGateway:
         if self.args is not None:
             self.args.auto_approve = True
 
+        # Set chat_id asal di env supaya tool send_document/text_to_speech
+        # mengirim hasil balik ke chat Telegram yang sama (fallback env).
+        _prev_chat = os.environ.get("GARWA_TELEGRAM_CHAT_ID")
+        os.environ["GARWA_TELEGRAM_CHAT_ID"] = str(chat_id)
+
         db_path = self._db_path()
         session_id = self._session_for_chat(chat_id)
         self._prepare_state(session_id)
@@ -417,6 +465,11 @@ class TelegramGateway:
         finally:
             self._active_sessions.pop(str(chat_id), None)
             cli_state.clear_interrupt(session_id)
+            # Restore env chat_id (jangan bocor ke turn/chat lain).
+            if _prev_chat is None:
+                os.environ.pop("GARWA_TELEGRAM_CHAT_ID", None)
+            else:
+                os.environ["GARWA_TELEGRAM_CHAT_ID"] = _prev_chat
 
         dbmod.touch_session(db_path, session_id)
         if last_visible and last_visible.strip():
@@ -457,6 +510,11 @@ class TelegramGateway:
             )
             return
 
+        # --- Media (voice/audio/document/photo) ---
+        if msg.get("voice") or msg.get("audio") or msg.get("document") or msg.get("photo"):
+            self._handle_media_message(chat_id, msg_id, msg)
+            return
+
         text = (msg.get("text") or "").strip()
         if not text:
             self.send_message(chat_id, "❓ Pesan kosong.", reply_to=msg_id)
@@ -466,6 +524,123 @@ class TelegramGateway:
             self._handle_command(chat_id, msg_id, text)
         else:
             self._run_agent_turn(chat_id, msg_id, text)
+
+    def _handle_media_message(self, chat_id, msg_id, msg: dict) -> None:
+        """Tangani voice/audio/document/photo yang dikirim user ke Telegram.
+
+        - voice/audio  : unduh lalu transkripsi (STT) -> teks diteruskan ke agent.
+        - document     : unduh lalu catat path ke agent (file bisa dibaca/dianalisa).
+        - photo        : unduh lalu inject tag <file_attachment kind="gambar"> supaya
+                         model vision menerima piksel gambar (jika model mendukung).
+        """
+        inbox = self._inbox_dir()
+        caption = (msg.get("caption") or "").strip()
+
+        # --- Voice message (native Telegram voice note) ---
+        if msg.get("voice"):
+            voice = msg["voice"]
+            file_id = voice.get("file_id")
+            dest = os.path.join(inbox, f"voice_{msg_id}.ogg")
+            if not self._download_file(file_id, dest):
+                self.send_message(chat_id, "❌ Gagal mengunduh voice message.", reply_to=msg_id)
+                return
+            self.send_message(chat_id, "🎤 Voice message diterima, mentranskripsi...", reply_to=msg_id)
+            text = self._transcribe(dest)
+            if text:
+                self._run_agent_turn(chat_id, msg_id, text)
+            else:
+                self.send_message(
+                    chat_id,
+                    "❌ STT tidak tersedia / gagal mentranskripsi voice. "
+                    "Pasang GARWA_GROQ_API_KEY atau install faster-whisper.",
+                    reply_to=msg_id,
+                )
+            return
+
+        # --- Audio file (mp3/m4a/etc) ---
+        if msg.get("audio"):
+            audio = msg["audio"]
+            file_id = audio.get("file_id")
+            fname = os.path.basename(audio.get("file_name") or f"audio_{msg_id}")
+            ext = os.path.splitext(fname)[1].lower() or ".mp3"
+            dest = os.path.join(inbox, f"audio_{msg_id}{ext}")
+            if not self._download_file(file_id, dest):
+                self.send_message(chat_id, "❌ Gagal mengunduh audio.", reply_to=msg_id)
+                return
+            self.send_message(chat_id, "🎵 Audio diterima, mentranskripsi...", reply_to=msg_id)
+            text = self._transcribe(dest)
+            if text:
+                self._run_agent_turn(chat_id, msg_id, text)
+            else:
+                # Audio file tidak bisa di-transcribe -> catat path sebagai dokumen.
+                self._run_agent_turn(chat_id, msg_id, self._file_attachment_text(dest, caption))
+            return
+
+        # --- Document (PDF, teks, dll) ---
+        if msg.get("document"):
+            doc = msg["document"]
+            file_id = doc.get("file_id")
+            fname = os.path.basename(doc.get("file_name") or f"file_{msg_id}")
+            dest = os.path.join(inbox, fname)
+            if not self._download_file(file_id, dest):
+                self.send_message(chat_id, "❌ Gagal mengunduh file.", reply_to=msg_id)
+                return
+            size = os.path.getsize(dest)
+            self.send_message(
+                chat_id,
+                f"📄 File diterima: <code>{_escape(fname)}</code> ({size} bytes). Menganalisa...",
+                reply_to=msg_id,
+            )
+            text = self._file_attachment_text(dest, caption)
+            self._run_agent_turn(chat_id, msg_id, text)
+            return
+
+        # --- Photo (gambar) ---
+        if msg.get("photo"):
+            photo = msg["photo"][-1]  # resolusi tertinggi
+            file_id = photo.get("file_id")
+            dest = os.path.join(inbox, f"photo_{msg_id}.jpg")
+            if not self._download_file(file_id, dest):
+                self.send_message(chat_id, "❌ Gagal mengunduh gambar.", reply_to=msg_id)
+                return
+            self.send_message(chat_id, "🖼️ Gambar diterima, menganalisa...", reply_to=msg_id)
+            text = self._file_attachment_text(dest, caption)
+            self._run_agent_turn(chat_id, msg_id, text)
+
+    def _file_attachment_text(self, path: str, caption: str = "") -> str:
+        """Bangun teks user message berisi tag <file_attachment> + caption.
+
+        Untuk gambar memakai kind="gambar" (diproses vision pipeline jadi
+        base64 content block). Untuk file lain kind=\"dokumen\" (model membaca
+        path via tool read_file). Status \"workdir\" karena file disimpan di
+        dalam working directory (inbox/).
+        """
+        size = os.path.getsize(path) if os.path.isfile(path) else 0
+        mime, _ = mimetypes.guess_type(path)
+        kind = "gambar" if self._is_image_ext(path) else "dokumen"
+        tag = (
+            f'<file_attachment path="{path}" kind="{kind}" '
+            f'mime="{mime or "application/octet-stream"}" size_bytes="{size}" '
+            f'status="workdir"/>'
+        )
+        if caption:
+            return f"{tag}\n{caption}"
+        return tag
+
+    def _transcribe(self, path: str) -> str:
+        """Transkripsi audio via STT (lazy import). Return teks atau ""."""
+        try:
+            from .tools.stt import transcribe_audio, transcribe_audio_local_fallback
+        except Exception:
+            return ""
+        res = transcribe_audio(path)
+        if res.get("success"):
+            return res.get("transcript", "").strip()
+        # Fallback lokal kalau cloud gagal.
+        fb = transcribe_audio_local_fallback(path)
+        if fb.get("success"):
+            return fb.get("transcript", "").strip()
+        return ""
 
     # -- polling loop ------------------------------------------------------------------
     def poll_once(self, timeout: int = 30) -> int:
