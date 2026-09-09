@@ -357,7 +357,11 @@ def tool_send_telegram(text: str, chat_id: str = None) -> str:
     try:
         resp = requests.post(
             f"{_tg_api_url()}/sendMessage",
-            data={"chat_id": target, "text": text, "parse_mode": "HTML"},
+            # SENG AJA tanpa parse_mode: teks dari agent/cron sering mengandung
+            # karakter HTML mentah (<path>, <file>, dll) yang bikin API 400
+            # kalau parse_mode=HTML. Plain text paling aman untuk produksi --
+            # konsisten dengan telegram_gateway.send_message().
+            data={"chat_id": target, "text": text},
             timeout=30,
         )
         resp.raise_for_status()

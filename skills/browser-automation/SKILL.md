@@ -19,13 +19,51 @@ Panduan komprehensif untuk automasi browser headless, Chrome DevTools Protocol (
 
 ## 0. Batasan Lingkungan (PENTING)
 
-### Termux (Android)
-- **Tidak ada browser** (Chromium/Firefox) di Termux 0.118.3 — package `chromium` hanya tersedia mulai Termux 0.120+.
-- **Playwright Python tidak bisa terinstall** di Termux: `pip install playwright` gagal karena binary browser tidak tersedia.
-- Browser hanya yang tersedia: `lynx`, `w3m`, `links` (browser **teks**, tanpa JS/CSS engine).
+### Termux (Android) — Browser SUNGGAHAN TERSEDIA (update 2026-09)
+**Temuan terbaru:** Termux kini dapat menjalankan browser sungguhan (Firefox/Chromium) via `x11-repo` + `tur-repo`, dan ada tool `termux-browser-pilot` yang bisa menembus Cloudflare/Turnstile. Ini membuka automasi yang sebelumnya "tidak feasible".
+
+**Setup browser di Termux:**
+```bash
+# 1. Tambah repo (sekali)
+pkg install -y x11-repo tur-repo
+# 2. Install Firefox (paling ringan ~67MB) + Xvfb + tools
+pkg install -y firefox xorg-server-xvfb xdotool xclip openbox imagemagick python3 ca-certificates
+# 3. Install termux-browser-pilot (dari source, karena tidak di PyPI)
+git clone https://github.com/salviz/termux-browser-pilot.git
+# 4. Buat wrapper manual (pip build isolation rusak di Termux py3.14)
+cat > $PREFIX/bin/tbp <<'EOF'
+#!/usr/bin/env bash
+export PYTHONPATH="/path/ke/termux-browser-pilot${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 /path/ke/termux-browser-pilot/cli.py "$@"
+EOF
+chmod +x $PREFIX/bin/tbp
+```
+
+**Catatan penting:**
+- **Firefox lebih ringan** (~67MB paket / ~276MB terinstall) vs Chromium (~128–144MB / ~570–640MB). Pilih Firefox untuk hemat.
+- **Firefox mode diklaim "passes Cloudflare natively via TLS fingerprint"**; Chromium punya Turnstile handler. Terverifikasi berhasil di 9inference.cloud (Turnstile tidak memblokir registrasi).
+- **pip build isolation rusak** di Termux Python 3.14 (`pip._internal.operations.install.wheel` hilang). Solusi: install via wrapper manual (langkah 4), bukan `pip install .`.
+- Browser teks (`lynx`, `w3m`, `links`) TIDAK bisa menembus Turnstile (tanpa JS penuh).
+
+**Perintah dasar `tbp`:**
+```bash
+tbp start                          # mulai daemon (otomatis start Xvfb + openbox + Firefox)
+tbp goto URL [-cf]                 # navigasi, -cf = Cloudflare bypass
+tbp text / tbp html                # baca konten halaman
+tbp eval "document.title"          # jalankan JavaScript
+tbp find "Teks"                    # cari elemen by text
+tbp click "selector" / tbp type "sel" "nilai"
+tbp iframe list                    # deteksi iframe (mis. Turnstile)
+tbp cookies --save f.json          # simpan sesi login
+tbp screenshot page.png            # screenshot
+tbp stop                           # matikan daemon
+```
+
+**Verifikasi status:** `tbp status` (PID, browser, URL, uptime).
+
 - Solusi:
   - **Desktop/Linux/macOS**: gunakan Playwright + Chromium (pilihan utama, lihat section 1.B).
-  - **Termux**: browser automation tidak bisa dipakai. Untuk scraping data gunakan HTTP client (`httpx`/`requests`) atau API JSON platform. Untuk form filling butuh browser sungguhan → tidak feasible di Termux.
+  - **Termux**: gunakan `termux-browser-pilot` + Firefox/Xvfb (lihat di atas). Untuk scraping data ringan tetap bisa pakai HTTP client (`httpx`/`requests`) atau API JSON platform.
 
 ---
 
@@ -88,6 +126,33 @@ Saat formulir registrasi membutuhkan verifikasi email / magic link / OTP 6 digit
 
 ---
 
-## 4. Referensi Lengkap
+## 4. Cloudflare Turnstile / Anti-Bot Bypass (via Termux Browser)
+
+**Temuan kunci (terverifikasi di 9inference.cloud):** Turnstile memblokir curl/headless/datacenter IP, tapi **browser sungguhan di Termux berhasil melewatinya** — registrasi 3-langkah (Email → Kode → Password) berjalan normal.
+
+**Workflow menembus Turnstile di Termux:**
+1. **Mulai daemon** → `tbp start` (otomatis Xvfb + openbox + Firefox).
+2. **Navigasi dengan flag Cloudflare** → `tbp goto "https://target" -cf`.
+3. **Verifikasi halaman termuat penuh** (bukan challenge):
+   ```bash
+   tbp text   # harus berisi konten asli, bukan "Verify you are human"
+   ```
+4. **Deteksi widget Turnstile:**
+   ```bash
+   tbp iframe list   # cari iframe Turnstile
+   tbp eval "typeof turnstile !== 'undefined' ? 'loaded' : 'not loaded'"
+   tbp eval "document.querySelector('[name=cf-turnstile-response]') ? 'ada' : 'tidak'"
+   ```
+5. **Interaksi form** (isi email, klik submit) — widget Turnstile biasanya ter-render setelah interaksi/submit. Browser sungguhan menyelesaikannya otomatis.
+6. **Verifikasi lanjut ke step berikutnya** → cek `tbp text` untuk konfirmasi (mis. "Kode verifikasi sudah dikirim").
+
+**Penting:** Gunakan **email yang bisa Anda baca inbox-nya** (mis. akun IMAP yang Anda akses) saat registrasi, supaya OTP/kode verifikasi bisa dibaca. Jangan pakai email acak yang tak bisa diakses.
+
+**Trik akun kedua (Gmail plus-addressing) — terverifikasi:** Untuk menguji IDOR lintas-akun atau membuat akun kedua ketika Anda hanya punya SATU email yang bisa diakses inbox-nya, daftar dengan **Gmail plus-addressing**: `nama@gmail.com` → `nama+tag@gmail.com`. Gmail menganggap `nama+tag@gmail.com` sebagai alamat berbeda (akun terpisah di situs target) tapi emailnya tetap masuk ke inbox `nama@gmail.com`. Kode verifikasi untuk `nama+tag@gmail.com` bisa dibaca dari inbox yang sama (sering di folder `[Gmail]/Spam`). Ini memungkinkan verifikasi IDOR lintas-akun tanpa butuh email kedua.
+
+---
+
+## 5. Referensi Lengkap
 
 - Panduan implementasi kode siap pakai ada di `references/cdp-form-filler.md`.
+- Panduan praktis `termux-browser-pilot` (setup, perintah, Turnstile bypass, troubleshooting) ada di `references/termux-browser-pilot.md`.
