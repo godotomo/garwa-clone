@@ -116,6 +116,76 @@ unique per project, perceptually balanced, and accessible.
 
 ---
 
+## 5.5 Worked example — teal seed → full token set (real numbers)
+
+Walk the recipe above with a concrete seed so the numbers are verifiable, not hand-waved.
+Seed: **`#0f766e`** (the deep teal used by Garwa's landing-page generator).
+
+**Step 1 — parse the seed.** `#0f766e` → OKLCH `L≈0.511, C≈0.086, H≈186.4`. It's a
+cyan/teal, sitting near cyan's natural lightness (~0.72), so it's already balanced.
+
+**Step 2 — pick the accent.** From H≈186°, take the **split-complementary warm side**
+`H+210° ≈ 36°` (a burnt orange). Tune `L` so white text on it clears the WCAG gate:
+
+| Accent L | Resulting hex | White-text contrast |
+|---|---|---|
+| 0.50 | `#9f4228` | 6.39:1 ✅ (AA) |
+| 0.45 | `#8f3319` | 7.91:1 ✅ (AAA) |
+| 0.40 | `#7e2406` | 9.80:1 ✅ (AAA) |
+
+Pick `#9f4228` (L≈0.50, C≈0.13) — 6.39:1 (WCAG AA) with white text, still a warm, characterful burnt orange. If the domain demands AAA, drop to `#8f3319` (7.91:1).
+
+**Step 3 — neutral ramp** (monochrome gray, C=0, L from ~0.97 down to ~0.20):
+
+| Token | L | Hex |
+|---|---|---|
+| `--bg-base` | 0.97 | `#f5f5f5` |
+| `--bg-surface` | 0.955 | `#f0f0f0` |
+| `--bg-surface-elevated` | 0.92 | `#e4e4e4` |
+| `--border-subtle` | 0.88 | `#d7d7d7` |
+| `--text-muted` | 0.45 | `#555555` |
+| `--text-primary` | 0.20 | `#161616` |
+
+Neutrals stay truly neutral (C=0) so they never drift beige.
+
+**Step 4 — semantic tokens** at natural lightness per hue family:
+
+| Token | L | C | H | Hex |
+|---|---|---|---|---|
+| success | 0.65 | 0.13 | ~150° (green) | `#4ca563` |
+| error | 0.60 | 0.15 | ~25° (red) | `#ca5551` |
+| warning | 0.80 | 0.12 | ~75° (amber) | `#ebb25f` |
+
+**Step 5 — unify lightly.** Pull brand + accent + semantic hues toward a common chroma
+(~0.10–0.13) while preserving the C=0 neutrals. The family now coheres.
+
+**Step 6 — export** as `:root` CSS variables (light base; `.dark` only if the domain needs it):
+
+```css
+:root {
+  --bg-base: #f5f5f5;
+  --bg-surface: #f0f0f0;
+  --bg-surface-elevated: #e4e4e4;
+  --border-subtle: rgba(22, 22, 22, 0.08);
+  --text-primary: #161616;
+  --text-muted: #555555;
+  --brand-accent: #0f766e;   /* seed teal */
+  --brand-accent-hover: #0b5f58; /* ladder darker step */
+  --cta-accent: #9f4228;     /* split-comp burnt orange */
+  --success: #4ca563;
+  --error: #ca5551;
+  --warning: #ebb25f;
+}
+```
+
+**Verify** with the §7 contrast gate (computed, not eyeballed):
+- `--text-primary` (#161616) on `--bg-base` (#f5f5f5) → **16.6:1** ✅ (AAA)
+- `--text-muted` (#555555) on `--bg-surface` (#f0f0f0) → **6.5:1** ✅ (AAA)
+- `--cta-accent` (#9f4228) with white text → **6.39:1** ✅ (AA)
+- seed teal `--brand-accent` (#0f766e) on `--bg-surface` → **4.8:1** ✅ (AA)
+
+---
+
 ## 6. Hex → OKLCH conversion (reference)
 
 sRGB → linear sRGB → LMS → OKLCH. Constants per the CSS Color 4 spec (Björn Ottosson's OKLab):

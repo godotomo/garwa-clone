@@ -105,7 +105,7 @@ done:
    If no browser is available, at minimum validate the markup and CSS.
 2. **Screenshot at multiple viewports** — mobile (375px), tablet (768px), desktop
    (1280px). Check for overflow, clipped text, broken layout.
-3. **Run the QA gates** from `SKILL.md` §9:
+3. **Run the QA gates** from `SKILL.md` §10:
    - Exactly one `<h1>`; heading order correct.
    - All `<img>` have `width`, `height`, `alt`.
    - Touch targets ≥ 48×48 on mobile.

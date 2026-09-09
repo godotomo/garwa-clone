@@ -245,6 +245,7 @@ Skill ini **murni teks** (menghasilkan HTML/CSS/JS) — tidak butuh pip/paket Te
 
 - **`references/domain-archetypes.md`** — tabel visual vernacular per domain (token warna, typografi, layout signature).
 - **`references/color-science.md`** — mesin palette OKLCH self-contained (natural lightness, harmony modes, ladder, harmonize, WCAG contrast gate lokal). **Gunakan untuk menurunkan palette unik dari seed warna proyek, bukan menyalin tabel.**
+- **`oklch.py`** — implementasi executable dari mesin OKLCH di atas (stdlib murni, zero-dependency): `hex_to_oklch` / `oklch_to_hex`, `contrast_ratio` (WCAG gate), `ladder_lighter`/`ladder_darker`, `natural_lightness`. Jalankan langsung untuk menurunkan & memverifikasi palette dari seed warna proyek.
 - **`references/ux-philosophy.md`** — filosofi & hukum UX priority-ordered (Nielsen heuristics, Gestalt, Hick's/Fitts's law, cognitive load, ethical guardrails/dark patterns, RTL, design stance, visual rationale). **Jalankan sebagai constraint pada output, bukan trivia.**
 - **`references/visual-craft.md`** — taste constraints visual (restraint, grayscale base + color ≤15%, strict 5-level type scale ≥1.4×, depth/glassmorphism, density & breath, anti-patterns, 0.5-sec scan test). **\"Subtracted until right\", bukan ditambah sampai cantik.**
 - **`references/evidence-workflow.md`** — loop 3-tahap Reference → Generate → Verify + struktur komponen shadcn-convention.

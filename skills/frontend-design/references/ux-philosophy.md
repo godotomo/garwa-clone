@@ -110,7 +110,7 @@ choice always beat conversion tricks.
 
 ## 6. Accessibility Non-Negotiables (RTL-aware)
 
-Beyond contrast (§10 of SKILL.md):
+Beyond contrast (§4 of SKILL.md):
 
 - **Keyboard** — every interactive element reachable & operable by keyboard; visible focus
   (`focus-visible:ring-2`).
