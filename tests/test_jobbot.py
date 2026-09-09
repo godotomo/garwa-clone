@@ -3,7 +3,10 @@ import os
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+# jobbot kini adalah skill (skills/job-tracker/scripts/jobbot)
+sys.path.insert(0, os.path.join(_ROOT, "skills", "job-tracker", "scripts"))
 
 from jobbot import db, models
 

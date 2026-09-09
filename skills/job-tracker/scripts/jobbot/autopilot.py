@@ -271,7 +271,7 @@ def run_cycle(max_deliverables: int = 3, min_budget: float = 0.0,
         # --- 6. Google Workspace (opsional) ---
         if report_google:
             try:
-                from .google_drive import create_drive_folder, create_google_sheet, append_google_sheet
+                from ._garwa_bridge import create_drive_folder, create_google_sheet, append_google_sheet
                 folder = create_drive_folder(f"Jobbot Autopilot {datetime.now(timezone.utc).strftime('%Y-%m-%d')}")
                 sheet_id, url = create_google_sheet("Autopilot Summary", headers=[
                     "time", "scraped", "high_value", "proposals",
@@ -288,7 +288,7 @@ def run_cycle(max_deliverables: int = 3, min_budget: float = 0.0,
         # --- 7. Email report (opsional) ---
         if report_email:
             try:
-                from .email_report import EmailReporter
+                from ._garwa_bridge import EmailReporter
                 emailer = EmailReporter()
                 if emailer.user and emailer.password and emailer.recipient:
                     email_jobs = [

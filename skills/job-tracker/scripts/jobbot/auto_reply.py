@@ -248,29 +248,6 @@ def generate_reply(info: dict) -> tuple:
     return body, intent
 
 
-# --------------------------------------------------------------------------- #
-# Integration helper untuk imap_inbox.watch()
-# --------------------------------------------------------------------------- #
-def make_auto_reply_callback(imap, notify=None):
-    """Buat callback untuk imap.watch() yang membalas cerdas tiap email masuk.
-
-    notify: fungsi opsional untuk notifikasi (mis. kirim ke Telegram).
-    """
-    def callback(info: dict):
-        body, intent = generate_reply(info)
-        print(f"[auto_reply] '{info['subject']}' -> intent={intent}, "
-              f"membalas ke {info['from']}")
-        ok = imap.reply_email(info["num"], body)
-        print(f"[auto_reply] balas {'OK' if ok else 'GAGAL'}")
-        if notify:
-            try:
-                notify(f"📧 Balas email [{intent}]: {info['subject']} -> "
-                       f"{'OK' if ok else 'GAGAL'}")
-            except Exception as e:
-                print(f"[auto_reply] notify gagal -- {e}")
-    return callback
-
-
 if __name__ == "__main__":
     # Smoke test
     samples = [

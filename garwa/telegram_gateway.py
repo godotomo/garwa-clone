@@ -3,7 +3,7 @@ Gateway Telegram dua arah untuk Garwa: user mengirim perintah/pertanyaan dari
 chat Telegram, Garwa menjalankan agent loop (tool, file, bash, dll) di mesin
 lokal, lalu membalas hasilnya kembali ke chat asal.
 
-Pola (diadaptasi dari hermes-agent NousResearch + jobbot/telegram_bot.py):
+Pola (diadaptasi dari hermes-agent NousResearch):
   - Long polling getUpdates (tanpa library eksternal, cukup `requests`).
   - Allowlist admin: hanya TELEGRAM_ADMIN_ID yang boleh memberi perintah.
   - Setiap chat Telegram punya SESSION Garwa sendiri (tabel telegram_bindings),

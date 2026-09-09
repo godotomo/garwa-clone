@@ -23,12 +23,13 @@ pytest_out_tmp.txt
 
 # Secrets / credentials (JANGAN commit)
 .env
-jobbot/credentials.json
-jobbot/token.json
-jobbot/service_account.json
+skills/job-tracker/scripts/jobbot/service_account.json
+skills/job-tracker/scripts/jobbot/credentials.json
+skills/job-tracker/scripts/jobbot/token.json
 
 # Generated deliverables (large, not source)
 deliverables/
+skills/job-tracker/scripts/jobbot/deliverables/
 inbox/
 logs/
 

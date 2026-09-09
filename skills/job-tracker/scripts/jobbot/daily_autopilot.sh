@@ -19,7 +19,8 @@ echo "AUTOPILOT START $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
 echo "==============================================" >> "$LOG_FILE"
 
 # Jalankan autopilot: 3 deliverable, kirim laporan Telegram + email.
-python -m jobbot.cli autopilot \
+# CLI skill dijalankan via path langsung (bootstrap sys.path di cli.py).
+python "$ROOT/skills/job-tracker/scripts/jobbot/cli.py" autopilot \
     --max-deliverables 3 \
     --report-email \
     >> "$LOG_FILE" 2>&1

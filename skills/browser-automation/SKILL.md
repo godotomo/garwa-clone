@@ -115,7 +115,9 @@ def run_automation(target_url, profile_data):
 ## 3. Integrasi Email Verification dan OTP
 
 Saat formulir registrasi membutuhkan verifikasi email / magic link / OTP 6 digit:
-1. Hubungkan modul IMAP (`jobbot.imap_inbox`) untuk membaca email terbaru.
+1. Baca email masuk via IMAP Garwa (`garwa.tools.comm_tools.tool_read_inbox` /
+   `tool_read_email`) untuk mendapatkan email terbaru. Skill `job-tracker` juga
+   menyediakan wrapper `_garwa_bridge.list_unread()` / `_garwa_bridge.read_email()`.
 2. Ekstrak OTP numerik atau URL verifikasi menggunakan regex:
    ```python
    import re

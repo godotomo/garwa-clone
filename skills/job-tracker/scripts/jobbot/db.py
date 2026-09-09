@@ -14,7 +14,10 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 
-DB_PATH = "jobbot/jobs.db"
+# DB skill TETAP terpisah dari DB runtime Garwa (~/.garwa/garwa.db).
+# Disimpan di dalam folder skill job-tracker agar self-contained.
+_SKILL_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # .../scripts
+DB_PATH = os.path.join(_SKILL_ROOT, "jobs.db")
 
 
 def _load_dotenv() -> None:

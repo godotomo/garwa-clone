@@ -6,9 +6,6 @@ Proposal berisi ringkasan kemampuan + deliverable yang bisa dikerjakan langsung.
 """
 import os
 import sqlite3
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
 PORTFOLIO = {
     "developer": "Full-stack developer (React/Next.js, FastAPI, Python, Node.js, Docker, CI/CD, cloud AWS/GCP/Azure).",
@@ -105,16 +102,15 @@ def _build_proposal(rec):
 
 
 def send_proposals(recipient=None, limit=10, subject=None):
-    user = os.environ.get("JOB_EMAIL_USER") or os.environ.get("EMAIL_USER")
-    password = os.environ.get("JOB_EMAIL_PASS") or os.environ.get("EMAIL_PASS")
     recipient = recipient or os.environ.get("JOB_EMAIL_RECIPIENT") or os.environ.get("EMAIL_RECIPIENT")
-    smtp_host = os.environ.get("JOB_EMAIL_SMTP") or "smtp.gmail.com"
-    smtp_port = int(os.environ.get("JOB_EMAIL_SMTP_PORT") or "587")
-    if not (user and password and recipient):
-        print("[proposal] USER/PASS/RECIPIENT belum diset")
+    if not recipient:
+        print("[proposal] RECIPIENT belum diset")
         return False
 
-    conn = sqlite3.connect("jobbot/jobs.db")
+    from ._garwa_bridge import send_email
+    from .db import DB_PATH
+
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
         jobs = _pick_top_jobs(conn, limit=limit)
@@ -135,21 +131,9 @@ def send_proposals(recipient=None, limit=10, subject=None):
     body = "\n".join(body_parts)
 
     subject = subject or f"Freelance Proposals ({len(jobs)} jobs) - ready to work"
-    msg = MIMEMultipart()
-    msg["From"] = user
-    msg["To"] = recipient
-    msg["Subject"] = subject
-    msg.attach(MIMEText(body, "html"))
-    try:
-        with smtplib.SMTP(smtp_host, smtp_port) as s:
-            s.starttls()
-            s.login(user, password)
-            s.send_message(msg)
-        print(f"[proposal] email sent: True ({len(jobs)} proposals)")
-        return True
-    except Exception as e:
-        print(f"[proposal] send failed -- {e}")
-        return False
+    ok = send_email(to=recipient, subject=subject, body=body, html=True)
+    print(f"[proposal] email sent: {ok} ({len(jobs)} proposals)")
+    return ok
 
 
 if __name__ == "__main__":

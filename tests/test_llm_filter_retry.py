@@ -1,6 +1,13 @@
 """Test retry/backoff anti rate-limit (429) di jobbot/llm_filter.py."""
+import os
+import sys
 import unittest
 from unittest.mock import patch, Mock
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+# jobbot kini adalah skill (skills/job-tracker/scripts/jobbot)
+sys.path.insert(0, os.path.join(_ROOT, "skills", "job-tracker", "scripts"))
 
 from jobbot.llm_filter import (
     _should_retry,

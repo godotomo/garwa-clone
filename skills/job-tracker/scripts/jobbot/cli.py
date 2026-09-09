@@ -10,6 +10,15 @@ Cara pakai:
 """
 import argparse
 import json
+import os
+import sys
+
+# Bootstrap agar bisa dijalankan langsung: python skills/job-tracker/scripts/jobbot/cli.py run
+if __package__ in (None, ""):
+    _SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _SRC not in sys.path:
+        sys.path.insert(0, _SRC)
+    __package__ = "jobbot"
 
 from . import db
 from .models import get_all_jobs, get_progress, application_count
@@ -74,13 +83,13 @@ def cmd_report(args):
 
 
 def cmd_setup_oauth(args):
-    """Setup Google OAuth."""
-    from .google_drive import setup_oauth
-    setup_oauth()
+    """Setup Google OAuth (skill google-workspace)."""
+    from ._garwa_bridge import setup_oauth
+    setup_oauth(check=True)
 
 
 def cmd_tick(args):
-    """Background ticker."""
+    """Background ticker (scraping berkala via cron.py)."""
     from .cron import tick
     tick(interval_seconds=args.interval, max_iterations=args.iterations)
 
@@ -119,7 +128,7 @@ def cmd_export(args):
                 w.writerows(rows)
             print(f"[cli] exported {len(rows)} jobs to {out}")
         elif args.format == "sheet":
-            from .google_drive import create_google_sheet, append_google_sheet
+            from ._garwa_bridge import create_google_sheet, append_google_sheet
             sheet_id, url = create_google_sheet(
                 args.title or "Jobbot Jobs", headers=headers,
                 folder_id=args.folder_id,
@@ -141,7 +150,7 @@ def cmd_gdrive(args):
     try:
         from .models import get_earnings_summary, get_earnings
         from .workflow import contract_summary
-        from .google_drive import (
+        from ._garwa_bridge import (
             create_drive_folder, create_google_sheet, append_google_sheet,
             create_google_doc, upload_file_to_drive,
         )
@@ -273,15 +282,15 @@ def cmd_autopilot(args):
 
 
 def cmd_bot(args):
-    """Bot Telegram dua arah (terima file & perintah)."""
-    from .telegram_bot import run_bot
-    run_bot(forever=args.forever, admin_id=args.admin_id)
+    """Bot Telegram dua arah (terima file & perintah) via Garwa gateway."""
+    from garwa.telegram_gateway import run_gateway
+    run_gateway(args=None, forever=args.forever)
 
 
 def cmd_email(args):
     """Kirim laporan email via SMTP."""
     from .models import get_all_jobs, Job
-    from .email_report import EmailReporter
+    from ._garwa_bridge import EmailReporter
     db.init_db()
     conn = db.get_conn()
     try:
@@ -305,10 +314,9 @@ def cmd_email(args):
 
 
 def cmd_inbox(args):
-    """Cek email masuk (belum dibaca) via IMAP."""
-    from .imap_inbox import ImapInbox
-    imap = ImapInbox()
-    emails = imap.list_unread(limit=args.limit)
+    """Cek email masuk (belum dibaca) via IMAP Garwa."""
+    from ._garwa_bridge import list_unread
+    emails = list_unread(limit=args.limit)
     if not emails:
         print("[cli] tidak ada email masuk (belum dibaca)")
         return
@@ -319,13 +327,12 @@ def cmd_inbox(args):
 
 
 def cmd_reply(args):
-    """Balas email masuk via IMAP+SMTP (cerdas: deteksi intent)."""
-    from .imap_inbox import ImapInbox
+    """Balas email masuk via IMAP+SMTP Garwa (cerdas: deteksi intent)."""
+    from ._garwa_bridge import list_unread, read_email, reply_email
     from .auto_reply import generate_reply
-    imap = ImapInbox()
     if args.num is None:
         # Balas semua email belum dibaca
-        emails = imap.list_unread(limit=args.limit)
+        emails = list_unread(limit=args.limit)
         if not emails:
             print("[cli] tidak ada email untuk dibalas")
             return
@@ -334,26 +341,26 @@ def cmd_reply(args):
             if args.body:
                 body = args.body
                 intent = "manual"
-            ok = imap.reply_email(e["num"], body)
+            ok = reply_email(e["num"], body)
             print(f"[cli] balas #{e['num']} ({e['from']}) [{intent}]: {'OK' if ok else 'GAGAL'}")
     else:
-        info = imap.read_email(args.num)
-        if not info:
+        info = read_email(args.num)
+        if not info.get("from"):
             print(f"[cli] email #{args.num} tidak ditemukan")
             return
         body, intent = generate_reply(info)
         if args.body:
             body = args.body
             intent = "manual"
-        ok = imap.reply_email(args.num, body)
+        ok = reply_email(args.num, body)
         print(f"[cli] balas #{args.num} ({info['from']}) [{intent}]: {'OK' if ok else 'GAGAL'}")
 
 
 def cmd_watch(args):
     """Watch inbox realtime (polling) + auto-reply opsional."""
-    from .imap_inbox import run_watch
-    run_watch(interval=args.interval, reply_body=args.reply_body,
-              max_iterations=args.iterations, smart=args.smart)
+    from ._garwa_bridge import watch
+    watch(interval=args.interval, reply_body=args.reply_body,
+          max_iterations=args.iterations, smart=args.smart)
 
 
 def cmd_apply(args):
