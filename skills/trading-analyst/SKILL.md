@@ -111,3 +111,22 @@ Gunakan struktur di `references/report-template.md` — meniru laporan akhir Por
 - `references/external-factors.md` — **faktor eksternal** (politik/geopolitik & cuaca/iklim) yang sering diabaikan tapi bisa jadi katalis besar, khususnya untuk komoditas, forex, dan pasar berkembang seperti Indonesia
 - `scripts/compute_indicators.py` — skrip Python untuk menghitung indikator dari data OHLCV
 - `scripts/quant_risk.py` — skrip Python untuk VaR/CVaR/Monte Carlo/rasio risiko (aset tunggal & portofolio multi-aset)
+
+---
+
+## Dukungan Termux (Android) — garwa ringan & robust
+
+Skill trading-analyst berjalan di Termux. **Skrip (`compute_indicators.py`, `quant_risk.py`) hanya butuh `pandas` + `numpy`** — TERSEDIA sebagai paket Termux (`python-pandas`, `python-numpy`), lebih ringan & stabil daripada pip untuk library ber-C-extension. Pengambilan data tetap lewat `web_search`/`webfetch` (bukan `yfinance` API langsung), jadi tidak butuh akses jaringan khusus.
+
+```bash
+# 0. PENTING — perbaiki pip dulu bila error "No module named 'pip._internal.operations.install.wheel'".
+#    Itu BUKAN pip rusak permanen: akar masalahnya libexpat terlalu lama (2.7.x) yang tidak punya
+#    simbol XML_SetHashSalt16Bytes yang dibutuhkan pyexpat Python 3.14. Upgrade libexpat:
+pkg install -y libexpat        # upgrade ke 2.8.4 → pyexpat OK → pip install bekerja (TERUJI 2026-09)
+# 1. Wajib — pandas & numpy via paket Termux (TERSEDIA, lebih ringan daripada pip untuk C-extension)
+pkg install -y python-pandas python-numpy
+# 2. Alternatif bila perlu pip (mis. versi lebih baru):
+pip3 install --break-system-packages pandas numpy
+```
+
+> **Catatan pip di Termux (TERUJI):** `pandas`/`numpy` punya C-extension — lebih baik pakai paket Termux (`python-pandas`, `python-numpy`) daripada pip. Kalau tetap pip, `pip3 install --break-system-packages` bekerja SETELAH `libexpat` di-upgrade (lihat langkah 0). JANGAN asumsikan pip rusak saat error `install_wheel` — upgrade `libexpat` dulu. Gunakan `--break-system-packages` karena Termux memakai sistem Python.

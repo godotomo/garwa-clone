@@ -96,3 +96,28 @@ Gunakan templat laporan standar untuk menyajikan ringkasan RAG Q&A maupun lapora
 
 * **Sifat Indeks & Graph**: Indeks BM25 maupun struktur graph `networkx` dibuat *in-memory* dan bersifat sementara (*session-bound*)[cite: 1]. Struktur ini akan hilang begitu sesi berakhir dan berfungsi sebagai alat analisis *on-demand*[cite: 1].
 * **Cakupan Analisis**: Pengecekan berbasis pencocokan dan pemaknaan teks (*text-based gap analysis*), bukan pengesahan yuridis formal. Disclaimer hukum wajib disertakan pada setiap keluaran laporan.
+
+---
+
+## Dukungan Termux (Android) — garwa ringan & robust
+
+Skill document-rag berjalan di Termux. **Inti (graph analysis, BM25, chunking, compliance check) hanya butuh `networkx`** (murni Python, ringan) — sudah pakai `pip install --break-system-packages networkx`. Embedding neural (`sentence-transformers` + `faiss-cpu`) **opsional** dan cukup berat di Termux — skill sudah punya fallback **Tingkat B LSA offline** (tanpa model neural), jadi analisis tetap jalan.
+
+```bash
+# 0. PENTING — perbaiki pip dulu bila error "No module named 'pip._internal.operations.install.wheel'".
+#    Itu BUKAN pip rusak permanen: akar masalahnya libexpat terlalu lama (2.7.x) yang tidak punya
+#    simbol XML_SetHashSalt16Bytes yang dibutuhkan pyexpat Python 3.14. Upgrade libexpat:
+pkg install -y libexpat        # upgrade ke 2.8.4 → pyexpat OK → pip install bekerja (TERUJI 2026-09)
+# 1. Wajib — graph analysis (networkx murni Python, ringan)
+pip3 install --break-system-packages networkx
+# 2. Opsional — hybrid retrieval neural (sentence-transformers + faiss-cpu). BERAT di Termux:
+#    sentence-transformers butuh torch (ratusan MB). Hanya install bila embedding neural dibutuhkan.
+pip3 install --break-system-packages sentence-transformers faiss-cpu
+```
+
+**Fallback ringan (tanpa sentence-transformers/faiss):**
+- **Retrieval semantik** tanpa model neural: gunakan **Tingkat B LSA offline** (lihat `references/02-chunking-indexing.md`) — SVD/LSA murni numpy, tanpa torch, cukup akurat untuk dokumen legal/teknis.
+- **Graph & compliance** tetap penuh: `networkx` + BM25 (murni Python) tidak butuh torch sama sekali.
+- **Embedding neural** hanya menambah kualitas semantik untuk dokumen sangat besar; untuk dokumen kecil–menengah, LSA offline sudah memadai.
+
+> **Catatan pip di Termux (TERUJI):** `networkx` adalah wheel murni — `pip3 install --break-system-packages networkx` berhasil SETELAH `libexpat` di-upgrade (lihat langkah 0). Kalau muncul error `install_wheel`, JANGAN asumsikan pip rusak — upgrade `libexpat` dulu. Gunakan `--break-system-packages` karena Termux memakai sistem Python.
