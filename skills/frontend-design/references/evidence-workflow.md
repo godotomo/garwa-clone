@@ -1,13 +1,15 @@
 # Evidence-Based Design Workflow (Reference → Generate → Verify)
 
-> **Why this matters.** The MCP design tools that people actually pay for
-> (Gummble $9/mo, Mobbin, Stitch, 21st.dev) share one loop: they ground the agent
-> in *shipped evidence* before it generates, then *verify the rendered output*
-> after. An agent that designs from guesses produces "AI slop". An agent that
-> designs from evidence produces work that reads as professionally shipped.
+> **Why this matters.** The paid design tools (Gummble $9/mo, Mobbin, Stitch,
+> 21st.dev) share one loop: they ground the agent in *shipped evidence* before it
+> generates, then *verify the rendered output* after. An agent that designs from
+> guesses produces "AI slop". An agent that designs from evidence produces work
+> that reads as professionally shipped.
 >
 > This reference encodes that loop so our skill produces the same quality
-> without any paid MCP.
+> **without depending on any external MCP or API** — Garwa is fully self-contained.
+> The paid tools are referenced only as the *concept* being replicated, never as a
+> runtime dependency.
 
 ---
 
@@ -46,7 +48,7 @@ tone. If you can't write this brief, you're not ready to generate.
 
 ## Stage 2 — GENERATE (modular, token-driven, shadcn-convention)
 
-Generate components the way 21st.dev and shadcn MCP do — as **self-contained,
+Generate components the way 21st.dev and shadcn do — as **self-contained,
 composable modules** wired to design tokens, not monolithic pages.
 
 ### Component structure rules
@@ -98,9 +100,9 @@ wired to tokens, all with real microcopy.
 An agent that never sees its own output ships broken UI. Verify before declaring
 done:
 
-1. **Render it** — open the page in a real browser (Playwright MCP / Chrome
-   DevTools MCP pattern). If no browser is available, at minimum validate the
-   markup and CSS.
+1. **Render it** — open the page in a real browser (Playwright, Chrome DevTools
+   Protocol, or the Termux `tbp` browser pilot — see `browser-automation` skill).
+   If no browser is available, at minimum validate the markup and CSS.
 2. **Screenshot at multiple viewports** — mobile (375px), tablet (768px), desktop
    (1280px). Check for overflow, clipped text, broken layout.
 3. **Run the QA gates** from `SKILL.md` §9:
@@ -127,5 +129,5 @@ what was fixed.
 | Ships unseen, broken at 375px | Rendered + screenshot-verified |
 | Reads as AI-generated | Reads as professionally shipped |
 
-This is the exact value proposition the paid design MCPs sell — encoded here as a
-free, repeatable workflow.
+This is the exact value proposition the paid design tools sell — encoded here as a
+free, repeatable, fully self-contained workflow (no external MCP/API required).

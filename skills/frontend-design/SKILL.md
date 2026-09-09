@@ -20,7 +20,7 @@ When designing for a specific industry, align with its visual vernacular while t
 
 ## 1.5 Evidence-Based Workflow (Reference → Generate → Verify)
 
-Never design from guesses. Follow the same loop the paid design MCPs (Gummble, Mobbin, Stitch, 21st.dev) sell: **ground in shipped evidence → generate modular token-driven components → verify the rendered output**.
+Never design from guesses. Follow the same loop the paid design tools (Gummble, Mobbin, Stitch, 21st.dev) sell — **as a concept only, never as a runtime dependency**: **ground in shipped evidence → generate modular token-driven components → verify the rendered output**. Garwa is fully self-contained.
 
 > See **[references/evidence-workflow.md](references/evidence-workflow.md)** for the full three-stage loop, the shadcn-convention component structure, and the token-driven button example.
 
@@ -36,6 +36,34 @@ Never design from guesses. Follow the same loop the paid design MCPs (Gummble, M
 **NEVER ship `Lorem ipsum`, `TBD`, `Coming soon`, or generic triads (`Fast. Reliable. Secure.`).** The #1 tell of AI-generated UI is placeholder text. Write microcopy like a product team shipped it — empty states with a next action, errors that say *what + why + how to fix*, loading states that name what's loading, paywall copy that names the concrete feature delta.
 
 > See **[references/microcopy-patterns.md](references/microcopy-patterns.md)** for the full table of empty states, validation errors, loading, onboarding, paywall, confirmation, and destructive-action copy — with bad→good examples for each.
+
+---
+
+## 2.5 UX Philosophy & Laws (Priority-Ordered, Self-Contained)
+
+A great interface is a set of **constraints the model enforces on its own output**, ordered
+by priority so trade-offs are explicit — not a collection of pretty components. When rules
+conflict, resolve by this hierarchy:
+
+> **Accessibility & safety → clarity & findability → correctness & forgiveness →
+> efficiency of effort → consistency → aesthetic polish.**
+
+Key laws to enforce (full detail in **[references/ux-philosophy.md](references/ux-philosophy.md)**):
+- **Nielsen's 10 heuristics** — run as a silent checklist on every finished screen.
+- **Gestalt principles** — use proximity, similarity, common region, figure/ground to build
+  hierarchy without extra borders.
+- **Hick's law** — reduce choices; safe defaults; progressive disclosure.
+- **Fitts's law** — big primary targets near the thumb/cursor; destructive far & small.
+- **Recognition over recall** — show options, don't make users memorize.
+- **Ethical guardrails** — NEVER ship dark patterns (hidden costs, fake urgency, forced
+  action, obscured cancellation, confirmshaming, misleading defaults).
+- **RTL-aware** — Persian/Arabic/Hebrew mirror the *whole layout*, not just right-align text.
+- **Design stance** — begin with user, task, context & business outcome, not with the visual.
+- **Visual rationale** — always include a "what not to do" pass: name rejected alternatives,
+  why they fail, and the transferable decision rule.
+
+**Apply:** before declaring a UI done, run the Priority Hierarchy + Nielsen checklist + dark
+pattern scan silently. Usability wins over aesthetics on every conflict.
 
 ---
 
@@ -116,6 +144,13 @@ Design choices directly impact search rankings and Core Web Vitals performance.
 
 Include these standard tokens in CSS configurations for full cross-component theme consistency. **Light is the base.** Provide a `.dark` override ONLY when the domain requires it (see Theme Selection above).
 
+> **Derive the palette, don't copy it.** The token values below are a *shape*, not a fixed
+> palette. For every project, generate a **unique palette from the project's seed color**
+> using the OKLCH engine in **[references/color-science.md](references/color-science.md)** —
+> natural lightness per hue, harmony-driven accent, neutral ramp, and a local WCAG contrast
+> gate. This is what keeps the output non-template and perceptually balanced without any
+> external MCP or API.
+
 ```css
 :root {
   /* Color Tokens — LIGHT base (professional default) */
@@ -162,6 +197,22 @@ Include these standard tokens in CSS configurations for full cross-component the
 
 ---
 
+## 8.5 Visual Craft & Taste Constraints
+
+A great page is not "added until pretty" — it is **"subtracted until right."** Every pixel is an aesthetic decision. Enforce these taste constraints (full detail in **[references/visual-craft.md](references/visual-craft.md)**):
+
+- **Restraint** — every visual element must justify itself; if it can't, delete it. One focal point per screen.
+- **Grayscale base, color as punctuation** — build in grayscale first; color ≤ ~15% of the surface; ONE accent hue + status colors only.
+- **Strict type hierarchy** — exactly 5 type levels, **≥1.4× between levels**, consistent within; use `clamp()` for fluid scaling.
+- **Depth via light/transparency** — glass panels + tonal elevation, not harsh shadows.
+- **Density & breath** — balance information density with whitespace; consistent spacing scale (4/8/12/16/24/32/48).
+
+**Anti-patterns (never ship):** Inter/Roboto as the only display font, purple-gradient hero, pure-white flat background, random rounded-corner values, color everywhere, uniform huge rounded corners.
+
+**0.5-second scan test:** before shipping, the hierarchy must be graspable at a glance — one clear primary action, clear first/second/third reading order. Fix hierarchy before polish.
+
+---
+
 ## 9. Component Boilerplate (GovTech & Public Sector Example)
 
 > See **[references/component-boilerplate.md](references/component-boilerplate.md)** for a complete accessibility-first civic public portal component (HTML + Tailwind CSS) demonstrating M3 touch targets, the 5 UI states, and the Unsplash photo protocol.
@@ -170,7 +221,8 @@ Include these standard tokens in CSS configurations for full cross-component the
 
 ## 10. Quality Assurance & Audit Checklist
 
-Verify UI implementations against these mandatory gates before deployment:
+Verify UI implementations against these mandatory gates before deployment. **Color gates are
+computed locally** (see `references/color-science.md` §7) — never eyeball contrast:
 
 * [ ] **SEO & Semantic Structure**: Is there exactly one `<h1>` tag? Do all `<img>` tags have explicit `width`, `height`, and descriptive `alt` attributes?
 * [ ] **Google Material 3 Ergonomics**: Are all clickable/touchable elements at least **48x48 px** on mobile viewports?
@@ -186,3 +238,16 @@ Skill ini **murni teks** (menghasilkan HTML/CSS/JS) — tidak butuh pip/paket Te
 ### ✅ Hasil uji nyata di Termux (Python 3.14.6, 2026-09)
 - **Generate HTML/CSS**: tulis file `.html`/`.css` → file valid & non-empty → **OK**.
 - **Kesimpulan do & don't**: **Do** — tulis HTML/CSS sebagai teks langsung, zero-dependency. **Don't** — jangan andalkan tool build (Vite/Next) yang butuh resource besar untuk QA; verifikasi statis (kontras, ukuran, state) cukup di Termux. Render visual penuh bisa dilakukan di desktop/browser.
+
+---
+
+## Referensi Lengkap
+
+- **`references/domain-archetypes.md`** — tabel visual vernacular per domain (token warna, typografi, layout signature).
+- **`references/color-science.md`** — mesin palette OKLCH self-contained (natural lightness, harmony modes, ladder, harmonize, WCAG contrast gate lokal). **Gunakan untuk menurunkan palette unik dari seed warna proyek, bukan menyalin tabel.**
+- **`references/ux-philosophy.md`** — filosofi & hukum UX priority-ordered (Nielsen heuristics, Gestalt, Hick's/Fitts's law, cognitive load, ethical guardrails/dark patterns, RTL, design stance, visual rationale). **Jalankan sebagai constraint pada output, bukan trivia.**
+- **`references/visual-craft.md`** — taste constraints visual (restraint, grayscale base + color ≤15%, strict 5-level type scale ≥1.4×, depth/glassmorphism, density & breath, anti-patterns, 0.5-sec scan test). **\"Subtracted until right\", bukan ditambah sampai cantik.**
+- **`references/evidence-workflow.md`** — loop 3-tahap Reference → Generate → Verify + struktur komponen shadcn-convention.
+- **`references/microcopy-patterns.md`** — microcopy nyata (empty states, error, loading, paywall) — bukan placeholder.
+- **`references/unsplash-assets.md`** — protokol URL gambar Unsplash + ID foto kurasi per domain (Unsplash OK sebagai sumber aset gambar).
+- **`references/component-boilerplate.md`** — contoh komponen GovTech aksesibel (HTML + Tailwind).
