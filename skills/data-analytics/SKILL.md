@@ -199,6 +199,8 @@ Before delivering analysis, charts, or SQL queries, verify against these checks:
 
 Skill data-analytics berjalan di Termux. **`pandas`/`numpy` tersedia sebagai paket Termux** (`python-pandas`, `python-numpy`) — lebih ringan & stabil daripada pip untuk library ber-C-extension. `matplotlib`/`seaborn`/`plotly` TIDAK ada di repo Termux (harus pip) dan cukup berat — untuk chart ringan, pertimbangkan alternatif.
 
+> **Di desktop/VPS dengan resource cukup:** tetap install tool penuh (bagian Dependensi) untuk hasil maksimal — `matplotlib`/`seaborn` untuk chart publikasi-grade, `plotly` untuk interaktif, `python-polars` untuk data besar. Fallback di bawah HANYA untuk lingkungan terbatas/Termux.
+
 ```bash
 # 0. PENTING — perbaiki pip dulu bila error "No module named 'pip._internal.operations.install.wheel'".
 #    Itu BUKAN pip rusak permanen: akar masalahnya libexpat terlalu lama (2.7.x) yang tidak punya

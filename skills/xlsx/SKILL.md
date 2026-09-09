@@ -80,6 +80,8 @@ tiap sel. Negatif dalam kurung `(#,##0)`. Persentase disimpan sebagai pecahan (`
 
 Skill xlsx berjalan penuh di Termux. **Inti (buat/edit/baca workbook, formula, formatting) hanya butuh `openpyxl`** — murni Python, ringan. `pandas` untuk data massal tersedia sebagai paket Termux. `soffice` hanya untuk recalc formula dan **opsional**.
 
+> **Di desktop/VPS dengan resource cukup:** tetap install tool desktop penuh (bagian Dependensi) untuk hasil maksimal — `soffice`/LibreOffice untuk memaksa recalc formula (cached value) yang `openpyxl` tidak bisa. Fallback di bawah HANYA untuk lingkungan terbatas/Termux.
+
 ```bash
 # 0. PENTING — perbaiki pip dulu bila error "No module named 'pip._internal.operations.install.wheel'".
 #    Itu BUKAN pip rusak permanen: akar masalahnya libexpat terlalu lama (2.7.x) yang tidak punya

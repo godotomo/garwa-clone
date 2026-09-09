@@ -89,6 +89,8 @@ merge/split/rotate/decrypt).
 
 Skill pdf berjalan penuh di Termux. **Inti (buat/gabung/split/enkripsi/ekstrak teks&tabel) hanya butuh pustaka Python murni** (`reportlab`, `pypdf`, `pdfplumber`) — ringan, tanpa tool eksternal. Tool sistem (`poppler-utils`, `tesseract`, `qpdf`, `weasyprint`) hanya untuk kasus spesifik dan **opsional**.
 
+> **Di desktop/VPS dengan resource cukup:** tetap install tool desktop penuh (bagian Dependensi) untuk hasil maksimal — `weasyprint` untuk layout HTML/CSS kompleks, `poppler-utils` untuk render, `tesseract` untuk OCR, `qpdf` untuk operasi CLI cepat. Fallback di bawah HANYA untuk lingkungan terbatas/Termux.
+
 ```bash
 # 0. PENTING — perbaiki pip dulu bila error "No module named 'pip._internal.operations.install.wheel'".
 #    Itu BUKAN pip rusak permanen: akar masalahnya libexpat terlalu lama (2.7.x) yang tidak punya

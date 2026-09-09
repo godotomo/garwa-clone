@@ -155,6 +155,8 @@ Before delivering media processing scripts or Mermaid diagrams, verify against t
 
 Skill design-media berjalan di Termux. **Inti (PDF text/table extraction, merge/split, image processing) hanya butuh pustaka Python murni** (`pdfplumber`, `pypdf`, `Pillow`) — ringan. OCR (`pytesseract`) butuh `tesseract` (paket Termux, opsional). Mermaid cukup ditulis sebagai teks (render butuh tool eksternal, opsional).
 
+> **Di desktop/VPS dengan resource cukup:** tetap install tool desktop penuh (bagian Dependensi) untuk hasil maksimal — `tesseract` untuk OCR, `poppler-utils`/`python-pymupdf` untuk render PDF, `imagemagick` untuk image processing CLI, dan renderer Mermaid (browser/Node) untuk diagram visual. Fallback di bawah HANYA untuk lingkungan terbatas/Termux.
+
 ```bash
 # 0. PENTING — perbaiki pip dulu bila error "No module named 'pip._internal.operations.install.wheel'".
 #    Itu BUKAN pip rusak permanen: akar masalahnya libexpat terlalu lama (2.7.x) yang tidak punya

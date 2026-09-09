@@ -111,6 +111,8 @@ tanpa border sama sekali untuk data numerik.
 
 Termux bisa menjalankan skill docx penuh. **Inti (membuat/mengedit .docx) hanya butuh `python-docx`** — murni Python, ringan, tanpa tool eksternal. Tool berat (`pandoc`, `soffice`, `poppler-utils`) hanya untuk kenyamanan (baca cepat & verifikasi visual) dan **opsional**.
 
+> **Di desktop/VPS dengan resource cukup:** tetap install tool desktop penuh (bagian Dependensi) untuk hasil maksimal — `soffice` untuk convert & QA visual, `pandoc` untuk baca cepat, `poppler-utils` untuk render. Fallback di bawah HANYA untuk lingkungan terbatas/Termux.
+
 ```bash
 # 0. PENTING — perbaiki pip dulu bila error "No module named 'pip._internal.operations.install.wheel'".
 #    Itu BUKAN pip rusak permanen: akar masalahnya libexpat terlalu lama (2.7.x) yang tidak punya

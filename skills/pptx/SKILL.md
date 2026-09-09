@@ -90,6 +90,8 @@ padding minimal 0.4"-0.5" dari tepi.
 
 Skill pptx berjalan penuh di Termux. **Inti (buat deck, isi template, baca slide) hanya butuh `python-pptx`** (jalur Python) — murni Python, ringan. Jalur Node (`pptxgenjs`) juga tersedia karena `nodejs` ada di repo Termux. Tool berat (`soffice`, `poppler-utils`) hanya untuk verifikasi visual dan **opsional**.
 
+> **Di desktop/VPS dengan resource cukup:** tetap install tool desktop penuh (bagian Dependensi) untuk hasil maksimal — `soffice` untuk convert & QA visual, `poppler-utils` untuk render slide jadi gambar. Fallback di bawah HANYA untuk lingkungan terbatas/Termux.
+
 ```bash
 # 0. PENTING — perbaiki pip dulu bila error "No module named 'pip._internal.operations.install.wheel'".
 #    Itu BUKAN pip rusak permanen: akar masalahnya libexpat terlalu lama (2.7.x) yang tidak punya
