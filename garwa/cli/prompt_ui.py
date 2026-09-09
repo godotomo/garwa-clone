@@ -31,6 +31,36 @@ try:
 except Exception:  # pragma: no cover - bergantung environment
     _HAS_PT = False
 
+# _TOOLBAR_STYLE hanya boleh dibuat saat prompt_toolkit tersedia. Style
+# diimpor di dalam blok try di atas, jadi membuatnya di sini (level modul)
+# akan memicu NameError bila prompt_toolkit gagal import. Karena itu style
+# dibuat di dalam blok try dan di-set None saat fallback.
+_TOOLBAR_STYLE = None
+if _HAS_PT:
+    try:
+        _TOOLBAR_STYLE = Style.from_dict(
+            {
+                "bottom-toolbar": "bg:#262626 fg:#8a8a8a",
+                "bottom-toolbar.model": "fg:#5fafd7",
+                "bottom-toolbar.ctx": "fg:#8787af",
+                "bottom-toolbar.ses": "fg:#87875f",
+                "bottom-toolbar.tools": "fg:#5faf87",
+                "bottom-toolbar.tok": "fg:#d7af87",
+                "bottom-toolbar.sandbox": "fg:#d7af5f",
+                "bottom-toolbar.sandbox.on": "fg:#5faf87",
+                "bottom-toolbar.sandbox.off": "fg:#d75f5f",
+                # auto:ON -> hijau (mode approve aktif, tool berjalan terkendali);
+                # auto:OFF -> kuning (mode nonaktif, perlu perhatian).
+                "bottom-toolbar.auto": "fg:#5faf87",
+                "bottom-toolbar.auto.off": "fg:#d7af5f",
+                "bottom-toolbar.wd": "fg:#5fafd7",
+                "bottom-toolbar.dur": "fg:#af87d7",
+                "bottom-toolbar.err": "fg:#d75f5f",
+            }
+        )
+    except Exception:  # pragma: no cover - bergantung environment
+        _TOOLBAR_STYLE = None
+
 # Perilaku lama (fallback). Di-import di sini, bukan di main, supaya
 # main.py cukup memanggil satu fungsi prompt_with_status().
 from .paste_input import read_user_input
@@ -40,28 +70,7 @@ from .colors import C, c, c_prompt
 # (panah atas/bawah) tetap bekerja, persis seperti readline.
 _session = None
 
-# Style prompt_toolkit untuk toolbar. Warna redup agar tidak menyaingi
-# prompt utama.
-_TOOLBAR_STYLE = Style.from_dict(
-    {
-        "bottom-toolbar": "bg:#262626 fg:#8a8a8a",
-        "bottom-toolbar.model": "fg:#5fafd7",
-        "bottom-toolbar.ctx": "fg:#8787af",
-        "bottom-toolbar.ses": "fg:#87875f",
-        "bottom-toolbar.tools": "fg:#5faf87",
-        "bottom-toolbar.tok": "fg:#d7af87",
-        "bottom-toolbar.sandbox": "fg:#d7af5f",
-        "bottom-toolbar.sandbox.on": "fg:#5faf87",
-        "bottom-toolbar.sandbox.off": "fg:#d75f5f",
-        # auto:ON -> hijau (mode approve aktif, tool berjalan terkendali);
-        # auto:OFF -> kuning (mode nonaktif, perlu perhatian).
-        "bottom-toolbar.auto": "fg:#5faf87",
-        "bottom-toolbar.auto.off": "fg:#d7af5f",
-        "bottom-toolbar.wd": "fg:#5fafd7",
-        "bottom-toolbar.dur": "fg:#af87d7",
-        "bottom-toolbar.err": "fg:#d75f5f",
-    }
-)
+# (Style toolbar dibuat di bagian atas file, di dalam blok `if _HAS_PT`.)
 
 
 def _format_toolbar(status_info: str):
