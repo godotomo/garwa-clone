@@ -15,7 +15,7 @@ Skill penanganan dan menyelesaikan Tantangan CAPTCHA dan Anti-Bot Guard (Cloudfl
 ## 0. Batasan Lingkungan (PENTING)
 
 ### Termux (Android)
-Skill ini memerlukan browser sungguhan (Chromium/Firefox) untuk CAPTCHA interaktif. Di Termux tidak ada browser, sehingga CAPTCHA aktif (reCAPTCHA, Turnstile, slider) tidak bisa diselesaikan secara lokal. Yang masih bisa: CAPTCHA audio via solver lokal, atau fallback human task (tandai `human_captcha_required` dan eskalasi ke operator). Catatan etika: bypass CAPTCHA berbayar melanggar ToS sebagian besar platform; gunakan hanya untuk tujuan yang diizinkan operator.
+Skill ini memerlukan browser sungguhan (Chromium/Firefox) untuk CAPTCHA interaktif. **Di Termux kini bisa menjalankan browser sungguhan** — Firefox/Chromium via `x11-repo`+`tur-repo` dan tool `termux-browser-pilot` (lihat skill `browser-automation`). Terverifikasi berhasil menembus Cloudflare Turnstile (9inference.cloud). Namun browser di Termux memakai IP perangkat asli (bukan datacenter IP), jadi Turnstile/datacenter-IP-block biasanya lolos. Yang tetap sulit di Termux: CAPTCHA yang butuh solusi visual kompleks (OCR huruf terdistorsi, puzzle 3D) — untuk itu gunakan solver API (2Captcha/CapSolver) atau fallback human task (tandai `human_captcha_required` dan eskalasi ke operator). Catatan etika: bypass CAPTCHA berbayar melanggar ToS sebagian besar platform; gunakan hanya untuk tujuan yang diizinkan operator.
 
 ---
 
