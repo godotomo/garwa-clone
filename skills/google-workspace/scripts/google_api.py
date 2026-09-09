@@ -564,6 +564,94 @@ def calendar_delete(args):
     print(json.dumps({"status": "deleted", "eventId": args.event_id}))
 
 
+def calendar_get(args):
+    """Ambil detail satu event berdasarkan event_id."""
+    if _gws_binary():
+        result = _run_gws(
+            ["calendar", "events", "get"],
+            params={"calendarId": args.calendar, "eventId": args.event_id},
+        )
+    else:
+        service = build_service("calendar", "v3")
+        result = service.events().get(calendarId=args.calendar, eventId=args.event_id).execute()
+    print(json.dumps({
+        "id": result.get("id", ""),
+        "summary": result.get("summary", ""),
+        "description": result.get("description", ""),
+        "location": result.get("location", ""),
+        "start": result.get("start", {}).get("dateTime", result.get("start", {}).get("date", "")),
+        "end": result.get("end", {}).get("dateTime", result.get("end", {}).get("date", "")),
+        "status": result.get("status", ""),
+        "htmlLink": result.get("htmlLink", ""),
+        "attendees": [a.get("email", "") for a in result.get("attendees", [])],
+        "creator": (result.get("creator") or {}).get("email", ""),
+    }, indent=2, ensure_ascii=False))
+
+
+def calendar_update(args):
+    """Perbarui event: --summary/--start/--end/--location/--description/--attendees (opsional, hanya yg diisi)."""
+    if _gws_binary():
+        result = _run_gws(
+            ["calendar", "events", "get"],
+            params={"calendarId": args.calendar, "eventId": args.event_id},
+        )
+    else:
+        service = build_service("calendar", "v3")
+        result = service.events().get(calendarId=args.calendar, eventId=args.event_id).execute()
+
+    if args.summary is not None:
+        result["summary"] = args.summary
+    if args.location is not None:
+        result["location"] = args.location
+    if args.description is not None:
+        result["description"] = args.description
+    if args.start:
+        result["start"] = {"dateTime": args.start}
+    if args.end:
+        result["end"] = {"dateTime": args.end}
+    if args.attendees is not None:
+        result["attendees"] = [{"email": e.strip()} for e in args.attendees.split(",") if e.strip()]
+
+    if _gws_binary():
+        result = _run_gws(
+            ["calendar", "events", "update"],
+            params={"calendarId": args.calendar, "eventId": args.event_id},
+            body=result,
+        )
+    else:
+        service = build_service("calendar", "v3")
+        result = service.events().update(calendarId=args.calendar, eventId=args.event_id, body=result).execute()
+
+    print(json.dumps({
+        "status": "updated",
+        "id": result.get("id", ""),
+        "summary": result.get("summary", ""),
+        "start": result.get("start", {}).get("dateTime", result.get("start", {}).get("date", "")),
+        "end": result.get("end", {}).get("dateTime", result.get("end", {}).get("date", "")),
+        "htmlLink": result.get("htmlLink", ""),
+    }, indent=2, ensure_ascii=False))
+
+
+def calendar_list_calendars(args):
+    """Daftar semua kalender yang terhubung ke akun."""
+    if _gws_binary():
+        results = _run_gws(["calendar", "calendarList", "list"], params={"maxResults": args.max})
+    else:
+        service = build_service("calendar", "v3")
+        results = service.calendarList().list(maxResults=args.max).execute()
+    calendars = []
+    for c in results.get("items", []):
+        calendars.append({
+            "id": c.get("id", ""),
+            "summary": c.get("summary", ""),
+            "description": c.get("description", ""),
+            "accessRole": c.get("accessRole", ""),
+            "primary": c.get("primary", False),
+            "timeZone": c.get("timeZone", ""),
+        })
+    print(json.dumps(calendars, indent=2, ensure_ascii=False))
+
+
 # =========================================================================
 # Drive
 # =========================================================================
@@ -1118,6 +1206,26 @@ def main():
     p.add_argument("event_id")
     p.add_argument("--calendar", default="primary")
     p.set_defaults(func=calendar_delete)
+
+    p = cal_sub.add_parser("get")
+    p.add_argument("event_id")
+    p.add_argument("--calendar", default="primary")
+    p.set_defaults(func=calendar_get)
+
+    p = cal_sub.add_parser("update")
+    p.add_argument("event_id")
+    p.add_argument("--summary", default=None)
+    p.add_argument("--start", default="", help="Start (ISO 8601 with timezone)")
+    p.add_argument("--end", default="", help="End (ISO 8601 with timezone)")
+    p.add_argument("--location", default=None)
+    p.add_argument("--description", default=None)
+    p.add_argument("--attendees", default=None, help="Comma-separated email addresses")
+    p.add_argument("--calendar", default="primary")
+    p.set_defaults(func=calendar_update)
+
+    p = cal_sub.add_parser("list-calendars")
+    p.add_argument("--max", type=int, default=50)
+    p.set_defaults(func=calendar_list_calendars)
 
     # --- Drive ---
     drv = sub.add_parser("drive")

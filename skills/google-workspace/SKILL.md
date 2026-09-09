@@ -154,8 +154,19 @@ $GAPI calendar list --start 2026-03-01T00:00:00Z --end 2026-03-07T23:59:59Z
 $GAPI calendar create --summary "Team Standup" --start 2026-03-01T10:00:00-06:00 --end 2026-03-01T10:30:00-06:00
 $GAPI calendar create --summary "Review" --start 2026-03-01T14:00:00Z --end 2026-03-01T15:00:00Z --attendees "alice@co.com,bob@co.com"
 
+# Detail satu event
+$GAPI calendar get EVENT_ID
+
+# Perbarui event (hanya field yang diisi yang diubah)
+$GAPI calendar update EVENT_ID --summary "Judul Baru"
+$GAPI calendar update EVENT_ID --start 2026-03-01T11:00:00-06:00 --end 2026-03-01T11:30:00-06:00
+$GAPI calendar update EVENT_ID --location "Zoom" --description "Notulensi rapat"
+
 # Hapus event
 $GAPI calendar delete EVENT_ID
+
+# Daftar semua kalender yang terhubung ke akun
+$GAPI calendar list-calendars
 ```
 
 ### Drive
@@ -233,8 +244,12 @@ Semua perintah mengembalikan JSON. Field kunci:
 - **Gmail search**: `[{id, threadId, from, to, subject, date, snippet, labels}]`
 - **Gmail get**: `{id, threadId, from, to, subject, date, labels, body}`
 - **Gmail send/reply**: `{status: "sent", id, threadId}`
-- **Calendar list**: `[{id, summary, start, end, location, description, htmlLink}]`
+- **Calendar list**: `[{id, summary, start, end, location, description, status, htmlLink}]`
+- **Calendar get**: `{id, summary, description, location, start, end, status, htmlLink, attendees, creator}`
 - **Calendar create**: `{status: "created", id, summary, htmlLink}`
+- **Calendar update**: `{status: "updated", id, summary, start, end, htmlLink}`
+- **Calendar delete**: `{status: "deleted", eventId}`
+- **Calendar list-calendars**: `[{id, summary, description, accessRole, primary, timeZone}]`
 - **Drive search**: `[{id, name, mimeType, modifiedTime, webViewLink}]`
 - **Drive get**: `{id, name, mimeType, modifiedTime, size, webViewLink, parents, owners}`
 - **Drive upload**: `{status: "uploaded", id, name, mimeType, webViewLink}`
