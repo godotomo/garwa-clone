@@ -518,6 +518,41 @@ def main():
                     prompt_label = _build_prompt_label(args, session_id, workdir_label)
                     continue
 
+                if action == "retry":
+                    # Ulangi giliran terakhir: kirim ulang pesan user terakhir
+                    # ke model (pesan user-nya sudah dipertahankan di DB oleh
+                    # handler /retry; balasan lama sudah dihapus).
+                    last_user = dbmod.get_last_user_message(args.db_path, session_id)
+                    if last_user:
+                        try:
+                            run_agent_loop(args, session_id, system_content)
+                        except KeyboardInterrupt:
+                            print(c(
+                                "\n[INTERRUPTED] Giliran dibatalkan (Ctrl+C). Kembali ke prompt.",
+                                C.YELLOW,
+                            ))
+                            dbmod.touch_session(args.db_path, session_id)
+                        except _get_requests().exceptions.RequestException as e:
+                            state._accumulate_error()
+                            print(c(
+                                f"\n[ERROR] Giliran ini gagal karena masalah koneksi/streaming "
+                                f"ke server model ({type(e).__name__}: {e}). Sesi tetap "
+                                f"jalan -- coba kirim pesan lagi, atau periksa apakah "
+                                f"server model masih hidup.",
+                                C.RED,
+                            ))
+                            dbmod.touch_session(args.db_path, session_id)
+                        except Exception as e:
+                            state._accumulate_error()
+                            print(c(
+                                f"\n[ERROR] Giliran ini berhenti karena error tak terduga: "
+                                f"{type(e).__name__}: {e}. Kembali ke prompt.",
+                                C.RED,
+                            ))
+                            dbmod.touch_session(args.db_path, session_id)
+                    print()
+                    continue
+
                 if action == "skip":
                     # Beberapa slash-command (/approve, /api-model, /ctx) mengubah
                     # args -- rebuild label status bar supaya prompt ikut update.

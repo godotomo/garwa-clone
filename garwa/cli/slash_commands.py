@@ -100,6 +100,11 @@ COMMANDS = {
     "git-stash": "Stash: /git-stash [list|push|pop|drop] [pesan]",
     "git-log-graph": "Log commit dengan grafik branch: /git-log-graph [n]",
     "auto-commit": "Aktifkan/nonaktifkan commit otomatis setelah edit: /auto-commit on|off",
+    "undo": "Batalkan giliran terakhir (hapus pesan user + semua balasan model/tool dari DB)",
+    "retry": "Ulangi giliran terakhir: kirim ulang pesan user terakhir ke model",
+    "search": "Cari pesan lintas sesi (cross-session memory): /search <query>",
+    "personality": "Set persona lintas sesi: /personality <deskripsi> (kosongkan untuk hapus)",
+    "usage": "Tampilkan pemakaian token lintas sesi (aggregate)",
 }
 
 # Command yang butuh argumen tambahan.
@@ -228,6 +233,34 @@ def _handle_cost(args, session_id: str) -> None:
     # Harga bervariasi per model/provider; ini indikasi kasar.
     est = (prompt * 0.15 + completion * 0.60) / 1_000_000
     print(c(f"  estimasi   : ~${est:.4f} (indikasi kasar, harga bervariasi)", C.YELLOW))
+
+
+def _handle_personality(args, arg: str) -> None:
+    """Set/hapus persona lintas sesi."""
+    if not arg:
+        config.remove_user_config_key("personality")
+        print(c("[personality] persona dihapus (kembali ke default).", C.GREEN))
+        return
+    config.save_user_config(personality=arg)
+    print(c(f"[personality] persona diset: {arg}", C.GREEN))
+    print(c("[personality] tersimpan lintas sesi. Berlaku pada sesi baru.", C.DIM))
+
+
+def _handle_usage(args, session_id: str) -> None:
+    """Tampilkan agregasi pemakaian token lintas sesi."""
+    agg = dbmod.aggregate_token_usage(args.db_path, workdir=args.workdir)
+    print(c("[usage] Pemakaian token lintas sesi (workdir ini):", C.BOLD))
+    print(c(f"  total token : {agg['total_tokens']:,}", C.DIM))
+    print(c(f"  tool calls  : {agg['tool_calls']}", C.DIM))
+    print(c(f"  error       : {agg['errors']}", C.DIM))
+    if agg["per_day"]:
+        print(c("  per hari    :", C.DIM))
+        for day, tokens in list(agg["per_day"].items())[:10]:
+            print(c(f"    {day}: {tokens:,}", C.DIM))
+    if agg["per_tool"]:
+        print(c("  per tool    :", C.DIM))
+        for tool, count in list(agg["per_tool"].items())[:10]:
+            print(c(f"    {tool}: {count}x", C.DIM))
 
 
 def _handle_status(args, session_id: str) -> None:
@@ -1223,6 +1256,53 @@ def handle_slash_command(cmd_line: str, args, session_id: str, system_content: s
 
     if name == "auto-commit":
         _handle_auto_commit(args, arg)
+        return {"action": "skip"}
+
+    if name == "undo":
+        span = dbmod.get_last_turn_span(args.db_path, session_id)
+        if not span:
+            print(c("[undo] tidak ada giliran user untuk dibatalkan.", C.YELLOW))
+            return {"action": "skip"}
+        deleted = dbmod.delete_messages_after(args.db_path, session_id, span["start_id"])
+        if deleted:
+            print(c(f"[undo] giliran terakhir dibatalkan ({deleted} pesan dihapus).", C.GREEN))
+        else:
+            print(c("[undo] giliran terakhir dibatalkan.", C.GREEN))
+        dbmod.touch_session(args.db_path, session_id)
+        return {"action": "skip"}
+
+    if name == "retry":
+        span = dbmod.get_last_turn_span(args.db_path, session_id)
+        if not span:
+            print(c("[retry] tidak ada giliran user untuk diulang.", C.YELLOW))
+            return {"action": "skip"}
+        # Hapus balasan giliran terakhir (assistant/tool) tapi PERTAHANKAN
+        # pesan user-nya, supaya main.py bisa mengirim ulang ke model.
+        deleted = dbmod.delete_messages_after(args.db_path, session_id, span["start_id"])
+        print(c(f"[retry] mengulang giliran terakhir ({deleted} pesan balasan dihapus).", C.GREEN))
+        return {"action": "retry", "session_id": session_id}
+
+    if name == "search":
+        if not arg:
+            print(c("Gunakan: /search <query> untuk mencari pesan lintas sesi.", C.DIM))
+            return {"action": "skip"}
+        results = dbmod.search_messages(args.db_path, arg, workdir=args.workdir, limit=15)
+        if not results:
+            print(c(f"[search] tidak ada hasil untuk '{arg}'.", C.YELLOW))
+            return {"action": "skip"}
+        print(c(f"[search] {len(results)} hasil untuk '{arg}':", C.BOLD))
+        for i, r in enumerate(results, 1):
+            snippet = r["content"].replace("\n", " ")[:120]
+            sid = r["session_id"][:8]
+            print(c(f"  {i}. [{sid}] {snippet}", C.DIM))
+        return {"action": "skip"}
+
+    if name == "personality":
+        _handle_personality(args, arg)
+        return {"action": "skip"}
+
+    if name == "usage":
+        _handle_usage(args, session_id)
         return {"action": "skip"}
 
     if name == "new":

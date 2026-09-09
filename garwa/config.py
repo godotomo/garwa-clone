@@ -87,6 +87,7 @@ _USER_CONFIG_KEYS = (
     "keep_tail_messages",
     "auto_commit",
     "auto_commit_author",
+    "personality",
 )
 
 
@@ -104,6 +105,7 @@ def save_user_config(
     keep_tail_messages: int | None = None,
     auto_commit: bool | None = None,
     auto_commit_author: str | None = None,
+    personality: str | None = None,
 ) -> None:
     """Tulis nilai konfigurasi ke file konfigurasi pengguna.
 
@@ -137,6 +139,8 @@ def save_user_config(
         cfg["auto_commit"] = "1" if auto_commit else "0"
     if auto_commit_author is not None:
         cfg["auto_commit_author"] = auto_commit_author
+    if personality is not None:
+        cfg["personality"] = personality
     try:
         os.makedirs(os.path.dirname(USER_CONFIG_PATH), exist_ok=True)
         with open(USER_CONFIG_PATH, "w", encoding="utf-8") as f:

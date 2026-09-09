@@ -5,6 +5,44 @@ Semua perubahan penting pada proyek ini akan dicatat di file ini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/1.1.0/),
 dan versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-09-09
+
+Fitur-fitur baru diambil dari Hermes Agent (nousresearch/hermes-agent) untuk
+memperkuat Garwa sebagai agentic runtime yang ringan, robust, dan berjalan
+di Termux. Semua fitur tetap memakai dependensi yang sudah ada (SQLite stdlib,
+config) — tidak ada dependensi baru.
+
+### Added
+- **`/undo`** — batalkan giliran terakhir: hapus pesan user + semua balasan
+  model/tool dari DB. Berguna saat hasil giliran tidak sesuai.
+- **`/retry`** — ulangi giliran terakhir: kirim ulang pesan user terakhir ke
+  model (balasan lama dihapus, pesan user dipertahankan). Aksi `"retry"`
+  diproses di loop interaktif `main.py`.
+- **`/search <query>`** — cross-session memory search memakai SQLite **FTS5**:
+  cari pesan user/assistant lintas semua sesi di workdir yang sama, dengan
+  fallback ke `LIKE` bila query tidak valid untuk FTS. Menampilkan 15 hasil
+  teratas (session_id + snippet).
+- **`/personality <deskripsi>`** — set persona lintas sesi (disimpan di
+  config user). Kosongkan untuk menghapus. Persona disuntikkan sebagai blok
+  `PERSONA:` di awal system prompt pada sesi berikutnya.
+- **`/usage`** — agregasi pemakaian token lintas sesi dari kolom `meta`
+  messages (total token, tool calls, error, per hari, per tool).
+
+### Internal
+- `db.py`: helper baru `delete_messages_after`, `get_last_turn_span`,
+  `search_messages` (FTS5), `aggregate_token_usage`.
+- `config.py`: kunci `personality` ditambahkan ke `_USER_CONFIG_KEYS` dan
+  `save_user_config`.
+- `system_prompt.py`: penyuntikan persona dari config ke system prompt.
+
+### Tests
+- Test baru `tests/test_hermes_features.py` (17 test): DB helpers, slash
+  command `/undo` `/retry` `/search` `/personality` `/usage`, dan injeksi
+  persona ke system prompt.
+- Suite total: **683 passed, 1 skipped** (0 regresi).
+
+---
+
 ## [0.5.0] - 2026-09-06
 
 Rilis ini menyimpan seluruh pekerjaan perbaikan arsitektur yang disepakati (6 poin) plus fitur sub-agent in-process.

@@ -10,6 +10,7 @@ except ImportError:
 
 
 from ...tools import TOOLS
+from ... import config
 from .. import _state as state
 from ..tool_schema import build_tool_schema_text
 from .discovery import _build_skills_section
@@ -33,8 +34,16 @@ def build_system_prompt(workdir: str, skills_dir: str = state.DEFAULT_SKILLS_DIR
             for _, s in TOOLS.items()
         )
     skills_section = _build_skills_section(skills_dir)
+    personality = ""
+    try:
+        _cfg = config.load_user_config()
+        if _cfg.get("personality"):
+            personality = f"\nPERSONA: {_cfg['personality']}\n"
+    except Exception:
+        pass
     return f"""Anda adalah asisten coding CLI yang berjalan di komputer lokal user.
 Working directory saat ini: {workdir}
+{personality}
 
 Anda memiliki akses ke tool berikut untuk membaca/menulis file dan menjalankan perintah:
 

@@ -7,7 +7,7 @@ mesin Anda, menjalankan perintah shell, mencari di GitHub, mencari berita,
 menjalankan audit keamanan, dan banyak lagi — semuanya lewat percakapan
 natural atau mode otomatis (auto / overnight) tanpa pengawasan.
 
-> Versi saat ini: **0.5.0**
+> Versi saat ini: **0.5.1**
 
 ![Garwa CLI](screenshot/sceenshot.png)
 
@@ -501,6 +501,11 @@ garwa --bot --forever --skip-server-check
 | `/memory` | Kelola catatan proyek: `/memory list`, `/memory show <key>`, `/memory forget <key>` |
 | `/sessions` | Daftar sesi tersimpan untuk workdir ini |
 | `/model` | Lihat/ganti model aktif: `/model <nama>` |
+| `/undo` | Batalkan giliran terakhir (hapus pesan user + balasan model/tool) |
+| `/retry` | Ulangi giliran terakhir (kirim ulang pesan user terakhir ke model) |
+| `/search <query>` | Cari pesan lintas sesi (cross-session memory, FTS5) |
+| `/personality <deskripsi>` | Set persona lintas sesi (kosongkan untuk hapus) |
+| `/usage` | Agregasi pemakaian token lintas sesi (per hari & per tool) |
 | `/stop` | Batalkan proses yang sedang berjalan (interrupt agent turn) |
 | `/exit` | Tutup sesi bot |
 

@@ -357,6 +357,150 @@ def get_last_user_message(db_path: str, session_id: str) -> dict:
         return dict(row) if row else {}
 
 
+def delete_messages_after(db_path: str, session_id: str, after_id: int) -> int:
+    """Hapus SEMUA pesan dengan id > after_id pada sesi ini.
+
+    Dipakai untuk `/undo` (batalkan giliran terakhir): hapus semua pesan
+    (user prompt + assistant + tool calls) yang muncul SETELAH pesan user
+    terakhir yang diinginkan. Mengembalikan jumlah baris yang dihapus.
+    """
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "DELETE FROM messages WHERE session_id = ? AND id > ?",
+            (session_id, after_id),
+        )
+        return cur.rowcount
+
+
+def get_last_turn_span(db_path: str, session_id: str) -> dict:
+    """Ambil rentang id pesan milik giliran (turn) TERAKHIR.
+
+    Sebuah giliran dimulai oleh pesan user `kind='chat'` dan berisi semua
+    pesan berikutnya (assistant, tool_call, tool_result) sampai sebelum
+    pesan user berikutnya. Mengembalikan dict {"user_id": int, "start_id": int}
+    atau {} bila tidak ada giliran user. start_id = id pesan user giliran itu.
+    """
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM messages WHERE session_id = ? AND role = 'user' "
+            "AND kind = 'chat' ORDER BY id DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        if not row:
+            return {}
+        return {"user_id": row["id"], "start_id": row["id"]}
+
+
+def aggregate_token_usage(db_path: str, workdir: str = None, days: int = None) -> dict:
+    """Agregasi pemakaian token lintas sesi dari kolom `meta` messages.
+
+    `meta` berisi JSON {"token_estimate": int, "tool_name": str, ...} untuk
+    setiap tool call. Fungsi ini menjumlahkan token_estimate per hari dan
+    per tool, plus jumlah tool call & error, untuk workdir (atau semua sesi
+    bila workdir None). Opsional `days` membatasi ke N hari terakhir.
+
+    Mengembalikan dict: {"total_tokens", "tool_calls", "errors",
+    "per_day": {YYYY-MM-DD: tokens}, "per_tool": {tool: count}}.
+    """
+    with connect(db_path) as conn:
+        params = []
+        where = ""
+        if workdir:
+            where = "WHERE s.workdir = ?"
+            params.append(workdir)
+        rows = conn.execute(
+            "SELECT m.meta, m.created_at, s.workdir AS wd "
+            f"FROM messages m JOIN sessions s ON s.id = m.session_id {where}",
+            params,
+        ).fetchall()
+    import datetime as _dt
+    total_tokens = 0
+    tool_calls = 0
+    errors = 0
+    per_day = {}
+    per_tool = {}
+    cutoff = None
+    if days:
+        cutoff = time.time() - days * 86400
+    for r in rows:
+        if cutoff and r["created_at"] < cutoff:
+            continue
+        meta = {}
+        if r["meta"]:
+            try:
+                meta = json.loads(r["meta"])
+            except (ValueError, TypeError):
+                meta = {}
+        est = meta.get("token_estimate") or 0
+        total_tokens += est
+        if meta.get("tool_name"):
+            tool_calls += 1
+            per_tool[meta["tool_name"]] = per_tool.get(meta["tool_name"], 0) + 1
+        if meta.get("is_error"):
+            errors += 1
+        day = _dt.datetime.fromtimestamp(r["created_at"]).strftime("%Y-%m-%d")
+        per_day[day] = per_day.get(day, 0) + est
+    return {
+        "total_tokens": total_tokens,
+        "tool_calls": tool_calls,
+        "errors": errors,
+        "per_day": dict(sorted(per_day.items(), reverse=True)),
+        "per_tool": dict(sorted(per_tool.items(), key=lambda kv: -kv[1])),
+    }
+
+
+def search_messages(db_path: str, query: str, workdir: str = None,
+                    limit: int = 20) -> list:
+    """Cari pesan lintas sesi (cross-session memory search) memakai FTS5.
+
+    Membuat tabel FTS virtual `messages_fts` yang menyalin konten pesan
+    user/assistant dari SEMUA sesi di workdir yang sama. Query memakai
+    FTS5 MATCH dengan fallback ke LIKE kalau query mengandung karakter
+    yang tidak valid untuk FTS syntax.
+
+    Mengembalikan daftar dict: {"session_id", "role", "content",
+    "created_at", "session_title"}.
+    """
+    with connect(db_path) as conn:
+        # Buat tabel FTS5 virtual (idempoten) kalau belum ada.
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts "
+            "USING fts5(content, session_id UNINDEXED, role UNINDEXED, created_at UNINDEXED)"
+        )
+        # Sinkronkan: hapus semua lalu isi ulang dari messages (ringan untuk
+        # volume sesi lokal; cukup untuk kebutuhan cross-session recall).
+        conn.execute("DELETE FROM messages_fts")
+        conn.execute(
+            "INSERT INTO messages_fts (content, session_id, role, created_at) "
+            "SELECT content, session_id, role, CAST(created_at AS TEXT) "
+            "FROM messages WHERE role IN ('user', 'assistant') AND kind = 'chat'"
+        )
+        # Query FTS dengan escaping aman.
+        safe = " ".join(
+            f'"{t}"' for t in query.replace('"', " ").split() if t
+        )
+        try:
+            rows = conn.execute(
+                "SELECT m.id, m.session_id, m.role, m.content, m.created_at, "
+                "       s.title AS session_title "
+                "FROM messages_fts f "
+                "JOIN messages m ON m.id = f.rowid "
+                "LEFT JOIN sessions s ON s.id = f.session_id "
+                "WHERE messages_fts MATCH ? "
+                "ORDER BY bm25(messages_fts) ASC LIMIT ?",
+                (safe, limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # FTS syntax error -> fallback LIKE scan.
+            rows = conn.execute(
+                "SELECT id, session_id, role, content, created_at, NULL AS session_title "
+                "FROM messages WHERE role IN ('user', 'assistant') AND kind = 'chat' "
+                "AND content LIKE ? ORDER BY id DESC LIMIT ?",
+                (f"%{query}%", limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
 
 def save_summary(db_path: str, session_id: str, upto_message_id: int, summary_text: str,
                  active_instructions: list = None):
