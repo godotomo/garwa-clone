@@ -156,3 +156,22 @@ Saat formulir registrasi membutuhkan verifikasi email / magic link / OTP 6 digit
 
 - Panduan implementasi kode siap pakai ada di `references/cdp-form-filler.md`.
 - Panduan praktis `termux-browser-pilot` (setup, perintah, Turnstile bypass, troubleshooting) ada di `references/termux-browser-pilot.md`.
+
+## Dukungan Termux (Android) — hasil uji nyata (2026-09)
+
+Stack browser di Termux **terverifikasi terinstall**:
+
+| Komponen | Status | Versi |
+|---|---|---|
+| `tbp` binary | ✅ | v0.1.0a1 (`which tbp` → `$PREFIX/bin/tbp`) |
+| Firefox | ✅ | v155.0.1 (x11) |
+| `xorg-server-xvfb` | ✅ | v21.1.16-3 |
+| `xdotool` | ✅ | v3.20211022.1 |
+| `openbox` | ✅ | v3.6.1-62 |
+
+**Do & don't:**
+- **Do** — gunakan `tbp` command (`navigate`, `click`, `screenshot`, `screenshot-element`, `annotate`, `text`, `iframe list`, `eval`) untuk automasi; semuanya tersedia via binary `tbp`.
+- **Do** — `tbp screenshot-element SELECTOR` untuk screenshot area spesifik (mis. CAPTCHA) — berguna untuk solusi vision LLM.
+- **Do** — prefer Firefox (lebih ringan & lolos Cloudflare via TLS fingerprint) daripada Chromium (~570–640MB).
+- **Don't** — jangan `pip install termux-browser-pilot` (tidak di PyPI); pakai wrapper manual.
+- **Don't** — browser teks (`lynx`/`w3m`/`links`) tidak bisa menembus Turnstile.

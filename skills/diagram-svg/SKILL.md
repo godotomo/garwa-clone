@@ -185,3 +185,11 @@ graph LR
 3. **Performance:** Limit animations to a few elements; avoid animating large groups.
 4. **Fallback:** If the renderer strips `<style>` or `<title>`, the SVG must still be readable statically (don't rely solely on hover to convey critical data).
 5. **State clarity:** For hover-highlight, also add `:focus` styles so keyboard users get the same feedback.
+
+## Dukungan Termux (Android) — hasil uji nyata (2026-09)
+
+Skill ini **murni teks** (menghasilkan string SVG) — tidak butuh pip/paket Termux sama sekali.
+
+### ✅ Hasil uji nyata di Termux (Python 3.14.6, 2026-09)
+- **Generate SVG**: tulis string SVG ke file (`<svg>...</svg>`) → file valid & non-empty → **OK**.
+- **Kesimpulan do & don't**: **Do** — tulis SVG sebagai teks langsung, zero-dependency. **Don't** — jangan referensikan font eksternal/`<image href="http...">` (gagal di renderer offline/sandbox); pakai system fonts (Arial/Helvetica/sans-serif/system-ui).

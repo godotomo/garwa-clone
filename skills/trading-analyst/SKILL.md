@@ -130,3 +130,8 @@ pip3 install --break-system-packages pandas numpy
 ```
 
 > **Catatan pip di Termux (TERUJI):** `pandas`/`numpy` punya C-extension — lebih baik pakai paket Termux (`python-pandas`, `python-numpy`) daripada pip. Kalau tetap pip, `pip3 install --break-system-packages` bekerja SETELAH `libexpat` di-upgrade (lihat langkah 0). JANGAN asumsikan pip rusak saat error `install_wheel` — upgrade `libexpat` dulu. Gunakan `--break-system-packages` karena Termux memakai sistem Python.
+
+### ✅ Hasil uji nyata di Termux (Python 3.14.6, 2026-09)
+- **compute_indicators.py**: `python3 compute_indicators.py ohlcv.csv` (30 baris OHLCV) → SMA20, RSI, MACD, Bollinger, ATR terhitung → **OK** (pandas/numpy jalan).
+- **quant_risk.py**: `python3 quant_risk.py ohlcv.csv` → VaR/CVaR (historical & Monte Carlo), Sharpe, Max Drawdown, simulasi Monte Carlo → **OK**.
+- **Kesimpulan do & don't**: `python-pandas`/`python-numpy` **do** — paket Termux, jalan penuh untuk kedua script. `scipy` **don't wajib** — tidak terinstall tapi script **fallback anggun** ("Parametric: scipy tidak tersedia, dilewati"), jadi VaR parametric dilewati tanpa crash. Di desktop/VPS tetap **do** install `scipy` untuk VaR parametric penuh.

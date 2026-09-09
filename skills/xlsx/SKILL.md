@@ -99,3 +99,8 @@ pkg install -y x11-repo && pkg install -y libreoffice
 - **Verifikasi tanpa recalc**: buka ulang dengan `openpyxl` (`data_only=False`) dan cek formula string + referensi tidak salah (`#REF!`/`#NAME?` baru muncul setelah recalc). Untuk angka, hitung manual subset.
 
 > **Catatan pip di Termux (TERUJI):** `openpyxl` adalah wheel murni — `pip3 install --break-system-packages openpyxl` berhasil diinstall & di-import SETELAH `libexpat` di-upgrade (lihat langkah 0). Kalau muncul error `install_wheel`, JANGAN asumsikan pip rusak — upgrade `libexpat` dulu. Gunakan `--break-system-packages` karena Termux memakai sistem Python.
+
+### ✅ Hasil uji nyata di Termux (Python 3.14.6, 2026-09)
+- **Buat workbook**: `Workbook()` + `ws['A1']='Hello'` + formula `='A1'&" World"` → `save()` → **OK**.
+- **Baca ulang**: `load_workbook('t.xlsx')` → nilai sel `A1` & string formula `B1` terbaca → **OK**.
+- **Kesimpulan do & don't**: `openpyxl` (v3.1.5) **do** — jalan penuh (buat+baca+formula+format) tanpa tool eksternal. `soffice` **don't wajib** — hanya untuk memicu recalc formula (cached value). `python-pandas` **do** — tersedia sebagai paket Termux untuk data massal.

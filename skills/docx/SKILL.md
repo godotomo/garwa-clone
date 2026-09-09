@@ -134,3 +134,8 @@ pkg install -y x11-repo && pkg install -y libreoffice poppler
 - **Render halaman jadi gambar** (QA visual penuh) tetap butuh `soffice` + `poppler-utils` — kalau tidak terinstall, lewati langkah render dan andalkan QA struktural di atas.
 
 > **Catatan pip di Termux (TERUJI):** `python-docx` adalah wheel murni — `pip3 install --break-system-packages python-docx` berhasil diinstall & di-import SETELAH `libexpat` di-upgrade (lihat langkah 0). Kalau muncul error `install_wheel`, JANGAN asumsikan pip rusak — upgrade `libexpat` dulu. Gunakan `--break-system-packages` karena Termux memakai sistem Python.
+
+### ✅ Hasil uji nyata di Termux (Python 3.14.6, 2026-09)
+- **Buat dokumen**: `Document()` + `add_heading`/`add_paragraph`/`add_table` → `save()` → **OK**.
+- **Baca ulang**: `Document('t.docx')` → `len(paragraphs)=2`, `len(tables)=1` → **OK** (file tidak korup).
+- **Kesimpulan do & don't**: `python-docx` (v1.2.0) **do** — jalan penuh (buat+baca+QA struktural) tanpa tool eksternal. `pandoc`/`soffice`/`poppler-utils` **don't wajib** — hanya untuk kenyamanan/QA visual.

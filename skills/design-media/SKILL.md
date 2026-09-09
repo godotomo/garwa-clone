@@ -178,3 +178,9 @@ pkg install -y imagemagick
 - **Mermaid render**: Mermaid biasanya di-render di browser/Node. Di Termux, cukup tulis sintaks Mermaid yang valid sebagai teks; render visual bisa dilakukan nanti di desktop/browser.
 
 > **Catatan pip di Termux (TERUJI):** `pdfplumber`, `pypdf`, `Pillow` adalah wheel murni — `pip3 install --break-system-packages` berhasil SETELAH `libexpat` di-upgrade (lihat langkah 0). Kalau muncul error `install_wheel`, JANGAN asumsikan pip rusak — upgrade `libexpat` dulu. Gunakan `--break-system-packages` karena Termux memakai sistem Python.
+
+### ✅ Hasil uji nyata di Termux (Python 3.14.6, 2026-09)
+- **Image processing**: `Pillow` (v12.3.0) — buat gambar RGB, simpan PNG, buka ulang + convert ke grayscale (`mode='L'`) → **OK**.
+- **OCR**: `tesseract` CLI (v5.5.3) terinstall & `pytesseract` (v0.3.13) via pip → import **OK**.
+- **Render PDF→gambar**: `python-pymupdf` (`fitz`) → **OK** (lihat skill pdf).
+- **Kesimpulan do & don't**: `Pillow`/`pdfplumber`/`pypdf` **do** — jalan penuh tanpa tool eksternal. `tesseract`+`pytesseract` **do** — tersedia (tesseract paket Termux, pytesseract pip). `python-pymupdf` **do** — render PDF tanpa poppler. `imagemagick` **do** — paket Termux untuk CLI image ops. `easyocr` **don't** — berat (butuh torch).

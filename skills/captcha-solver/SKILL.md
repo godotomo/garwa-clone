@@ -63,3 +63,13 @@ Skill ini memerlukan browser sungguhan (Chromium/Firefox) untuk CAPTCHA interakt
 
 - Detail implementasi penanganan Turnstile, reCAPTCHA, dan hCaptcha ada di `references/captcha-handling.md`.
 - **Solusi CAPTCHA visual kompleks via model vision LLM** (screenshot → crop → prompt → parse → inject) ada di `references/visual-vlm-solving.md`.
+
+## Dukungan Termux (Android) — hasil uji nyata (2026-09)
+
+Stack browser di Termux **terverifikasi terinstall** (lihat skill `browser-automation`): `tbp` v0.1.0a1, Firefox v155.0.1, `xorg-server-xvfb`, `xdotool`, `openbox`.
+
+**Do & don't:**
+- **Do** — gunakan `tbp` command (`screenshot`, `screenshot-element`, `annotate`, `click`, `iframe list`) untuk menangani CAPTCHA interaktif di Termux; browser sungguhan menembus Turnstile otomatis.
+- **Do** — untuk CAPTCHA visual kompleks (OCR huruf, slider, image grid): `tbp screenshot-element SELECTOR` → kirim ke model vision LLM (lihat `references/visual-vlm-solving.md`).
+- **Don't** — jangan andalkan browser teks (`lynx`/`w3m`/`links`) — tidak bisa menembus Turnstile (tanpa JS penuh).
+- **Don't** — solver API berbayar (2Captcha/CapSolver) hanya fallback bila model vision tidak tersedia.

@@ -178,3 +178,11 @@ Verify UI implementations against these mandatory gates before deployment:
 * [ ] **5 UI States Verification**: Are `Idle`, `Hover`, `Focus-visible`, `Active`, and `Disabled` styles explicitly handled for interactive components?
 * [ ] **Data Formatting**: Are numerical figures in financial tables or dashboard metrics styled with `tabular-nums`?
 * [ ] **CLS Protection**: Is layout shift prevented by setting explicit dimensions or aspect ratios on media assets?
+
+## Dukungan Termux (Android) — hasil uji nyata (2026-09)
+
+Skill ini **murni teks** (menghasilkan HTML/CSS/JS) — tidak butuh pip/paket Termux sama sekali.
+
+### ✅ Hasil uji nyata di Termux (Python 3.14.6, 2026-09)
+- **Generate HTML/CSS**: tulis file `.html`/`.css` → file valid & non-empty → **OK**.
+- **Kesimpulan do & don't**: **Do** — tulis HTML/CSS sebagai teks langsung, zero-dependency. **Don't** — jangan andalkan tool build (Vite/Next) yang butuh resource besar untuk QA; verifikasi statis (kontras, ukuran, state) cukup di Termux. Render visual penuh bisa dilakukan di desktop/browser.

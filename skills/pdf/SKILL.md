@@ -120,3 +120,10 @@ pkg install -y pango && pip3 install --break-system-packages weasyprint
 - **Merge/split cepat** tanpa `qpdf`: `pypdf` (`PdfWriter.add_page`) sudah menangani merge/split/rotate/enkripsi — qpdf hanya alternatif CLI yang lebih cepat untuk file besar.
 
 > **Catatan pip di Termux (TERUJI):** `reportlab`, `pypdf`, `pdfplumber` adalah wheel murni — `pip3 install --break-system-packages` langsung jalan SETELAH `libexpat` di-upgrade (lihat langkah 0). Kalau muncul error `install_wheel`, JANGAN asumsikan pip rusak — upgrade `libexpat` dulu. Gunakan `--break-system-packages` karena Termux memakai sistem Python.
+
+### ✅ Hasil uji nyata di Termux (Python 3.14.6, 2026-09)
+- **Buat PDF berlayout**: `reportlab.platypus` (`SimpleDocTemplate` + `Paragraph` + `Table`) → `build()` → **OK**.
+- **Baca halaman**: `pypdf.PdfReader` → `len(pages)=1` → **OK**.
+- **Ekstrak teks**: `pdfplumber` → `extract_text()` mengembalikan `'Hello Termux PDF\nA B\n1 2'` → **OK**.
+- **Render halaman → PNG**: `python-pymupdf` (`fitz`, v1.28.0) → `page.get_pixmap(dpi=72)` → **OK** (612×792).
+- **Kesimpulan do & don't**: `reportlab`/`pypdf`/`pdfplumber` **do** — jalan penuh tanpa tool eksternal. `python-pymupdf` **do** — paket Termux untuk render PDF→gambar (tanpa poppler). `weasyprint`/`poppler-utils`/`tesseract`/`qpdf` **don't wajib** — hanya kasus spesifik.

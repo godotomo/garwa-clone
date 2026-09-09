@@ -121,3 +121,7 @@ pip3 install --break-system-packages sentence-transformers faiss-cpu
 - **Embedding neural** hanya menambah kualitas semantik untuk dokumen sangat besar; untuk dokumen kecil–menengah, LSA offline sudah memadai.
 
 > **Catatan pip di Termux (TERUJI):** `networkx` adalah wheel murni — `pip3 install --break-system-packages networkx` berhasil SETELAH `libexpat` di-upgrade (lihat langkah 0). Kalau muncul error `install_wheel`, JANGAN asumsikan pip rusak — upgrade `libexpat` dulu. Gunakan `--break-system-packages` karena Termux memakai sistem Python.
+
+### ✅ Hasil uji nyata di Termux (Python 3.14.6, 2026-09)
+- **networkx via pip**: `pip3 install --break-system-packages networkx` → v3.6.1 → `Graph()` + `add_edge` → **OK**.
+- **Kesimpulan do & don't**: `networkx` **do** — wheel murni, jalan penuh (graph analysis, BM25, compliance). `sentence-transformers`/`faiss-cpu` **don't** untuk Termux — butuh torch (ratusan MB); gunakan fallback **Tingkat B LSA offline** (numpy-only). Di desktop/VPS tetap **do** install embedding neural untuk dokumen sangat besar.

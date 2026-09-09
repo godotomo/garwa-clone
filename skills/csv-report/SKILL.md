@@ -75,3 +75,11 @@ Before declaring the report done, verify:
 - [ ] Missing values and duplicates are explicitly reported (even if zero).
 - [ ] The report follows the exact template above.
 - [ ] The output file exists and is non-empty.
+
+## Dukungan Termux (Android) — hasil uji nyata (2026-09)
+
+Skill ini **murni stdlib Python** (`argparse`, `csv`, `statistics`, `pathlib`) — tidak butuh pip/paket Termux sama sekali.
+
+### ✅ Hasil uji nyata di Termux (Python 3.14.6, 2026-09)
+- **generate_report.py**: `python3 generate_report.py --input report.csv --format md` → menghasilkan `report.md` berisi Overview, Data Quality, Summary Statistics (mean/median/min/max/std), dan Sample Data → **OK**.
+- **Kesimpulan do & don't**: **Do** — jalankan langsung, zero-dependency. **Do** — `--format docx`/`pdf` hanya jika pustaka skill docx/pdf tersedia (lihat skill tsb). **Don't** — jangan install dependency; script sudah stdlib-only.

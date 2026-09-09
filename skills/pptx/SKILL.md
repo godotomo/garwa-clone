@@ -114,3 +114,8 @@ pkg install -y x11-repo && pkg install -y libreoffice poppler
 - **SVG/EMF → PNG** tanpa `soffice`/`cairosvg`: pakai `cairosvg` (pip) untuk SVG, atau `python-pymupdf` (paket Termux) untuk render. Kalau tidak ada, beri tahu user bahwa ikon SVG perlu dikonversi manual.
 
 > **Catatan pip di Termux (TERUJI):** `python-pptx` adalah wheel murni — `pip3 install --break-system-packages python-pptx` berhasil diinstall & di-import SETELAH `libexpat` di-upgrade (lihat langkah 0). Kalau muncul error `install_wheel`, JANGAN asumsikan pip rusak — upgrade `libexpat` dulu. Gunakan `--break-system-packages` karena Termux memakai sistem Python.
+
+### ✅ Hasil uji nyata di Termux (Python 3.14.6, 2026-09)
+- **Buat deck**: `Presentation()` + `slides.add_slide` + `shapes.title.text` + `add_textbox` → `save()` → **OK**.
+- **Baca ulang**: `Presentation('t.pptx')` → `len(slides)=1` → **OK** (file tidak korup).
+- **Kesimpulan do & don't**: `python-pptx` (v1.0.2) **do** — jalan penuh (buat+baca+QA struktural) tanpa tool eksternal. `soffice`/`poppler-utils` **don't wajib** — hanya untuk QA visual. Jalur Node (`pptxgenjs`) **do** karena `nodejs` (v24) tersedia di Termux.

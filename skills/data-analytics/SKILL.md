@@ -219,3 +219,8 @@ pip3 install --break-system-packages matplotlib seaborn
 - **Verifikasi tanpa plot**: gunakan statistik ringkasan (mean/median/std/min/max) + cek `df.describe()` — cukup untuk QA tanpa visual.
 
 > **Catatan pip di Termux (TERUJI):** `matplotlib`/`seaborn` adalah wheel dengan C-extension — `pip3 install --break-system-packages` bekerja SETELAH `libexpat` di-upgrade (lihat langkah 0). Kalau muncul error `install_wheel`, JANGAN asumsikan pip rusak — upgrade `libexpat` dulu. Gunakan `--break-system-packages` karena Termux memakai sistem Python.
+
+### ✅ Hasil uji nyata di Termux (Python 3.14.6, 2026-09)
+- **pandas/numpy via paket Termux**: `pkg install python-pandas python-numpy` → numpy **2.4.4**, pandas **3.0.5** → `DataFrame()` + `.mean()`/`.sum()` → **OK**.
+- **matplotlib via pip**: **MACET saat build dari source** (tarball 32.6 MB, "Installing backend dependencies: still running..." berjam-jam, tidak selesai). Ini **memvalidasi klaim skill** bahwa matplotlib "cukup berat" di Termux.
+- **Kesimpulan do & don't**: `python-pandas`/`python-numpy` **do** — paket Termux, jalan penuh (analisis data). `python-polars` **do** — paket Termux untuk data besar. `matplotlib`/`seaborn` **don't** untuk Termux — build macet; gunakan `plotly` (pip, HTML interaktif) atau output CSV/JSON/ASCII sebagai fallback chart. Di desktop/VPS tetap **do** install matplotlib untuk chart publikasi-grade.

@@ -54,6 +54,22 @@ print('honeypot:', tok.get('is_honeypot'), '| open_source:', tok.get('is_open_so
 4. Ambil sentimen via Fear & Greed.
 5. Sajikan data dengan sumber & timestamp. Jangan pernah mengarang data — jika API gagal, tulis keterangan eksplisit.
 
+## Dukungan Termux (Android) — hasil uji nyata (2026-09)
+
+Skill ini **zero-dependency** (stdlib `urllib` saja) — tidak perlu pip/paket Termux. Semua endpoint diuji langsung dari Termux:
+
+| Endpoint | Hasil uji | Catatan |
+|---|---|---|
+| CoinGecko `/simple/price` | ✅ OK | `bitcoin` → `{'usd': ...}` |
+| DexScreener `/latest/dex/search` | ✅ OK **dengan User-Agent** | **403 Forbidden TANPA `User-Agent` header** → WAJIB pakai helper `get()` yang menyertakan `User-Agent: Mozilla/5.0` |
+| GoPlus `/token_security` | ✅ OK | respons punya kunci `code`/`message`/`result` |
+| Alternative.me `/fng/` | ✅ OK | `{'value': 66, 'value_classification': 'Greed'}` |
+
+**Do & don't:**
+- **Do** — selalu pakai helper `get()` (dengan `User-Agent` + `Accept` header) untuk SEMUA endpoint; tanpa itu DexScreener (dan sebagian API lain) memblokir dengan 403.
+- **Do** — `timeout=20` pada `urlopen` agar tidak menggantung di jaringan lambat.
+- **Don't** — jangan install dependency; script `crypto_fetcher.py` sudah stdlib-only dan siap pakai.
+
 ## Disclaimer
 
 Data untuk riset/edukasi, bukan nasihat keuangan. Selalu DYOR.
