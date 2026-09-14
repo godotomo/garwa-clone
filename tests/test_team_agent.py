@@ -54,18 +54,26 @@ def test_team_run_missing_task():
     assert "task" in res
 
 
-def test_team_run_missing_role_prompt_fallback():
+def test_team_run_missing_role_prompt_fallback(monkeypatch):
     # rolePrompt kosong -> fallback ke default, tidak error.
+    # Mock runner sub-agent supaya test TIDAK memanggil LLM sungguhan.
+    monkeypatch.setattr(
+        "garwa.tools.team_agent._run_sub_agent_with_system",
+        lambda **kw: "laporan-mock",
+    )
     res = tool_team_run(members=[{"agentId": "a", "task": "x"}])
-    # Karena rolePrompt kosong, anggota tetap dijalankan; tanpa LLM hasilnya
-    # akan berisi error runtime dari _run_sub_agent_with_system, tapi header
-    # tim tetap muncul membuktikan validasi lolos.
     assert "[TEAM]" in res
 
 
-def test_team_run_header_and_structure():
-    # Tanpa LLM, _run_sub_agent_with_system akan gagal di create_sub_session
-    # (DB_PATH belum diset) -> laporan GAGAL, tapi header tim tetap terbentuk.
+def test_team_run_header_and_structure(monkeypatch):
+    # Uji struktur header/laporan TANPA memanggil LLM: mock runner sub-agent.
+    # (Sebelumnya test ini mengandalkan asumsi DB_PATH kosong, padahal
+    #  DB_PATH punya default ~/.garwa/garwa.db sehingga memicu panggilan LLM
+    #  nyata dan menggantung.)
+    monkeypatch.setattr(
+        "garwa.tools.team_agent._run_sub_agent_with_system",
+        lambda **kw: f"laporan-{kw.get('role')}",
+    )
     res = tool_team_run(
         members=[
             {"agentId": "arsitek", "rolePrompt": "Anda arsitek", "task": "t1"},
@@ -77,3 +85,5 @@ def test_team_run_header_and_structure():
     assert "Objective: Bangun fitur X" in res
     assert "=== Anggota: arsitek" in res
     assert "=== Anggota: reviewer" in res
+    assert "laporan-arsitek" in res
+    assert "laporan-reviewer" in res
