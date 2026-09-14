@@ -29,6 +29,8 @@ import sys
 import threading
 
 from .. import db as dbmod
+from .. import subagent_registry as registry
+from .. import subagent_status as substatus
 from . import _state as state
 
 
@@ -202,19 +204,37 @@ def _run_sub_agent_with_system(task: str, system_content: str,
 
     db_path = getattr(state, "DB_PATH", None) or ""
     workdir = getattr(state, "WORKDIR", None) or os.getcwd()
+
+    # Daftarkan sub-agent di registry (agar terlihat via /agents) + simpan
+    # parent session untuk konteks.
+    rec_id = registry.register_start(
+        role=role, task=task, parent_session=state.get_session_id(),
+    )
+    # Cetak status LIVE ke stderr: pengguna tidak bisa mengetik perintah saat
+    # spawn berjalan, jadi progres sub-agent dilaporkan otomatis.
+    substatus.notify_start(rec_id, role, task)
+
+    def _finish(status, error=None):
+        registry.mark_done(rec_id, status, error=error)
+        substatus.notify_done(rec_id, status, error=error)
+
     if not db_path:
+        _finish(registry.STATUS_ERROR, "DB_PATH belum diset")
         return "[ERROR] DB_PATH belum diset; sub-agent tidak bisa membuat sesi."
 
     # Buat sub-session dengan workdir yang sama dengan induk.
     try:
         sub_sid = dbmod.create_sub_session(db_path, workdir, title=f"sub-agent:{role}")
+        registry.set_session(rec_id, sub_sid)
     except Exception as e:
+        _finish(registry.STATUS_ERROR, f"{type(e).__name__}: {e}")
         return f"[ERROR] Gagal membuat sub-session: {type(e).__name__}: {e}"
 
     # Tambahkan pesan user = task ke sub-session.
     try:
         dbmod.add_message(db_path, sub_sid, "user", task, kind="chat")
     except Exception as e:
+        _finish(registry.STATUS_ERROR, f"{type(e).__name__}: {e}")
         return f"[ERROR] Gagal menulis task ke sub-session: {type(e).__name__}: {e}"
 
     # Lazy-import agent_loop / AgentConfig (hindari circular import top-level).
@@ -222,10 +242,12 @@ def _run_sub_agent_with_system(task: str, system_content: str,
         from ..cli.agent_config import AgentConfig
         from ..cli.agent_loop import run_agent_loop
     except Exception as e:
+        _finish(registry.STATUS_ERROR, f"{type(e).__name__}: {e}")
         return f"[ERROR] Komponen cli tidak tersedia untuk sub-agent: {type(e).__name__}: {e}"
 
     cfg = _make_sub_config()
     if cfg is None:
+        _finish(registry.STATUS_ERROR, "AgentConfig tidak tersedia")
         return "[ERROR] Gagal membuat konfigurasi sub-agent (AgentConfig tidak tersedia)."
 
     # Timpa max_tool_iters sesuai argumen tool (dibatasi atas).
@@ -243,8 +265,17 @@ def _run_sub_agent_with_system(task: str, system_content: str,
         final_report = run_agent_loop(cfg, sub_sid, system_content)
     except KeyboardInterrupt:
         final_report = "[INTERRUPTED] Sub-agent dibatalkan (Ctrl+C)."
+        _finish(registry.STATUS_INTERRUPTED, "dibatalkan (Ctrl+C)")
     except Exception as e:
         final_report = f"[ERROR] Sub-agent gagal: {type(e).__name__}: {e}"
+        _finish(registry.STATUS_ERROR, f"{type(e).__name__}: {e}")
+    else:
+        # run_agent_loop mengembalikan teks; kalau teksnya sendiri berupa
+        # penanda error, catat sebagai error agar status di /agents akurat.
+        if isinstance(final_report, str) and final_report.lstrip().startswith("[ERROR]"):
+            _finish(registry.STATUS_ERROR, final_report.strip()[:300])
+        else:
+            _finish(registry.STATUS_SUCCESS)
     finally:
         state.set_session_id(prev_session)
 
@@ -336,8 +367,11 @@ def tool_spawn_agents_parallel(tasks: list, role: str = "general",
 
     import concurrent.futures as cf
 
+    n_workers = max(1, int(max_workers or 1))
+    substatus.notify_parallel_header(len(tasks), n_workers)
+
     results = []
-    with cf.ThreadPoolExecutor(max_workers=max(1, int(max_workers or 1))) as pool:
+    with cf.ThreadPoolExecutor(max_workers=n_workers) as pool:
         futures = {pool.submit(_run_sub_agent_one, i, t, role, max_iters): i
                    for i, t in enumerate(tasks)}
         for f in cf.as_completed(futures):
