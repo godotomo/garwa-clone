@@ -26,9 +26,87 @@ import io
 import json
 import os
 import sys
+import threading
 
 from .. import db as dbmod
 from . import _state as state
+
+
+# ---------------------------------------------------------------------------
+# Isolasi stdout per-thread
+# ---------------------------------------------------------------------------
+# `sys.stdout` bersifat GLOBAL per proses. Pola lama (`sys.stdout = buf` dari
+# tiap thread worker) adalah race condition: thread A menyimpan `old_stdout`
+# yang sebenarnya buffer milik thread B, lalu memulihkannya sehingga stdout
+# proses menunjuk ke buffer mati dan log hilang/campur. Solusinya: pasang SATU
+# proxy global sekali, yang mengarahkan `write` ke buffer milik THREAD pemanggil
+# (thread-local). Tiap thread tidak lagi menyentuh `sys.stdout` langsung.
+_STDOUT_PROXY_LOCK = threading.Lock()
+_stdout_local = threading.local()
+
+
+class _ThreadLocalStdout:
+    """Proxy stdout yang menyalurkan tulisan ke buffer thread pemanggil.
+
+    Kalau thread aktif tidak punya buffer (mis. thread utama / kode lain),
+    tulisan diteruskan ke stdout asli sehingga perilaku normal tidak berubah.
+    """
+
+    def __init__(self, real_stdout):
+        self._real = real_stdout
+
+    def write(self, data):
+        buf = getattr(_stdout_local, "buffer", None)
+        if buf is not None:
+            return buf.write(data)
+        return self._real.write(data)
+
+    def flush(self):
+        buf = getattr(_stdout_local, "buffer", None)
+        if buf is not None:
+            return buf.flush()
+        return self._real.flush()
+
+    def __getattr__(self, name):
+        # Delegasikan atribut lain (isatty, encoding, fileno, dsb) ke stdout asli.
+        return getattr(self._real, name)
+
+
+def _install_stdout_proxy():
+    """Pasang proxy stdout global sekali (idempoten, thread-safe).
+
+    Idempoten berbasis PEMERIKSAAN TIPE, bukan flag: kalau pihak lain (mis.
+    pytest capture atau prompt_toolkit) mengganti `sys.stdout` setelah proxy
+    terpasang, kita pasang ulang di atasnya supaya isolasi tetap bekerja.
+    """
+    with _STDOUT_PROXY_LOCK:
+        if not isinstance(sys.stdout, _ThreadLocalStdout):
+            sys.stdout = _ThreadLocalStdout(sys.stdout)
+
+
+class _capture_stdout:
+    """Context manager: tangkap stdout HANYA untuk thread saat ini.
+
+    Aman dipakai dari banyak thread serentak karena buffer disimpan di
+    thread-local, bukan dengan menukar `sys.stdout` global.
+    """
+
+    def __init__(self):
+        self._buf = io.StringIO()
+        self._prev = None
+
+    def __enter__(self):
+        _install_stdout_proxy()
+        self._prev = getattr(_stdout_local, "buffer", None)
+        _stdout_local.buffer = self._buf
+        return self._buf
+
+    def __exit__(self, exc_type, exc, tb):
+        _stdout_local.buffer = self._prev
+        return False
+
+    def getvalue(self):
+        return self._buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -205,31 +283,32 @@ def tool_spawn_agent(task: str, role: str = "general", max_iters: int = 40) -> s
 def _run_sub_agent_one(idx: int, task: str, role: str, max_iters: int) -> dict:
     """Jalankan SATU sub-agent dalam context terisolasi. Mengembalikan dict
     {idx, sid, role, ok, report, error}. Aman dipanggil dari thread apa pun.
-    `idx` dipakai untuk mengurutkan ulang hasil sesuai urutan task asli."""
+    `idx` dipakai untuk mengurutkan ulang hasil sesuai urutan task asli.
+
+    Fungsi ini TIDAK PERNAH melempar exception: semua kegagalan (termasuk
+    BaseException seperti SystemExit/KeyboardInterrupt di thread worker)
+    ditangkap dan dikembalikan sebagai hasil GAGAL, supaya satu sub-agent
+    bermasalah tidak merobohkan batch paralel.
+    """
     # Snapshot context saat ini (ContextVar) -- dipakai oleh thread worker
     # supaya SESSION_ID & state lain terisolasi per sub-agent.
     ctx = contextvars.copy_context()
 
-    # Isolasi stdout per-thread supaya log sub-agent paralel tidak campur.
-    buf = io.StringIO()
-    old_stdout = sys.stdout
+    # Isolasi stdout per-thread (thread-local, bukan tukar sys.stdout global).
+    capture = _capture_stdout()
 
     def _run():
-        sys.stdout = buf
-        try:
+        with capture:
             return tool_spawn_agent(task=task, role=role, max_iters=max_iters)
-        finally:
-            sys.stdout = old_stdout
 
     try:
         result = ctx.run(_run)
-    except Exception as e:
-        sys.stdout = old_stdout
+    except BaseException as e:  # noqa: BLE001 -- isolasi wajib, jangan bocor
         return {"idx": idx, "sid": None, "role": role, "ok": False,
                 "report": f"[ERROR] thread sub-agent gagal: {type(e).__name__}: {e}",
-                "log": buf.getvalue()}
+                "log": capture.getvalue()}
     return {"idx": idx, "sid": None, "role": role, "ok": True, "report": result,
-            "log": buf.getvalue()}
+            "log": capture.getvalue()}
 
 
 def tool_spawn_agents_parallel(tasks: list, role: str = "general",
@@ -259,10 +338,23 @@ def tool_spawn_agents_parallel(tasks: list, role: str = "general",
 
     results = []
     with cf.ThreadPoolExecutor(max_workers=max(1, int(max_workers or 1))) as pool:
-        futures = [pool.submit(_run_sub_agent_one, i, t, role, max_iters)
-                   for i, t in enumerate(tasks)]
+        futures = {pool.submit(_run_sub_agent_one, i, t, role, max_iters): i
+                   for i, t in enumerate(tasks)}
         for f in cf.as_completed(futures):
-            results.append(f.result())
+            idx = futures[f]
+            try:
+                results.append(f.result())
+            except BaseException as e:  # noqa: BLE001 -- jangan robohkan batch
+                # _run_sub_agent_one seharusnya tidak pernah melempar, tapi
+                # kalau ada jalur tak terduga (mis. CancelledError), catat
+                # sebagai hasil GAGAL untuk task itu saja -- task lain tetap
+                # dilaporkan.
+                results.append({
+                    "idx": idx, "sid": None, "role": role, "ok": False,
+                    "report": f"[ERROR] task gagal di level thread pool: "
+                              f"{type(e).__name__}: {e}",
+                    "log": "",
+                })
 
     # Urutkan sesuai urutan tasks asli agar laporan konsisten & mudah dibaca.
     # (as_completed tidak menjamin urutan; kita urutkan ulang via idx.)
