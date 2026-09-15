@@ -288,3 +288,34 @@ Semua perintah mengembalikan JSON. Field kunci:
 ```bash
 $GSETUP --revoke
 ```
+
+## Dukungan Termux (Android) — hasil uji nyata (2026-09)
+
+Diuji langsung di Termux (Python 3.14.6, aarch64). Skill ini **jalan di Termux**, dengan satu jebakan penting:
+
+| Komponen | Status di Termux | Catatan |
+|---|---|---|
+| `scripts/setup.py --check` | ✅ OK | diuji: mencetak `NOT_AUTHENTICATED: No token at ~/.garwa/google_token.json` (perilaku benar saat belum setup) |
+| `googleapiclient` (google-api-python-client) | ✅ OK | terpasang di `.venv` |
+| `google.auth` | ✅ OK | terpasang |
+| `google_auth_oauthlib` | ⚠️ **GAGAL tanpa fix** | `ImportError: dlopen failed: cannot locate symbol "PyModule_Type" ... cryptography/.../_rust.abi3.so` — ABI `cryptography` wheel pip tidak kompatibel dengan CPython 3.14 Termux |
+| CLI `gws` | ❌ tidak terpasang | fallback otomatis ke `scripts/google_api.py` (Python bawaan) — **tidak masalah**, skill tetap berfungsi |
+| Versi paket | ⚠️ mismatch | `REQUIRED_PACKAGES` di `setup.py` mem-pin versi persis (mis. `google-api-python-client==2.194.0`), tapi `.venv` punya versi lebih baru (2.200.0, dst). `setup.py --install-deps` akan mencoba "memperbaiki" dengan downgrade — **jangan jalankan** kecuali memang mau pin persis. |
+
+**Fix ABI `cryptography` (TERBUKTI BERHASIL) — WAJIB agar OAuth jalan:**
+```bash
+SRC="/data/data/com.termux/files/usr/lib/python3.14/site-packages/cryptography"
+DST=".venv/lib/python3.14/site-packages/cryptography"
+rm -rf "$DST" && cp -r "$SRC" "$DST"
+.venv/bin/python -c "from cryptography.hazmat.bindings import _rust; print('_rust OK')"
+.venv/bin/python -c "import google_auth_oauthlib; print('google_auth_oauthlib OK')"
+```
+Setelah salin, `import google_auth_oauthlib` **berhasil** (diuji). Detail lengkap ada di `skills/termux-test-environment-guide.md` bagian 3.5.
+
+**Do & don't:**
+- **Do** — jalankan `setup.py`/`google_api.py` dengan **`.venv/bin/python`**, bukan `python` sistem (sistem tanpa deps).
+- **Do** — jika `google_auth_oauthlib` gagal import, salin `cryptography` dari paket sistem Termux ke venv (perintah di atas) sebelum menyerah.
+- **Do** — saat `gws` tidak ada, biarkan fallback ke `google_api.py`; kontrak output JSON tetap sama.
+- **Don't** — jangan `pip install` ulang `cryptography` (wheel pip tetap menghasilkan `_rust.abi3.so` yang gagal di CPython 3.14 Termux). Pakai salin dari sistem.
+- **Don't** — jangan jalankan `setup.py --install-deps` tanpa alasan: pin versi persis bisa men-downgrade paket yang sudah jalan; cek `--check` dulu.
+- **Don't** — jangan andalkan `gws` CLI; di Termux ia tidak terpasang dan tidak wajib.

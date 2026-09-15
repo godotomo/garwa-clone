@@ -111,6 +111,28 @@ Susun laporan audit final menggunakan template di `references/08-report-template
 - **Reproducible**: berikan langkah yang bisa diulang untuk memverifikasi setiap temuan.
 - **Jangan overclaim**: jika tidak yakin suatu pola adalah kerentanan, tandai sebagai "perlu verifikasi" atau "informational".
 
+## Dukungan Termux (Android) — hasil uji nyata (2026-09)
+
+Diuji langsung di Termux (Python 3.14.6, aarch64). Ringkasan ketersediaan tool:
+
+| Tool | Status di Termux | Catatan |
+|---|---|---|
+| `solc` (Solidity compiler) | ✅ **TERSEDIA** | `pkg install solc` → versi **0.8.37** (`Android.clang`). Kompilasi `.sol` (`solc --bin --abi file.sol`) **berhasil** (diuji: kontrak sederhana → binary + ABI OK). |
+| `node` / `npm` / `npx` | ✅ **TERSEDIA** | `pkg install nodejs` → node **v24.11.1**, npm **11.6.2**. Cukup untuk proyek Hardhat/JS. |
+| `cargo` / `rustc` | ✅ tersedia | `pkg install rust` → cargo 1.98.1. Tapi build crate berat sering gagal (lihat di bawah). |
+| `slither` (Slither) | ❌ **TIDAK BISA dipasang** | `pip install slither-analyzer` **GAGAL**: dependensi transitif `cbor2` butuh build Rust dari source → `could not compile target-lexicon` (19 error). Tidak ada wheel aarch64 Termux. |
+| `aderyn` (Cyfrin) | ❌ tidak terpasang | Binary Rust; hanya via `cargo install`/rilis GitHub. Build dari source di Termux berat & rawan gagal. |
+| `myth` (Mythril) | ❌ tidak terpasang | Paket pip ada (`mythril 0.24.8`) tapi belum diuji build di Termux; jalur pip rawan gagal karena dependensi native. |
+| `forge` / `cast` / `anvil` (Foundry) | ❌ tidak terpasang | Foundry = binary Rust (foundryup). Tidak ada di repo Termux; build dari source sangat berat. |
+| `py-solc-x` | ✅ tersedia di pip | `pip index versions py-solc-x` → 2.0.5. Bisa dipakai untuk kompilasi Solidity dari Python (memakai `solc` sistem). |
+
+**Do & don't:**
+- **Do** — pakai `solc` sistem (`pkg install solc`) untuk kompilasi & verifikasi sintaks kontrak; ini jalur yang **terbukti jalan** di Termux.
+- **Do** — pakai `node`/`npm` untuk proyek Hardhat bila butuh test JS (Hardhat test runner berjalan di Node, tidak butuh Foundry).
+- **Do** — bila Slither/Aderyn/Mythril/Foundry tidak tersedia, ikuti Fase 0 langkah 3 & Protokol Eksekusi Tool: **lanjutkan dengan manual review + penulisan test** yang bisa dijalankan setelah tool terpasang, dan **tuliskan keterbatasan ini secara eksplisit** di laporan (jangan mengarang output tool).
+- **Don't** — jangan buang waktu `pip install slither-analyzer` di Termux: **sudah diverifikasi GAGAL** karena `cbor2` (build Rust `target-lexicon` error). Untuk analisis statis penuh, jalankan Slither/Aderyn/Foundry di **desktop/VPS/CI (Linux x86_64)** — bukan di Termux.
+- **Don't** — jangan asumsikan `forge test` bisa dijalankan di Termux; tidak ada binary-nya dan build dari source tidak praktis. Tulis test Foundry tetap boleh (untuk dijalankan di CI), tapi tandai bahwa eksekusi diverifikasi di luar Termux.
+
 ## Referensi
 
 | Topik | Berkas |

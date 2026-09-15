@@ -86,6 +86,27 @@ Saat menyebut dasar hukum dalam jawaban, gunakan format standar:
 
 Lihat `references/panduan-riset-dan-sitasi.md` untuk contoh lebih lengkap dan template kalimat.
 
+## Dukungan Termux (Android) — hasil uji nyata (2026-09)
+
+Skill ini **murni riset via web** (`web_search`/`web_fetch`/`curl`) — tidak butuh pip/paket Termux. Akses situs resmi diuji langsung dari Termux (2026-09):
+
+| Situs | Hasil uji | Catatan |
+|---|---|---|
+| `peraturan.go.id` | ✅ HTTP 200 | sumber utama peraturan |
+| `peraturan.bpk.go.id` | ✅ HTTP 200 | versi konsolidasi BPK |
+| `jdihn.go.id` | ✅ HTTP 200 | portal gabungan JDIHN |
+| `ahu.go.id` | ✅ HTTP 200 | legalitas badan hukum |
+| `oss.go.id` | ⚠️ HTTP 307 | redirect — normal, ikuti redirect (curl `-L`) |
+| `mkri.id` | ⚠️ HTTP 403 | **memblokir `curl` polos** — pakai `web_search`/`web_fetch` (Firecrawl) yang punya header browser |
+| `putusan3.mahkamahagung.go.id` | ⚠️ HTTP 403 | sama: blokir `curl` polos → pakai `web_search`/`web_fetch` |
+
+**Do & don't:**
+- **Do** — pakai `web_search`/`web_fetch` (bukan `curl` mentah) untuk `mkri.id` dan direktori putusan MA; keduanya mengembalikan **403** ke `curl` polos (butuh header browser/JS).
+- **Do** — ikuti redirect (`curl -L`) untuk `oss.go.id` (307).
+- **Do** — verifikasi status peraturan ke `peraturan.go.id`/`peraturan.bpk.go.id` sebelum menyatakan nomor pasal/status berlaku, sesuai Prinsip Kerja Utama.
+- **Don't** — jangan install dependency apa pun; skill ini tidak butuh paket Python.
+- **Don't** — jangan simpulkan situs "mati" hanya karena `curl` polos kena 403; itu proteksi anti-bot, bukan bukti situs tidak bisa diakses.
+
 ## Batasan & Disclaimer
 
 - Ini bukan pengganti advokat, notaris/PPAT, atau konsultan pajak. Untuk keputusan dengan konsekuensi hukum nyata (menandatangani kontrak, menghadapi somasi/gugatan, kasus pidana, transaksi properti/aset besar), sarankan konsultasi profesional secara natural di akhir jawaban.

@@ -58,6 +58,26 @@ Gunakan direktori `03-news-sentiment.md`. Ambil data terbaru dari *Fear & Greed 
 ### E. Pelacakan Aktivitas Whale & Transaksi Besar
 Gunakan direktori `02-whale-onchain.md`. Manfaatkan DexScreener untuk memantau transaksi *on-chain* terkini, Etherscan/Blockchair untuk transaksi bernilai tinggi, atau API Whale Alert jika tersedia. Jika akses *real-time feed* berbayar tidak tersedia, jelaskan keterbatasan tersebut dan berikan alternatif analisis arus dompet utama via *blockchain explorer*.
 
+## Dukungan Termux (Android) — hasil uji nyata (2026-09)
+
+Skill ini **zero-dependency** (stdlib `urllib`/`json` atau `curl` sistem) — tidak perlu pip/paket Termux. Endpoint keyless diuji langsung dari Termux (Python 3.14.6):
+
+| Endpoint | Hasil uji | Catatan |
+|---|---|---|
+| CoinGecko `/simple/price` | ✅ OK | `bitcoin` → `{'usd': ...}` |
+| Alternative.me Fear & Greed | ✅ OK | `{'value': ..., 'value_classification': ...}` |
+| GoPlus `/token_security` | ✅ OK | respons punya `code`/`message`/`result` |
+| DexScreener `/latest/dex/search` | ✅ OK **dengan User-Agent** | **403 Forbidden TANPA `User-Agent` header** → WAJIB sertakan `User-Agent: Mozilla/5.0` |
+| `curl` sistem | ✅ tersedia | alternatif cepat untuk endpoint keyless |
+| `jq` | ❌ tidak terpasang | jangan andalkan `jq` untuk parsing; pakai Python `json` atau `curl` + parser Python |
+
+**Do & don't:**
+- **Do** — selalu sertakan header `User-Agent: Mozilla/5.0` (+ `Accept: application/json`) untuk SEMUA permintaan; tanpa itu DexScreener (dan sebagian API lain) memblokir dengan 403.
+- **Do** — pakai `timeout=20` pada `urlopen`/`curl --max-time` agar tidak menggantung di jaringan seluler lambat.
+- **Do** — untuk API ber-key gratis (Etherscan, CryptoPanic, RugCheck) yang belum dimiliki, ikuti Protokol Akses API poin 5: beri panduan pendaftaran singkat lalu lanjutkan dengan endpoint keyless.
+- **Don't** — jangan install dependency; skill ini sengaja stdlib-only agar jalan penuh di Termux.
+- **Don't** — jangan asumsikan `jq` ada; parsing JSON pakai Python (`json.load`) yang sudah pasti tersedia di venv.
+
 ## Standar Kualitas Analisis
 - **Transparansi Data**: Selalu sertakan sumber data dan *timestamp* (stempel waktu) penarikan data pada laporan.
 - **Verifikasi Multi-Sumber**: Untuk klaim krusial (terutama terkait audit keamanan dan status *rug pull*), gunakan minimal 2 sumber independen (misalnya GoPlus + Honeypot.is) sebelum menarik kesimpulan.
