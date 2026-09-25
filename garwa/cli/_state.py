@@ -238,6 +238,13 @@ LOOP_SIMILARITY_THRESHOLD = 0.95
 # todo (mis. model rusak / todo mustahil diselesaikan). Bisa di-override via
 # GARWA_AUTOPILOT_MAX.
 AUTOPILOT_MAX_CONTINUES = _env_int("GARWA_AUTOPILOT_MAX", 20)
+# Batas berapa kali BERTURUT-TURUT pesan lanjutan autopilot boleh tidak
+# mengubah apa pun pada daftar/status todo. Kalau model berhenti lagi dan lagi
+# tanpa mengubah todo sama sekali, dia hanya berputar (tidak ada progres) --
+# autopilot mematikan dirinya dan melaporkan item yang masih menggantung,
+# alih-alih menghabiskan kuota sampai AUTOPILOT_MAX_CONTINUES.
+# Override via GARWA_AUTOPILOT_STUCK.
+AUTOPILOT_STUCK_LIMIT = _env_int("GARWA_AUTOPILOT_STUCK", 2)
 PASTE_PREVIEW_CHARS = 10
 IMAGE_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg",

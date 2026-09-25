@@ -246,6 +246,11 @@ def test_autopilot_is_bounded(env, monkeypatch):
     _seed_todos(db_path, args.workdir, [("Tugas abadi", "pending")])
     state.set_autopilot(True, sid)
     monkeypatch.setattr(state, "AUTOPILOT_MAX_CONTINUES", 3)
+    # Tes ini fokus pada batas JUMLAH suntikan, bukan pada deteksi "stuck".
+    # Karena `_NoToolCall` memang tidak pernah mengubah todo, stuck-limit akan
+    # memicu lebih dulu kalau tidak dinetralkan; deteksi stuck diuji terpisah
+    # (lihat test_autopilot_stops_when_model_makes_no_progress).
+    monkeypatch.setattr(state, "AUTOPILOT_STUCK_LIMIT", 999)
     fake = _NoToolCall()
     monkeypatch.setattr("garwa.cli.agent_loop.call_llama_server", fake)
 

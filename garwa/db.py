@@ -68,9 +68,16 @@ CREATE TABLE IF NOT EXISTS todos (
     content     TEXT NOT NULL,
     status      TEXT NOT NULL DEFAULT 'pending',  -- pending | in_progress | done | cancelled
     created_at  REAL NOT NULL,
-    updated_at  REAL NOT NULL
+    updated_at  REAL NOT NULL,
+    -- Kapan status item ini TERAKHIR BERUBAH (bukan kapan barisnya ditulis).
+    -- Dipakai untuk menghitung umur status -> mendeteksi todo yang menggantung
+    -- / basi (mis. `in_progress` yang tidak pernah ditutup berhari-hari).
+    -- Full replace (todo_write) menulis ulang semua baris tiap giliran, jadi
+    -- `updated_at` saja TIDAK bisa dipakai sebagai penanda "sejak kapan".
+    status_since REAL NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_todos_session ON todos(session_id, position);
+CREATE INDEX IF NOT EXISTS idx_todos_workdir ON todos(workdir, position);
 
 CREATE TABLE IF NOT EXISTS project_notes (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -149,6 +156,51 @@ def _is_busy_error(exc: Exception) -> bool:
     return "database is locked" in msg or "database table is locked" in msg
 
 
+def ensure_todos_columns(conn) -> None:
+    """Migrasi kolom tabel `todos` secara idempoten (aman dipanggil berkali-kali).
+
+    `CREATE TABLE IF NOT EXISTS` TIDAK menambahkan kolom baru ke tabel yang
+    sudah ada, jadi DB lama harus dimigrasi eksplisit. Dipanggil dari
+    `init_db()` **dan** dari awal `replace_todos()`: kalau hanya mengandalkan
+    `init_db()`, jalur yang tidak lewat `init_db` (pemakaian programatik,
+    sub-agent, skrip) akan gagal keras dengan
+    `OperationalError: table todos has no column named status_since` dan
+    todo-nya hilang tanpa disimpan.
+
+    Migrasi yang dilakukan:
+      * `workdir` (todo milik PROYEK, bukan sesi) + backfill dari `sessions`.
+      * `status_since` (kapan status terakhir BERUBAH) + backfill dari
+        `updated_at`, supaya todo lama tidak tampak "berumur nol"
+        (epoch 0 = 1 Jan 1970) dan salah ditandai basi berhari-hari.
+    """
+    tcol = [r[1] for r in conn.execute("PRAGMA table_info(todos)").fetchall()]
+    if not tcol:
+        # Tabel (atau seluruh skema) belum ada -- buat sekarang. Semua
+        # pernyataan di SCHEMA memakai IF NOT EXISTS sehingga idempoten.
+        conn.executescript(SCHEMA)
+        tcol = [r[1] for r in conn.execute("PRAGMA table_info(todos)").fetchall()]
+        if not tcol:
+            return
+    if "workdir" not in tcol:
+        conn.execute("ALTER TABLE todos ADD COLUMN workdir TEXT NOT NULL DEFAULT ''")
+        # Backfill: isi workdir dari tabel sessions berdasarkan session_id
+        # untuk todo lama yang masih punya sesi terkait.
+        try:
+            conn.execute(
+                "UPDATE todos SET workdir = COALESCE("
+                "(SELECT s.workdir FROM sessions s WHERE s.id = todos.session_id), '') "
+                "WHERE workdir = ''"
+            )
+        except Exception:
+            pass
+    if "status_since" not in tcol:
+        conn.execute("ALTER TABLE todos ADD COLUMN status_since REAL NOT NULL DEFAULT 0")
+    try:
+        conn.execute("UPDATE todos SET status_since = updated_at WHERE status_since = 0")
+    except Exception:
+        pass
+
+
 def init_db(db_path: str = DEFAULT_DB_PATH):
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)
@@ -181,23 +233,10 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
         if "summary" not in ncol:
             conn.execute("ALTER TABLE project_notes ADD COLUMN summary TEXT")
 
-        # Migrasi ringan: kolom `workdir` di tabel todos. DB lama (sebelum
-        # kolom ini ada) hanya punya `session_id`. Todo seharusnya milik
-        # PROYEK (workdir), bukan sesi, supaya sesi baru di workdir yang sama
-        # tetap bisa mengakses todo pending. Tambahkan kolom secara idempoten.
-        tcol = [r[1] for r in conn.execute("PRAGMA table_info(todos)").fetchall()]
-        if "workdir" not in tcol:
-            conn.execute("ALTER TABLE todos ADD COLUMN workdir TEXT NOT NULL DEFAULT ''")
-            # Backfill: isi workdir dari tabel sessions berdasarkan session_id
-            # untuk todo lama yang masih punya sesi terkait.
-            try:
-                conn.execute(
-                    "UPDATE todos SET workdir = COALESCE("
-                    "(SELECT s.workdir FROM sessions s WHERE s.id = todos.session_id), '') "
-                    "WHERE workdir = ''"
-                )
-            except Exception:
-                pass
+        # Migrasi ringan tabel `todos` (workdir + status_since). Dipakai juga
+        # oleh replace_todos() supaya jalur yang tidak lewat init_db() tetap
+        # aman. Lihat ensure_todos_columns().
+        ensure_todos_columns(conn)
 
 
 
@@ -581,6 +620,14 @@ def replace_todos(db_path: str, workdir: str, items: list, session_id: str = Non
             "content", atau "content"-nya bukan string. Validasi di depan
             (sebelum menyentuh DB) membuat kontrak eksplisit dan kegagalan
             langsung jelas.
+
+    Status tracking (`status_since`):
+        Karena full replace menulis ulang SEMUA baris setiap giliran,
+        `updated_at` selalu ikut berubah walau status item tidak berubah --
+        sehingga tidak bisa dipakai untuk mengukur "sejak kapan item ini
+        menggantung". `status_since` dipertahankan dari baris lama saat
+        `(content, status)` SAMA, dan di-set ke `now` saat item baru muncul
+        atau statusnya berubah. Itulah dasar deteksi todo basi.
     """
     for i, item in enumerate(items):
         if not isinstance(item, dict) or "content" not in item or not isinstance(item["content"], str):
@@ -591,12 +638,45 @@ def replace_todos(db_path: str, workdir: str, items: list, session_id: str = Non
 
     now = time.time()
     with connect(db_path) as conn:
+        # Pastikan kolom yang dibutuhkan ada SEBELUM menulis. Tanpa ini, DB
+        # lama yang belum lewat init_db() akan gagal keras
+        # ("table todos has no column named status_since") dan todo-nya tidak
+        # tersimpan sama sekali. Idempoten: cepat kalau kolom sudah ada.
+        ensure_todos_columns(conn)
+        # Snapshot baris lama SEBELUM delete untuk mempertahankan jejak waktu
+        # (created_at & status_since) item yang tidak berubah.
+        prev = {}
+        try:
+            rows = conn.execute(
+                "SELECT content, status, created_at, status_since FROM todos "
+                "WHERE workdir = ? ORDER BY position ASC",
+                (workdir,),
+            ).fetchall()
+            for r in rows:
+                prev.setdefault(r["content"], []).append(dict(r))
+        except Exception:
+            prev = {}
+
         conn.execute("DELETE FROM todos WHERE workdir = ?", (workdir,))
         for i, item in enumerate(items):
+            status = item.get("status", "pending") or "pending"
+            content = item["content"]
+            created_at = now
+            status_since = now
+            # Cocokkan dengan baris lama ber-content sama (kalau ada lebih dari
+            # satu baris identik, ambil yang paling depan / FIFO).
+            bucket = prev.get(content)
+            if bucket:
+                old = bucket.pop(0)
+                created_at = old.get("created_at") or now
+                if old.get("status") == status:
+                    # Status tidak berubah -> umur status diteruskan.
+                    status_since = old.get("status_since") or old.get("created_at") or now
             conn.execute(
-                "INSERT INTO todos (session_id, workdir, position, content, status, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (session_id or "", workdir, i, item["content"], item.get("status", "pending"), now, now),
+                "INSERT INTO todos (session_id, workdir, position, content, status, "
+                "created_at, updated_at, status_since) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (session_id or "", workdir, i, content, status, created_at, now, status_since),
             )
 
 
@@ -637,6 +717,32 @@ def get_pending_todos(db_path: str, workdir: str):
             (workdir,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def get_stale_todos(db_path: str, workdir: str, threshold_seconds: float):
+    """Todo pending/in_progress yang statusnya sudah TIDAK berubah selama
+    minimal `threshold_seconds` (lihat kolom `status_since`).
+
+    Ini dasar deteksi todo BASI: item yang menggantung terlalu lama hampir
+    selalu berarti model lupa menutupnya (menandai done) atau pekerjaannya
+    ditinggalkan. Dikembalikan berurut dari yang PALING lama menggantung.
+    """
+    if not threshold_seconds or threshold_seconds <= 0:
+        return []
+    try:
+        rows = get_pending_todos(db_path, workdir)
+    except Exception:  # noqa: BLE001 - deteksi basi tidak boleh menggagalkan giliran
+        return []
+    now = time.time()
+    stale = []
+    for r in rows:
+        since = r.get("status_since") or r.get("updated_at") or r.get("created_at") or 0
+        r = dict(r)
+        r["age_seconds"] = max(0.0, now - float(since or 0)) if since else 0.0
+        if since and r["age_seconds"] >= threshold_seconds:
+            stale.append(r)
+    stale.sort(key=lambda x: x["age_seconds"], reverse=True)
+    return stale
 
 
 

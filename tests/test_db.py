@@ -370,3 +370,96 @@ def test_set_note_summary_noop_for_missing_note(db_path):
     # set summary untuk catatan yang belum ada tidak boleh error
     dbmod.set_note_summary(db_path, "/tmp/w", "tidak-ada", "x")
     assert dbmod.get_notes(db_path, "/tmp/w") == []
+
+
+# ------------------------------------- migrasi tabel todos (DB lama)
+
+def _make_legacy_todos_db(path):
+    """Bikin DB bergaya LAMA: tabel todos tanpa kolom workdir & status_since."""
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY,
+            workdir TEXT NOT NULL DEFAULT '',
+            created_at REAL DEFAULT 0,
+            updated_at REAL DEFAULT 0
+        );
+        CREATE TABLE todos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT,
+            position INTEGER,
+            content TEXT,
+            status TEXT,
+            created_at REAL,
+            updated_at REAL
+        );
+        """
+    )
+    # Sesi asal wajib ada: backfill workdir mengambil nilai dari tabel ini.
+    conn.execute(
+        "INSERT INTO sessions (id, workdir, created_at, updated_at) "
+        "VALUES ('s1', '/tmp/w', 1000.0, 1000.0)"
+    )
+    conn.execute(
+        "INSERT INTO todos (session_id, position, content, status, created_at, updated_at) "
+        "VALUES ('s1', 0, 'lama', 'pending', 1000.0, 1000.0)"
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_replace_todos_migrates_legacy_db_without_init(tmp_path):
+    """replace_todos harus memigrasi sendiri DB lama (tanpa init_db()).
+
+    Regresi: dulu kolom status_since hanya ditambahkan di init_db(), sehingga
+    jalur programatik/sub-agent yang tidak memanggilnya gagal keras dengan
+    'table todos has no column named status_since' dan todo-nya tidak
+    tersimpan sama sekali.
+    """
+    path = str(tmp_path / "legacy.db")
+    _make_legacy_todos_db(path)
+
+    dbmod.replace_todos(path, "/tmp/w", [{"content": "lama", "status": "pending"}])
+
+    cols = [r[1] for r in sqlite3.connect(path).execute("PRAGMA table_info(todos)")]
+    assert "workdir" in cols
+    assert "status_since" in cols
+    rows = dbmod.get_todos(path, "/tmp/w")
+    assert [r["content"] for r in rows] == ["lama"]
+    # status_since di-backfill dari updated_at (bukan 0 / epoch).
+    assert rows[0]["status_since"] == 1000.0
+
+
+def test_replace_todos_creates_schema_on_empty_db(tmp_path):
+    """replace_todos pada file DB kosong harus membuat skema sendiri."""
+    path = str(tmp_path / "fresh.db")
+    sqlite3.connect(path).close()  # file ada, tapi tanpa tabel
+
+    dbmod.replace_todos(path, "/tmp/w", [{"content": "x", "status": "pending"}])
+
+    assert [r["content"] for r in dbmod.get_todos(path, "/tmp/w")] == ["x"]
+
+
+def test_ensure_todos_columns_idempotent(tmp_path):
+    """Migrasi dipanggil berulang kali tidak boleh error atau merusak data."""
+    path = str(tmp_path / "legacy.db")
+    _make_legacy_todos_db(path)
+    for _ in range(3):
+        with dbmod.connect(path) as conn:
+            dbmod.ensure_todos_columns(conn)
+    cols = [r[1] for r in sqlite3.connect(path).execute("PRAGMA table_info(todos)")]
+    assert cols.count("workdir") == 1
+    assert cols.count("status_since") == 1
+
+
+def test_replace_todos_preserves_status_since_across_legacy_migration(tmp_path):
+    """Setelah migrasi, full replace dengan status sama TIDAK menyegarkan
+    status_since -- dasar deteksi todo basi tetap bekerja di DB lama."""
+    path = str(tmp_path / "legacy.db")
+    _make_legacy_todos_db(path)
+    dbmod.replace_todos(path, "/tmp/w", [{"content": "lama", "status": "pending"}])
+    before = dbmod.get_todos(path, "/tmp/w")[0]["status_since"]
+    dbmod.replace_todos(path, "/tmp/w", [{"content": "lama", "status": "pending"}])
+    after = dbmod.get_todos(path, "/tmp/w")[0]["status_since"]
+    assert before == after == 1000.0

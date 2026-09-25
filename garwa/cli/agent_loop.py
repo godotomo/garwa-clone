@@ -15,6 +15,7 @@ except ImportError:
 
 from .. import context_manager
 from .. import db as dbmod
+from .. import todo_utils
 from . import _state as state
 from . import autopilot as autopilot_mod
 from .agent_config import coerce_agent_config
@@ -103,6 +104,13 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
     # ini. Dibatasi AUTOPILOT_MAX_CONTINUES supaya tidak jadi loop tak berujung
     # kalau model tidak pernah menutup todo.
     _autopilot_count = 0
+    # Sidik jari daftar todo (content+status) pada suntikan sebelumnya, dan
+    # berapa kali berturut-turut sidik jarinya TIDAK berubah. Kalau model
+    # berhenti berkali-kali tanpa mengubah status todo sama sekali, itu tanda
+    # dia hanya berputar (tidak ada progres) -- lebih baik dihentikan dan
+    # dilaporkan daripada diulang sampai batas maksimum.
+    _autopilot_sig = None
+    _autopilot_stuck = 0
 
     _t_start = time.monotonic()          # awal giliran (untuk durasi total)
     _iteration_count = 0                 # jumlah iterasi loop (putaran model)
@@ -136,6 +144,20 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
             print(c(f"  truncasi   : {_truncation_count}x", C.YELLOW))
         if _loop_count:
             print(c(f"  loop       : {_loop_count}x", C.YELLOW))
+        # Baris "plan": jangan biarkan giliran berakhir tanpa memberi tahu bahwa
+        # todo masih menggantung. Ini murni INFORMATIF (tidak menggagalkan
+        # apa pun) dan aman terhadap DB yang tidak terbaca.
+        try:
+            _rows = dbmod.get_pending_todos(args.db_path, args.workdir) or []
+        except Exception:  # noqa: BLE001 - info opsional
+            _rows = []
+        if _rows:
+            _stale = todo_utils.find_stale(_rows)
+            _txt = f"  plan       : {len(_rows)} item belum selesai"
+            if _stale:
+                _txt += (f" ({len(_stale)} BASI, terlama "
+                         f"{todo_utils.format_age(todo_utils.age_seconds(_stale[0]))})")
+            print(c(_txt + " -- tandai done lewat todo_write bila sudah selesai", C.YELLOW))
 
     def _build_context_messages(context_window_tokens: int):
         """Rakit `messages` dari histori DB via context_manager, memakai
@@ -599,7 +621,32 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                 _pending = autopilot_mod.get_pending_todos(
                     args.db_path, args.workdir
                 )
-                if _pending and _autopilot_count < state.AUTOPILOT_MAX_CONTINUES:
+                # Deteksi "stuck": model berhenti lagi padahal pesan lanjutan
+                # sebelumnya TIDAK mengubah daftar/status todo sama sekali.
+                _sig = tuple((t.get("content"), t.get("status")) for t in _pending)
+                if _sig == _autopilot_sig:
+                    _autopilot_stuck += 1
+                else:
+                    _autopilot_sig = _sig
+                    _autopilot_stuck = 0
+
+                _stopped_stuck = _autopilot_stuck >= state.AUTOPILOT_STUCK_LIMIT
+                if _stopped_stuck:
+                    state.set_autopilot(False, session_id)
+                    print(c(
+                        f"  [AUTOPILOT] {_autopilot_stuck}x berturut-turut pesan "
+                        f"lanjutan TIDAK mengubah status todo apa pun -- model "
+                        f"tampak berputar tanpa progres. Autopilot dimatikan; "
+                        f"{len(_pending)} item masih menggantung.",
+                        C.RED,
+                    ))
+                    print(c(
+                        "  [AUTOPILOT] Periksa todo itu lewat /todos, lalu tandai "
+                        "done atau hapus yang sudah tidak relevan supaya tidak "
+                        "diwariskan ke sesi berikutnya.",
+                        C.YELLOW,
+                    ))
+                elif _pending and _autopilot_count < state.AUTOPILOT_MAX_CONTINUES:
                     _autopilot_count += 1
                     print(c(
                         f"  [AUTOPILOT] model berhenti tanpa tool_call; masih ada "
@@ -625,7 +672,12 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                 # Tidak ada alasan melanjutkan -> matikan autopilot supaya giliran
                 # berikutnya berhenti normal (tidak menyuntik pesan lagi).
                 state.set_autopilot(False, session_id)
-                if _pending:
+                if _stopped_stuck:
+                    # Sudah dilaporkan di atas; jangan cetak alasan kedua yang
+                    # menyesatkan ("batas lanjutan tercapai" padahal berhenti
+                    # karena tidak ada progres).
+                    pass
+                elif _pending:
                     print(c(
                         f"  [AUTOPILOT] batas pesan lanjutan "
                         f"({state.AUTOPILOT_MAX_CONTINUES}) tercapai -- autopilot "

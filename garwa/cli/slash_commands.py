@@ -10,6 +10,7 @@ oleh loop di main.py, sehingga alur kontrol tetap satu tempat.
 from .. import config
 from .. import context_manager
 from .. import db as dbmod
+from .. import todo_utils
 from .. import subagent_registry as subregistry
 from .. import subagent_status as substatus
 from .. import tools as tools_module
@@ -137,16 +138,13 @@ def _print_todos(db_path: str, session_id: str, workdir: str = None) -> None:
         print(c("(belum ada plan/todo tersimpan untuk proyek ini)", C.DIM))
         return
     print(c(f"Plan proyek ({len(todos)} item):", C.BOLD))
-    mark_by_status = {
-        "pending": "[ ]",
-        "in_progress": "[~]",
-        "done": "[x]",
-        "cancelled": "[-]",
-    }
-    for t in todos:
-        status = t.get("status", "pending")
-        mark = mark_by_status.get(status, "[ ]")
-        print(f"  {mark} {t.get('content', '')}")
+    # Umur status + penanda [STALE] ditampilkan supaya user bisa segera melihat
+    # item mana yang menggantung (dan karena itu akan menyesatkan sesi lain).
+    for line in todo_utils.format_rows(todos):
+        print(line)
+    summary = todo_utils.stale_summary(todos)
+    if summary:
+        print(c(f"[WARN] {summary}", C.YELLOW))
 
 
 def _print_tools() -> None:

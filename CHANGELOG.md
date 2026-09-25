@@ -33,6 +33,37 @@ dan versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   saat runtime (tanpa argumen = tampilkan nilai berlaku; `0` = kembali ke
   default dari `config.MAX_TOOL_ITERS`/env `GARWA_MAX_TOOL_ITERS`). Nilai
   dipersistenkan ke `~/.config/garwa/config`.
+- **Deteksi todo basi (`status_since` + `[STALE]`)** — todo disimpan per
+  WORKDIR dan `todo_write` bersifat *full replace*, jadi SEMUA baris ditulis
+  ulang tiap giliran termasuk `updated_at`; `updated_at` karena itu tidak bisa
+  menjawab "sejak kapan item ini menggantung". Kolom baru `status_since`
+  (REAL NOT NULL DEFAULT 0) menutup celah itu: nilainya **dipertahankan** dari
+  baris lama saat `(content, status)` sama, dan di-set ke `now` hanya saat item
+  baru muncul atau statusnya berubah. Migrasi idempoten menambah kolom bila
+  belum ada lalu mem-*backfill* `status_since = updated_at` supaya todo lama
+  tidak mendadak tampak berumur nol (epoch 0 → salah ditandai basi berhari-hari).
+  Modul baru `garwa/todo_utils.py` (murni format/perhitungan, tanpa I/O) dipakai
+  seragam oleh tool (`tools/session_tools.py`: `todo_read`/`todo_write`) dan sisi
+  CLI (`cli/main.py`, `cli/autopilot.py`, `cli/slash_commands.py`): item
+  pending/in_progress yang statusnya tidak berubah melewati ambang ditandai
+  `[STALE]` beserta umurnya (mis. `[~] refactor parser  (2j 5m) [STALE]`).
+  Ambang diatur `GARWA_TODO_STALE_HOURS` (bawaan `6.0`, `0` = matikan) dan
+  **dibaca ulang tiap panggilan** sehingga bisa diubah tanpa restart. Sesi baru
+  maupun resume mencetak peringatan jumlah item basi di awal sesi, dan helper
+  `db.get_stale_todos()` mengembalikan item kedaluwarsa berurut dari yang paling
+  lama menggantung. Semua jalur deteksi dibungkus aman: gagal → list kosong,
+  tidak pernah menggagalkan giliran. Autopilot juga memakai ini: `todo_read`
+  menyertakan ringkasan item aktif dan `[WARN]` basi, sedangkan pesan lanjutan
+  menyebut item yang masih menggantung.
+- **Autopilot berhenti saat model berputar tanpa progres** — sebelumnya
+  autopilot hanya dibatasi `GARWA_AUTOPILOT_MAX` (bawaan 20), sehingga model
+  yang berhenti berulang tanpa mengubah daftar/status todo tetap disuntik
+  sampai batas maksimum. Sekarang sidik jari daftar todo (tuple
+  `(content, status)`) dibandingkan dengan suntikan sebelumnya; kalau
+  berturut-turut `GARWA_AUTOPILOT_STUCK` kali (bawaan 2) sidik jarinya TIDAK
+  berubah, autopilot mematikan dirinya sendiri dan melaporkan item yang masih
+  menggantung. Selama todo benar-benar berubah, penghitung stuck di-reset dan
+  yang membatasi hanyalah `GARWA_AUTOPILOT_MAX`.
 
 ### Changed
 
@@ -44,6 +75,32 @@ dan versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`db.py` — `replace_todos` gagal keras di DB lama (todo tidak tersimpan).**
+  Kolom `workdir`/`status_since` hanya ditambahkan di dalam `init_db()`, padahal
+  `CREATE TABLE IF NOT EXISTS` tidak menyentuh tabel yang sudah ada. Jalur yang
+  tidak melewati `init_db()` (pemakaian programatik, sub-agent, skrip) karena itu
+  melempar `OperationalError: table todos has no column named status_since` dan
+  todo-nya **hilang tanpa tersimpan**. Ini terbukti pada DB produksi
+  `~/.garwa/garwa.db` yang masih berkolom lama. **Fix:** migrasi diekstrak ke
+  `db.ensure_todos_columns(conn)` (idempoten; menambah `workdir` + *backfill*
+  dari `sessions`, menambah `status_since` + *backfill* dari `updated_at`, dan
+  membuat skema bila tabel belum ada) yang kini dipanggil dari `init_db()`
+  **dan** di awal `replace_todos()`, sehingga semua jalur masuk aman. Regresi
+  ditutup 4 test baru di `tests/test_db.py` (DB lama tanpa `init_db`, DB kosong,
+  idempotensi, dan preservasi `status_since` setelah migrasi).
+- **Deteksi todo basi di `todo_write` tidak pernah menyala.** Deteksi
+  memakai daftar hasil normalisasi dari *input* model, padahal item input hanya
+  berisi `{content, status}` tanpa `status_since`; umurnya karenanya selalu
+  dihitung nol detik sehingga `[WARN]` basi mustahil muncul. **Fix:** setelah
+  penulisan, baris dibaca ULANG dari DB (`db.get_todos`) — di situlah
+  `status_since` hasil preservasi `replace_todos` berada — lalu diringkas dengan
+  `todo_utils.stale_summary`. Kegagalan baca DB diabaikan (deteksi basi tidak
+  boleh menggagalkan giliran).
+- **`agent_loop.py` — autopilot melaporkan alasan berhenti yang salah.**
+  Ketika autopilot berhenti karena *stuck* (tidak ada progres), kode tetap
+  melanjutkan ke pesan "batas pesan lanjutan (`GARWA_AUTOPILOT_MAX`) tercapai",
+  sehingga user melihat dua alasan berhenti sekaligus dan yang kedua menyesatkan.
+  **Fix:** flag `_stopped_stuck` dipakai untuk menekan pesan batas lanjutan.
 - **`subagent_status.py` — watchdog sub-agent bisa mati diam-diam (race
   keepalive).** State keepalive dulu global dan tidak bergenerasi: ketika
   sub-agent pertama selesai, `notify_done()` men-set `_keepalive_stop` milik
@@ -99,6 +156,24 @@ dan versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   mengembalikan `{"narasi": "   "}`). Akibatnya tes progress bar **lulus saat
   dijalankan sendiri tetapi gagal di suite penuh**. **Fix:** semua penugasan
   diganti `monkeypatch.setattr(...)` sehingga otomatis dipulihkan.
+
+### Tests
+
+- **`tests/test_todo_stale.py`** (39 tes) — regresi untuk todo basi: helper murni
+  (`format_age`, `age_seconds`, `is_stale`, `format_rows`, `find_stale`,
+  `stale_summary`, ambang dari env yang dibaca ulang tiap panggilan), perilaku DB
+  (`status_since` dipertahankan saat status sama, di-reset saat berubah, item baru
+  mulai dari nol, backfill migrasi, `get_stale_todos` memfilter & mengurut),
+  tool `todo_read`/`todo_write` (umur, `[STALE]`, `[WARN]` item hilang/regresi/basi,
+  tidak memperingatkan lagi setelah item ditutup), `cli.main._warn_stale_todos`
+  (cetak sekali, senyap bila segar, tidak melempar saat DB buruk), dan autopilot
+  *stuck* di `agent_loop`. Ditambah penyesuaian
+  `tests/test_autopilot.py::test_autopilot_is_bounded` (menetralkan stuck-limit
+  agar tes batas suntikan tidak lagi bergantung pada jalur stuck).
+- **`tests/test_db.py`** (+4 tes) — migrasi tabel `todos`: `replace_todos` pada
+  DB lama tanpa `init_db()` (dulu hard-fail), pembuatan skema pada DB kosong,
+  idempotensi `ensure_todos_columns`, dan `status_since` tetap dipertahankan
+  setelah migrasi.
 
 ## [0.5.3] - 2026-09-25
 

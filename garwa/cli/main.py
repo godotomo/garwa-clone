@@ -29,6 +29,7 @@ def _get_requests():
 
 from .. import config
 from .. import db as dbmod
+from .. import todo_utils
 from .. import tools as tools_module
 from . import _state as state
 from .. import __version__
@@ -59,6 +60,34 @@ from ..mcp.client import set_global_registry
 HISTORY_DIR = os.path.join(os.path.expanduser("~"), ".garwa")
 HISTORY_FILE = os.path.join(HISTORY_DIR, "history.txt")
 HISTORY_MAX = 1000
+
+
+def _warn_stale_todos(db_path: str, workdir: str) -> None:
+    """Cetak peringatan kalau ada todo yang sudah lama menggantung (basi).
+
+    Dipakai saat startup sesi (baru maupun resume): todo disimpan per workdir
+    dan dibaca lintas sesi, jadi item yang tidak pernah ditutup akan terus
+    mewarisi kebingungan ke sesi berikutnya. Menampilkannya di awal sesi
+    memaksa user (dan model, karena ikut masuk konteks lewat todo_read)
+    menyadari ada item yang perlu ditutup atau dibuang.
+
+    Aman: kegagalan apa pun di sini tidak boleh menghalangi sesi dimulai.
+    """
+    try:
+        rows = dbmod.get_pending_todos(db_path, workdir) or []
+    except Exception:  # noqa: BLE001 - peringatan informatif, bukan jalur kritis
+        return
+    stale = todo_utils.find_stale(rows)
+    if not stale:
+        return
+    oldest = todo_utils.age_seconds(stale[0])
+    print(c(
+        f"[WARN] {len(stale)} item todo BASI (paling lama menggantung "
+        f"{todo_utils.format_age(oldest)}). Rencana lama yang tidak ditutup akan "
+        f"terbaca di sesi berikutnya -- lihat /todos, lalu tandai done atau "
+        f"hapus lewat todo_write.",
+        C.YELLOW,
+    ))
 
 
 def _init_readline_history() -> None:
@@ -514,6 +543,11 @@ def main():
                 f"atau /todos untuk mencetaknya.",
                 C.YELLOW,
             ))
+
+    # Todo BASI (status tidak berubah melewati ambang) diberitahukan di awal
+    # sesi -- apa pun mode resume-nya -- supaya tidak diam-diam diwariskan ke
+    # sesi berikutnya. Ini inti perbaikan "todo jangan menggantung".
+    _warn_stale_todos(args.db_path, args.workdir)
 
     if args.auto:
         try:

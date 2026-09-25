@@ -33,6 +33,7 @@ Semua helper di sini murni membaca state (DB) dan menyusun teks; TIDAK ada efek
 samping selain itu, supaya mudah diuji.
 """
 from .. import db as dbmod
+from .. import todo_utils
 
 # Kunci catatan proyek (tabel project_notes) yang isinya dianggap hasil analisa
 # agen reviewer. Kalau ada, isinya disertakan pada setiap pesan lanjutan
@@ -94,7 +95,14 @@ def get_reviewer_note(db_path: str, workdir: str) -> str:
 
 
 def _format_todos(todos: list) -> str:
-    """Format todo pending menjadi daftar bertanda [ ] / [~]."""
+    """Format todo pending menjadi daftar bertanda [ ] / [~].
+
+    Umur STATUS ikut dicetak (mis. "(2j 10m)") plus penanda [STALE] untuk item
+    yang statusnya sudah terlalu lama tidak berubah. Tanpa itu, pesan lanjutan
+    autopilot hanya menyebut daftar item dan model tidak pernah tahu mana yang
+    sebenarnya sudah menggantung -- padahal tujuan autopilot adalah menutup
+    rencana, bukan mengulanginya selamanya.
+    """
     lines = []
     for t in todos:
         status = t.get("status") or "pending"
@@ -102,7 +110,11 @@ def _format_todos(todos: list) -> str:
         content = (t.get("content") or "").strip().replace("\n", " ")
         if len(content) > 200:
             content = content[:197] + "..."
-        lines.append(f"  {mark} {content}")
+        age_txt = todo_utils.format_age(todo_utils.age_seconds(t))
+        tail = f"  ({age_txt})"
+        if todo_utils.is_stale(t):
+            tail += f" {todo_utils.STALE_TAG}"
+        lines.append(f"  {mark} {content}{tail}")
     return "\n".join(lines)
 
 
@@ -134,6 +146,18 @@ def build_continue_message(db_path: str, workdir: str, note: str = "") -> str:
     if todos:
         parts.append(f"\nTodo yang belum selesai ({len(todos)} item):")
         parts.append(_format_todos(todos))
+        stale = todo_utils.find_stale(todos)
+        if stale:
+            oldest = todo_utils.age_seconds(stale[0])
+            parts.append(
+                f"\n[PERINGATAN] {len(stale)} item di atas berstatus [STALE] "
+                f"(statusnya tidak berubah sejak {todo_utils.format_age(oldest)} lalu). "
+                "Item seperti ini menunjukkan pekerjaan yang menggantung atau "
+                "sudah tidak relevan. SEBELUM melanjutkan: pastikan dulu mana "
+                "yang benar-benar masih dikerjakan, lalu kirim todo_write dengan "
+                "daftar LENGKAP (full replace) yang menandai item itu done "
+                "atau membuangnya kalau memang sudah tidak diperlukan."
+            )
     if reviewer:
         parts.append("\nHasil analisa agen reviewer yang perlu ditindaklanjuti:")
         parts.append(reviewer)
