@@ -71,6 +71,34 @@ dan versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tidak berbunyi seperti kegagalan final padahal retry berikutnya bisa
   berhasil. Error konfigurasi (`InvalidURL`/`MissingSchema`, subclass
   `ValueError`) tetap dilempar segera — retry tidak akan menolongnya.
+- **Progress bar ringkasan riwayat mandek di 25%.** `_summarize_text`
+  memanggil callback `progress(attempt, total)` **sekali per percobaan**, dan
+  callback lama menghitung `fraction = (attempt + 1) / total` dengan
+  `total = SUMMARIZE_MAX_RETRIES + 1 = 4`. Jadi percobaan pertama mematok bar
+  di 1/4 = 25% lalu diam selama `requests.post()` yang blocking (bisa
+  menit-an) — bar tampak macet dan user mengira prosesnya berhenti.
+  **Fix:** rumus lompat itu dihapus. `ProgressBar.start_creep()` sekarang
+  menaikkan fraksi mengikuti WAKTU dengan kurva hiperbolik
+  `ratio(t) = t / (t + half_life)` (bawaan `half_life = 6 s`) menuju satu
+  plafon global `CREEP_CEILING = 0.95`; percobaan yang di-retry **melanjutkan**
+  pendakian dari posisi terakhir (bar monoton, tidak pernah turun), dan puncak
+  100% hanya dipatok `finish()` setelah ringkasan benar-benar didapat — jadi
+  bar tidak pernah mengaku selesai terlalu dini. Creep hanya dinyalakan di TTY
+  (di pipe/redirect tetap dicetak satu blok status, aman memory buffer) dan
+  lebar bar dibatasi `lebar_terminal - 1` supaya tidak memicu auto-wrap.
+  Desain lama yang memberi **irisan per percobaan**
+  (`[attempt/total, (attempt+1)/total * 0.95]`) sengaja dibuang: irisan pertama
+  berhenti di 23,75%, yaitu gejala "mentok di 25%" itu sendiri. Untuk terminal
+  tanpa glyph blok Unicode, env `GARWA_PROGRESS_ASCII=1` membuat bar memakai
+  `#`/`-`. Alur fraksi diuji di jalur produksi
+  (`tests/test_summarize_progress.py`).
+- **Polusi lintas-tes menyembunyikan regresi di suite penuh.** Enam tes di
+  `tests/test_context_manager.py` menugaskan `cm._summarize_text = fake_summarize`
+  langsung ke atribut modul sehingga **tidak pernah dipulihkan**; setelah file
+  itu berjalan, fungsi asli tertimpa fake milik tes terakhir (yang
+  mengembalikan `{"narasi": "   "}`). Akibatnya tes progress bar **lulus saat
+  dijalankan sendiri tetapi gagal di suite penuh**. **Fix:** semua penugasan
+  diganti `monkeypatch.setattr(...)` sehingga otomatis dipulihkan.
 
 ## [0.5.3] - 2026-09-25
 

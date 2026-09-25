@@ -932,16 +932,36 @@ def maybe_summarize(db_path: str, session_id: str, url: str, model: str,
     try:
         with ProgressBar("Meringkas riwayat percakapan...") as spinner:
             def _progress(attempt: int, total: int) -> None:
-                fraction = (attempt + 1) / total
-                spinner.update(
-                    fraction,
-                    f"mengirim ke model {model} (percobaan {attempt + 1}/{total})",
+                # Bar TIDAK boleh melompat langsung ke (attempt+1)/total: satu
+                # permintaan HTTP tidak melaporkan kemajuan apa pun, jadi bar
+                # akan berhenti di 1/total (mis. 25%) selama menunggu dan
+                # tampak macet.
+                #
+                # Jangan pula memberi tiap percobaan IRISAN bar sendiri
+                # ([attempt/total, (attempt+1)/total * 0.95]): dengan 4
+                # percobaan, irisan pertama berhenti di ~24%, sehingga
+                # permintaan pertama yang berjalan lama membuat bar mandek di
+                # ~24% -- gejalanya kembali.
+                #
+                # Yang dipakai sekarang: SATU plafon global (CREEP_CEILING =
+                # 95%) untuk keseluruhan operasi. Tanpa argumen `span`,
+                # start_creep() mendaki dari fraksi sekarang menuju plafon itu
+                # mengikuti waktu, dan karena bar tidak pernah turun, percobaan
+                # retry cukup melanjutkan pendakian dari posisi terakhir.
+                # Puncak 100% dipatok spinner.finish() setelah ringkasan
+                # benar-benar didapat.
+                spinner.start_creep(
+                    message=(
+                        f"mengirim ke model {model} "
+                        f"(percobaan {attempt + 1}/{total})"
+                    ),
                 )
 
             new_summary = _summarize_text(
                 url, model, chunk_text,
                 api_key=api_key, progress=_progress,
             )
+            spinner.finish("ringkasan selesai")
         upto_id = to_summarize[-1]["id"]
         # Verifikasi: kalau model mengembalikan narasi kosong (JSON valid tapi
         # field narasi tidak ada / kosong), jangan simpan summary kosong yang

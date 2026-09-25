@@ -107,7 +107,7 @@ def test_tools_payload_tokens_counts_json():
 
 # ------------------------------------------------- maybe_summarize
 
-def test_maybe_summarize_noop_when_under_threshold(db_path, session_id):
+def test_maybe_summarize_noop_when_under_threshold(db_path, session_id, monkeypatch):
     dbmod.add_message(db_path, session_id, "user", "pendek")
     called = []
 
@@ -115,7 +115,7 @@ def test_maybe_summarize_noop_when_under_threshold(db_path, session_id):
         called.append(text)
         return "ringkasan"
 
-    cm._summarize_text = fake_summarize
+    monkeypatch.setattr(cm, "_summarize_text", fake_summarize)
     result = cm.maybe_summarize(
         db_path, session_id, "http://x", "model", context_window_tokens=100000
     )
@@ -123,7 +123,7 @@ def test_maybe_summarize_noop_when_under_threshold(db_path, session_id):
     assert called == []  # tidak boleh memanggil server
 
 
-def test_maybe_summarize_skips_when_history_short(db_path, session_id):
+def test_maybe_summarize_skips_when_history_short(db_path, session_id, monkeypatch):
     # Banyak pesan tapi pendek -> threshold token tidak terpenuhi.
     for i in range(30):
         dbmod.add_message(db_path, session_id, "user", "x")
@@ -133,7 +133,7 @@ def test_maybe_summarize_skips_when_history_short(db_path, session_id):
         called.append(text)
         return "ringkasan"
 
-    cm._summarize_text = fake_summarize
+    monkeypatch.setattr(cm, "_summarize_text", fake_summarize)
     result = cm.maybe_summarize(
         db_path, session_id, "http://x", "model", context_window_tokens=100000
     )
@@ -141,7 +141,7 @@ def test_maybe_summarize_skips_when_history_short(db_path, session_id):
     assert called == []
 
 
-def test_maybe_summarize_triggers_and_saves(db_path, session_id):
+def test_maybe_summarize_triggers_and_saves(db_path, session_id, monkeypatch):
     # Banyak pesan panjang + window kecil -> harus memicu ringkasan.
     for i in range(30):
         dbmod.add_message(db_path, session_id, "user", "kata " * 50)
@@ -151,7 +151,7 @@ def test_maybe_summarize_triggers_and_saves(db_path, session_id):
         called.append(text)
         return {"narasi": "RINGKASAN BARU", "instruksi_aktif": []}
 
-    cm._summarize_text = fake_summarize
+    monkeypatch.setattr(cm, "_summarize_text", fake_summarize)
     result = cm.maybe_summarize(
         db_path, session_id, "http://x", "model", context_window_tokens=2000
     )
@@ -179,7 +179,7 @@ def test_maybe_summarize_handles_failure_gracefully(db_path, session_id, monkeyp
     assert dbmod.get_latest_summary(db_path, session_id) is None
 
 
-def test_maybe_summarize_saves_active_instructions(db_path, session_id):
+def test_maybe_summarize_saves_active_instructions(db_path, session_id, monkeypatch):
     for i in range(30):
         dbmod.add_message(db_path, session_id, "user", "kata " * 50)
 
@@ -189,7 +189,7 @@ def test_maybe_summarize_saves_active_instructions(db_path, session_id):
             "instruksi_aktif": ["Selalu gunakan bahasa Indonesia", "Jangan hapus file config"],
         }
 
-    cm._summarize_text = fake_summarize
+    monkeypatch.setattr(cm, "_summarize_text", fake_summarize)
     result = cm.maybe_summarize(
         db_path, session_id, "http://x", "model", context_window_tokens=2000
     )
@@ -201,7 +201,7 @@ def test_maybe_summarize_saves_active_instructions(db_path, session_id):
     ]
 
 
-def test_maybe_summarize_merges_prior_active_instructions(db_path, session_id):
+def test_maybe_summarize_merges_prior_active_instructions(db_path, session_id, monkeypatch):
     # Summary pertama sudah menyimpan instruksi aktif.
     dbmod.save_summary(
         db_path, session_id, 1, "lama",
@@ -213,7 +213,7 @@ def test_maybe_summarize_merges_prior_active_instructions(db_path, session_id):
     def fake_summarize(url, model, text, api_key="", progress=None):
         return {"narasi": "RINGKASAN BARU", "instruksi_aktif": ["instruksi baru"]}
 
-    cm._summarize_text = fake_summarize
+    monkeypatch.setattr(cm, "_summarize_text", fake_summarize)
     result = cm.maybe_summarize(
         db_path, session_id, "http://x", "model", context_window_tokens=2000
     )
@@ -223,14 +223,14 @@ def test_maybe_summarize_merges_prior_active_instructions(db_path, session_id):
     assert set(summary["active_instructions"]) == {"instruksi lama", "instruksi baru"}
 
 
-def test_maybe_summarize_skips_when_narasi_empty(db_path, session_id):
+def test_maybe_summarize_skips_when_narasi_empty(db_path, session_id, monkeypatch):
     for i in range(30):
         dbmod.add_message(db_path, session_id, "user", "kata " * 50)
 
     def fake_summarize(url, model, text, api_key="", progress=None):
         return {"narasi": "   ", "instruksi_aktif": ["x"]}
 
-    cm._summarize_text = fake_summarize
+    monkeypatch.setattr(cm, "_summarize_text", fake_summarize)
     result = cm.maybe_summarize(
         db_path, session_id, "http://x", "model", context_window_tokens=2000
     )

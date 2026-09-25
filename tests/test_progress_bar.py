@@ -138,3 +138,141 @@ def test_message_truncated_with_ellipsis():
     lines = s.getvalue().split("\n")
     assert len(lines[1].rstrip()) <= 47
     assert lines[1].rstrip().endswith("…")
+
+
+# ---------------------------------------------------------------------------
+# Kemajuan otomatis (creep) -- regresi bug "bar mentok di 25%"
+# ---------------------------------------------------------------------------
+
+def _force_elapsed(pb, seconds):
+    """Mundurkan waktu mulai creep supaya `_creep_advance()` melihat sudah
+    berjalan `seconds` detik (menghindari tes yang benar-benar tidur)."""
+    pb._creep_t0 -= seconds
+
+
+def _fraction_of(pb):
+    return pb._fraction
+
+
+def test_creep_advances_over_time():
+    """Creep harus menaikkan fraksi seiring waktu (bukan diam di titik awal)."""
+    s = FakeTTY()
+    pb = P.ProgressBar("", stream=s, width=48)
+    pb.start_creep(base=0.0, span=0.25)
+    assert _fraction_of(pb) == 0.0
+    seen = []
+    for secs in (0.5, 2.0, 6.0, 20.0):
+        _force_elapsed(pb, secs)
+        pb._creep_advance()
+        seen.append(round(_fraction_of(pb), 4))
+    # Monoton naik dan benar-benar bergerak.
+    assert seen == sorted(seen), seen
+    assert seen[0] > 0.0
+    assert seen[-1] > seen[0]
+
+
+def test_creep_half_life_is_half_of_span():
+    """`ratio(t) = t/(t+half_life)` -> pada t == half_life tepat separuh span."""
+    s = FakeTTY()
+    pb = P.ProgressBar("", stream=s, width=48)
+    pb.start_creep(base=0.0, span=0.4, half_life=6.0)
+    _force_elapsed(pb, 6.0)
+    pb._creep_advance()
+    # Toleransi longgar: waktu nyata terus berjalan antara start_creep() dan
+    # pemeriksaan (beberapa mikrodetik), jadi elapsed sedikit di atas 6.0.
+    assert abs(_fraction_of(pb) - 0.2) < 5e-3
+
+
+def test_creep_never_passes_base_plus_span():
+    """Creep TIDAK boleh melewati base+span: 100% hanya dari finish()."""
+    s = FakeTTY()
+    pb = P.ProgressBar("", stream=s, width=48)
+    pb.start_creep(base=0.25, span=0.2)
+    _force_elapsed(pb, 100_000.0)
+    pb._creep_advance()
+    assert _fraction_of(pb) <= 0.25 + 0.2 + 1e-9
+
+
+def test_creep_span_clamped_to_not_exceed_100_percent():
+    """Caller yang memberi span berlebih tetap tidak boleh melewati 100%."""
+    s = FakeTTY()
+    pb = P.ProgressBar("", stream=s, width=48)
+    pb.start_creep(base=0.8, span=5.0)
+    _force_elapsed(pb, 100_000.0)
+    pb._creep_advance()
+    assert _fraction_of(pb) <= 1.0
+
+
+def test_creep_never_moves_backwards_after_manual_update():
+    """Pembaruan manual yang sudah lebih tinggi tidak boleh diturunkan creep."""
+    s = FakeTTY()
+    pb = P.ProgressBar("", stream=s, width=48)
+    pb.start_creep(base=0.0, span=0.25)
+    pb.set_progress(0.9)
+    _force_elapsed(pb, 1.0)
+    pb._creep_advance()
+    assert _fraction_of(pb) == 0.9
+
+
+def test_finish_prints_permanent_100_percent_line():
+    """Tanpa finish(), 100% tak pernah terlihat (blok live dihapus saat exit)."""
+    s = FakeTTY()
+    pb = P.ProgressBar("ringkasan selesai", stream=s, width=48)
+    pb.set_progress(0.3)
+    pb.finish()
+    out = s.getvalue()
+    assert "100%" in out
+    assert "ringkasan selesai" in out
+
+
+def test_finish_stops_creep_thread():
+    """Creep harus berhenti setelah finish() supaya tidak menggambar ulang."""
+    s = FakeTTY()
+    pb = P.ProgressBar("", stream=s, width=48)
+    pb.start_creep(base=0.0, span=0.5, interval=0.01)
+    assert pb._creep_thread is not None
+    pb.finish()
+    assert pb._creep_thread is None
+    assert _fraction_of(pb) == 1.0
+
+
+def test_exit_after_finish_keeps_final_line():
+    """Baris final 100% sengaja ditinggal; __exit__ tidak menghapusnya."""
+    s = FakeTTY()
+    with P.ProgressBar("selesai", stream=s, width=48) as pb:
+        pb.set_progress(0.5)
+        pb.finish()
+    assert "100%" in s.getvalue()
+
+
+def test_creep_not_started_on_non_tty():
+    """Di non-TTY tidak ada thread creep (pembaruan tak akan terlihat)."""
+    s = FakePipe()
+    pb = P.ProgressBar("pesan", stream=s, width=48)
+    pb.start_creep(base=0.0, span=0.5)
+    assert pb._creep_thread is None
+
+
+def test_non_tty_finish_still_prints_final_line():
+    """Non-TTY tetap dapat satu baris 100% agar user tahu pekerjaan tuntas."""
+    s = FakePipe()
+    pb = P.ProgressBar("pesan", stream=s, width=48)
+    pb.set_progress(0.1)
+    pb.finish()
+    out = s.getvalue()
+    # Blok awal (10%) + baris final (100%).
+    assert " 10%" in out
+    assert "100%" in out
+
+
+def test_ascii_mode_uses_hash_characters(monkeypatch):
+    """`GARWA_PROGRESS_ASCII=1` -> bar memakai '#' agar aman di terminal
+    tanpa glyph blok Unicode."""
+    monkeypatch.setenv("GARWA_PROGRESS_ASCII", "1")
+    assert P._bar_chars() == ("#", "-")
+    s = FakeTTY()
+    pb = P.ProgressBar("", stream=s, width=20)
+    pb.set_progress(1.0)
+    line1 = s.getvalue().split("\n")[0]
+    assert "#" in line1
+    assert "█" not in line1
