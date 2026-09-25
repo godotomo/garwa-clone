@@ -290,6 +290,25 @@ def test_todos_isolated_between_workdirs(db_path):
     assert [t["content"] for t in dbmod.get_todos(db_path, workdir="/proj/y")] == ["y-task"]
 
 
+def test_get_todos_without_scope_returns_empty(db_path):
+    # Todo bersifat per-workdir (seperti catatan proyek). Tanpa scope sama sekali
+    # fungsi TIDAK boleh mengembalikan seluruh isi tabel -- itu akan membuat
+    # satu proyek membaca rencana proyek lain.
+    dbmod.replace_todos(db_path, "/proj/x", [{"content": "x-task"}])
+    dbmod.replace_todos(db_path, "/proj/y", [{"content": "y-task"}])
+    assert dbmod.get_todos(db_path) == []
+    assert dbmod.get_todos(db_path, workdir=None, session_id=None) == []
+
+
+def test_replace_todos_requires_workdir(db_path):
+    # workdir adalah kunci isolasi antar proyek. Tanpa itu, baris yang ditulis
+    # tidak akan terbaca proyek mana pun -> gagal keras, bukan menulis yatim.
+    for bad in (None, "", "   "):
+        with pytest.raises(ValueError):
+            dbmod.replace_todos(db_path, bad, [{"content": "x"}])
+    assert dbmod.get_todos(db_path) == []
+
+
 def test_get_pending_todos_only_active(db_path):
     dbmod.replace_todos(db_path, "/proj/x", [
         {"content": "pending", "status": "pending"},

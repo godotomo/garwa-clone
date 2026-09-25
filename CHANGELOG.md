@@ -75,6 +75,29 @@ dan versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`db.py` — `get_todos()` tanpa scope membaca todo SELURUH proyek.** Todo
+  sudah disimpan per `workdir` (sama seperti catatan proyek), tetapi bila
+  `workdir` **dan** `session_id` sama-sama kosong fungsi ini mengembalikan
+  **seluruh baris tabel** — satu proyek bisa membaca rencana proyek lain, persis
+  kebocoran yang harus dicegah. **Fix:** tanpa scope sekarang mengembalikan `[]`
+  disertai `logger.warning` (pemanggil salah pakai tetap terlihat di log, tapi
+  tidak ada data yang bocor). Regresi: `test_get_todos_without_scope_returns_empty`.
+- **`db.py` — `replace_todos()` menerima `workdir` kosong (todo "yatim").**
+  Menulis todo tanpa `workdir` menghasilkan baris yang tersimpan di DB tetapi
+  tidak lagi terbaca proyek mana pun, karena semua pembacaan di-key oleh
+  `workdir`. **Fix:** `workdir` kosong/None/whitespace kini `raise ValueError`
+  (gagal keras lebih baik daripada data tak terjangkau). Regresi:
+  `test_replace_todos_requires_workdir`.
+- **`telegram_gateway.py` — todo gateway Telegram memakai cwd, bukan `--workdir`.**
+  Mode `--bot` keluar dari `main.py` **sebelum** baris `tools_module.state.WORKDIR = args.workdir`,
+  sehingga `_prepare_state()` menyiapkan DB/sesi dengan workdir yang benar tapi
+  membiarkan `state.WORKDIR` (dipakai `todo_write`/`todo_read`, path sandbox, dan
+  cwd `bash`) menunjuk `os.getcwd()` proses. Akibatnya gateway dijalankan dengan
+  `--workdir` eksplisit tetap membaca/menulis todo proyek lain (dan menandai file
+  ter-touch di proyek yang salah). **Fix:** `_prepare_state()` kini menyelaraskan
+  `state.WORKDIR` **dan** env `GARWA_WORKDIR` ke `self._workdir()` — satu sumber
+  kebenaran yang sama dengan nama sesi dan system prompt. Regresi:
+  `test_prepare_state_aligns_workdir` di `tests/test_telegram_gateway.py`.
 - **`db.py` — `replace_todos` gagal keras di DB lama (todo tidak tersimpan).**
   Kolom `workdir`/`status_since` hanya ditambahkan di dalam `init_db()`, padahal
   `CREATE TABLE IF NOT EXISTS` tidak menyentuh tabel yang sudah ada. Jalur yang

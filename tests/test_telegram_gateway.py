@@ -416,6 +416,47 @@ def test_slash_new_session_updates_binding(gw, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Isolasi workdir (todo tidak boleh bocor antar proyek)
+# ---------------------------------------------------------------------------
+def test_prepare_state_aligns_workdir(monkeypatch, tmp_path):
+    """`_prepare_state` wajib menyelaraskan `state.WORKDIR` ke workdir gateway.
+
+    Mode `--bot` keluar dari main.py SEBELUM baris yang menyetel
+    `tools_module.state.WORKDIR = args.workdir`. Tanpa penyelarasan di sini,
+    todo (dan path sandbox) memakai cwd proses, sehingga satu proyek bisa
+    membaca/menulis todo proyek lain.
+    """
+    from garwa import tools as tools_module
+
+    db_path = str(tmp_path / "test.db")
+    dbmod.init_db(db_path)
+
+    proj = tmp_path / "proj-a"
+    proj.mkdir()
+    other = tmp_path / "proj-b"
+    other.mkdir()
+
+    # Kondisi "salah": state & env menunjuk proyek lain (mis. cwd proses).
+    monkeypatch.setenv("GARWA_WORKDIR", str(other))
+    monkeypatch.setattr(tools_module.state, "WORKDIR", str(other))
+
+    g = TelegramGateway(args=_make_args(db_path, str(proj)),
+                        token="dummy:token", admin_id="777", allow_all=False,
+                        offset_file=str(tmp_path / "o.txt"))
+    sid = dbmod.create_session(db_path, str(proj), title="telegram:777")
+    g._prepare_state(sid)
+
+    assert tools_module.state.WORKDIR == str(proj)
+    assert os.environ["GARWA_WORKDIR"] == str(proj)
+
+    # Todo ditulis lewat workdir state -> hanya terbaca oleh proyek itu.
+    dbmod.replace_todos(db_path, tools_module.state.WORKDIR,
+                        [{"content": "tugas proyek A", "status": "pending"}])
+    assert [r["content"] for r in dbmod.get_todos(db_path, workdir=str(proj))] == ["tugas proyek A"]
+    assert dbmod.get_todos(db_path, workdir=str(other)) == []
+
+
+# ---------------------------------------------------------------------------
 # Cron delivery ke Telegram
 # ---------------------------------------------------------------------------
 def test_deliver_cron_sends_to_admin(gw):

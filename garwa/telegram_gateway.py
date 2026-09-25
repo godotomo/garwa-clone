@@ -276,6 +276,16 @@ class TelegramGateway:
         db_path = self._db_path()
         tools_module.state.DB_PATH = db_path
         tools_module.state.set_session_id(session_id)
+        # WAJIB: mode `--bot` keluar dari main.py SEBELUM blok yang menyetel
+        # `tools_module.state.WORKDIR = args.workdir`, jadi tanpa baris ini todo
+        # (dan path sandbox tool) akan memakai cwd proses -- bukan workdir
+        # proyek yang diminta lewat `--workdir`/GARWA_WORKDIR. Akibatnya todo
+        # satu proyek bocor ke proyek lain. `_workdir()` gateway adalah satu-
+        # satunya sumber kebenaran di sini (ia sudah dipakai untuk nama sesi dan
+        # system prompt, jadi ketiganya kini konsisten).
+        workdir = self._workdir()
+        tools_module.state.WORKDIR = workdir
+        os.environ["GARWA_WORKDIR"] = workdir
         cli_state.reset_session_state(session_id)
         cli_state.get_session_state()["start_time"] = time.time()
         os.environ["GARWA_DB_PATH"] = db_path

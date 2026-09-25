@@ -16,11 +16,14 @@ karena CLI ini single-user, single-process, single-threaded per giliran.
 """
 
 import json
+import logging
 import os
 import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = os.path.join(os.path.expanduser("~"), ".garwa", "garwa.db")
 
@@ -616,10 +619,15 @@ def replace_todos(db_path: str, workdir: str, items: list, session_id: str = Non
     asal dan backward-compat.
 
     Raises:
-        ValueError: kalau ada item yang bukan dict, tidak punya key
-            "content", atau "content"-nya bukan string. Validasi di depan
-            (sebelum menyentuh DB) membuat kontrak eksplisit dan kegagalan
-            langsung jelas.
+        ValueError: kalau `workdir` kosong/None, atau ada item yang bukan dict,
+            tidak punya key "content", atau "content"-nya bukan string.
+            Validasi di depan (sebelum menyentuh DB) membuat kontrak eksplisit
+            dan kegagalan langsung jelas.
+
+    `workdir` WAJIB: itu kunci isolasi antar proyek. Menulis dengan workdir
+    kosong akan membuat todo "yatim" -- tersimpan di DB tapi tidak lagi
+    terbaca proyek mana pun (karena semua pembacaan di-key oleh workdir),
+    jadi lebih baik gagal keras di sini.
 
     Status tracking (`status_since`):
         Karena full replace menulis ulang SEMUA baris setiap giliran,
@@ -629,6 +637,15 @@ def replace_todos(db_path: str, workdir: str, items: list, session_id: str = Non
         `(content, status)` SAMA, dan di-set ke `now` saat item baru muncul
         atau statusnya berubah. Itulah dasar deteksi todo basi.
     """
+    # Isolasi antar proyek bertumpu pada workdir sebagai kunci. Menulis tanpa
+    # workdir = menulis baris yang tidak akan pernah terbaca lagi.
+    if not workdir or not str(workdir).strip():
+        raise ValueError(
+            "replace_todos() membutuhkan 'workdir' yang tidak kosong: todo "
+            "disimpan per proyek (workdir), dan baris tanpa workdir tidak akan "
+            "terbaca oleh proyek mana pun."
+        )
+
     for i, item in enumerate(items):
         if not isinstance(item, dict) or "content" not in item or not isinstance(item["content"], str):
             raise ValueError(
@@ -681,25 +698,32 @@ def replace_todos(db_path: str, workdir: str, items: list, session_id: str = Non
 
 
 def get_todos(db_path: str, workdir: str = None, session_id: str = None):
-    """Ambil todo. Prioritas: workdir (milik proyek, lintas sesi).
+    """Ambil todo MILIK SATU PROYEK (workdir). Prioritas: workdir.
 
     Kalau `workdir` diberikan, kembalikan todo untuk workdir itu (terlepas
-    dari sesi mana yang menulisnya). Kalau hanya `session_id` diberikan
-    (backward-compat), kembalikan todo sesi itu (yang workdir-nya kosong
-    atau cocok). Kalau keduanya None, kembalikan semua.
+    dari sesi mana yang menulisnya). Kalau hanya `session_id` (backward-compat),
+    kembalikan todo yang ditulis sesi itu.
+
+    KEDUANYA KOSONG -> kembalikan `[]`, BUKAN semua todo. Todo bersifat per
+    workdir (sama seperti catatan proyek di `get_notes`); mengembalikan seluruh
+    isi tabel akan membuat satu proyek membaca rencana proyek LAIN, dan itu
+    persis kebocoran yang harus dicegah. Dulu fungsi ini mengembalikan semua
+    baris saat tanpa scope -- perilaku itu dihapus.
     """
+    if not workdir and not session_id:
+        logger.warning(
+            "get_todos() dipanggil tanpa workdir/session_id -> mengembalikan kosong "
+            "(todo bersifat per-workdir; seluruh isi tabel tidak boleh dibocorkan)"
+        )
+        return []
     with connect(db_path) as conn:
         if workdir:
             rows = conn.execute(
                 "SELECT * FROM todos WHERE workdir = ? ORDER BY position ASC", (workdir,)
             ).fetchall()
-        elif session_id:
-            rows = conn.execute(
-                "SELECT * FROM todos WHERE session_id = ? ORDER BY position ASC", (session_id,)
-            ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM todos ORDER BY position ASC"
+                "SELECT * FROM todos WHERE session_id = ? ORDER BY position ASC", (session_id,)
             ).fetchall()
         return [dict(r) for r in rows]
 
