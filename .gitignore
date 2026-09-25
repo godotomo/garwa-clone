@@ -72,3 +72,6 @@ termux-browser-pilot/
 
 # Vendor source clone (pihak ketiga, 260M, bukan milik repo ini)
 hermes-agent-src/
+
+# Temporary experiment scripts (sesi optimasi)
+.tmp_*

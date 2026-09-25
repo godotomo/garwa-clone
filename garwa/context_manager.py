@@ -50,7 +50,11 @@ def _get_requests():
 SUMMARIZE_THRESHOLD_RATIO = 0.2    # ringkas kalau pemakaian > 35% dari budget context
 KEEP_TAIL_MESSAGES = 8              # jumlah pesan mentah terbaru yang selalu dipertahankan utuh
 RESERVE_FOR_RESPONSE = 1024*2         # token yang disisakan untuk jawaban model + tool_result berikutnya
-MIN_CONTEXT_WINDOW_HISTORY_FLOOR = 256  # lantai hard_budget riwayat, lihat prepare_context_messages()
+# Deprecated: dulu lantai `hard_budget` riwayat di prepare_context_messages().
+# Sejak keputusan desain "tanpa trim" (pesan selalu dikirim apa adanya, budget
+# riil ditangani agent_loop/server via ContextExceededError), hard_budget sudah
+# tidak dihitung lagi. Konstanta dipertahankan agar import lama tidak pecah.
+MIN_CONTEXT_WINDOW_HISTORY_FLOOR = 256  # tidak dipakai lagi
 MIN_MESSAGES_TO_SUMMARIZE = KEEP_TAIL_MESSAGES + 4  # jangan ringkas kalau riwayat masih pendek
 
 SUMMARIZE_REQUEST_TIMEOUT_SECONDS = 180
@@ -1013,18 +1017,21 @@ def prepare_context_messages(
     keep_tail_messages: int = KEEP_TAIL_MESSAGES,
     summarize_model: str = "",
 ) -> list:
-    """Summarize if needed, rebuild context from DB, then enforce a hard budget.
+    """Summarize if needed, lalu rebuild context messages dari DB.
+
+    Fungsi ini TIDAK memangkas/memtrim pesan mentah (keputusan desain "tanpa
+    trim"): kalau summarize sudah berhasil tapi total masih melebihi budget,
+    pesan tetap dikirim apa adanya dan agent_loop/server yang menangani
+    ContextExceededError dengan retry budget lebih ketat (memicu summarize
+    lebih agresif pada giliran berikutnya).
 
     `tools_payload` (opsional, backward-compatible -- default None berarti
     perilaku identik dengan sebelum parameter ini ada): field "tools" ala
     OpenAI yang benar-benar disertakan di request llama-server (lihat
     build_openai_tools_payload() di cli.py). Server menghitung token field
-    ini sebagai bagian dari prompt, tapi SEBELUM perubahan ini
-    context_manager sama sekali tidak tahu field itu ada, sehingga budget
-    `messages` yang dihitung di sini bisa "pas" padahal request sungguhan
-    (messages + tools) sudah melebihi context window server -- lihat
-    _tools_payload_tokens() untuk detail. Dengan parameter ini, token
-    tools ikut direservasi di hard_budget SEBELUM messages dipangkas.
+    ini sebagai bagian dari prompt; parameter ini diteruskan ke
+    maybe_summarize() supaya anggaran ringkas (threshold) memperhitungkan
+    token tools, bukan cuma token `messages` -- lihat _tools_payload_tokens().
     """
     if context_window_tokens <= reserve_for_response + 128:
         raise ValueError(
@@ -1032,7 +1039,12 @@ def prepare_context_messages(
             f"Harus lebih besar dari reserve_for_response ({reserve_for_response}) + 128."
         )
 
-    tools_tokens = _tools_payload_tokens(tools_payload)
+    # CATATAN PERFORMA: `_tools_payload_tokens(tools_payload)` dulu dihitung di
+    # sini untuk mengurangkan token tools dari hard_budget `messages`. Karena
+    # hard_budget (dan pemangkasan) sudah tidak ada lagi -- pesan selalu
+    # dikirim apa adanya -- hasilnya tidak dipakai di sini. Token tools tetap
+    # dihitung di maybe_summarize() (yang memakai hasil cache per-konten yang
+    # sama), jadi anggaran ringkas tetap konsisten dengan request sungguhan.
 
     # Ringkas catatan `remember` yang panjang via LLM (sekali per catatan,
     # disimpan di kolom `summary`) sehingga _project_notes_section memakai
@@ -1073,14 +1085,16 @@ def prepare_context_messages(
         system_prompt=system_prompt,
     )
 
-    hard_budget = context_window_tokens - reserve_for_response - tools_tokens
-    hard_budget = max(hard_budget, MIN_CONTEXT_WINDOW_HISTORY_FLOOR)
-    if token_utils.count_messages_tokens(messages) <= hard_budget:
-        return messages
-
-    if len(messages) <= 1:
-        return messages
-
+    # CATATAN PERFORMA: di sini SEBELUMNYA dihitung
+    #   hard_budget = max(context_window_tokens - reserve_for_response - tools_tokens,
+    #                     MIN_CONTEXT_WINDOW_HISTORY_FLOOR)
+    #   if count_messages_tokens(messages) <= hard_budget: return messages
+    # Nilai `hard_budget` dan hasil count_messages_tokens itu TIDAK PERNAH
+    # dipakai: kedua cabang di bawah mengembalikan `messages` yang sama persis,
+    # sehingga komputasi token termahal per giliran itu sia-sia (dead code).
+    # Perhitungan dihapus; keputusan budget riil ditangani agent_loop/server
+    # lewat ContextExceededError (lihat penjelasan di bawah).
+    #
     # KEPUTUSAN DESAIN (per komitmen): JANGAN pernah memotong/trim pesan
     # mentah untuk menghemat konteks. Trim di sini dulu memotong `tail`
     # (= messages[1:]) dari index 0, yaitu menghapus SUMMARY + pesan-pesan

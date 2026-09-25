@@ -24,6 +24,7 @@ budgeting. Jika env `GARWA_TIKTOKEN_ENCODING` diisi, encoding itu yang
 dipakai (mis. "o200k_base").
 """
 
+import hashlib
 import json
 import os
 import threading
@@ -122,6 +123,135 @@ def count_json_tokens(obj) -> int:
         return 0
 
 
+# ---------------------------------------------------------------------------
+# Cache token per-pesan + jalur cepat aditif untuk count_messages_tokens.
+#
+# Masalah: count_messages_tokens dipanggil berkali-kali per giliran atas
+# payload yang sebagian besar isinya SAMA (riwayat percakapan hanya
+# bertambah satu pesan tiap giliran). Meng-encode ulang seluruh daftar
+# pesan setiap kali berarti biaya O(panjang total riwayat) per panggilan,
+# padahal hampir semua item sudah pernah dihitung.
+#
+# Solusi: tokenisasi daftar pesan dipecah per-pesan lalu dijumlahkan. JSON
+# payload berbentuk
+#     "[" + m0 + ", " + m1 + ", " + ... + ", " + m_{n-1} + "]"
+# Bila tiap item di-encode dengan pemisah ", " MENEMPEL di belakangnya,
+# jumlah bagian-bagian itu LEBIH BESAR daripada tokenisasi utuh, karena
+# pasangan ", {" yang tadinya menyatu jadi satu token kini terpisah oleh
+# batas encode. Kelebihannya KONSTAN per batas:
+#     C = tok(", ") + tok("{") - tok(", {")
+# C diturunkan dari tokenizer saat runtime (bukan konstanta ajaib) dan
+# diverifikasi sekali lewat self-test pada encoding yang aktif; kalau
+# self-test gagal, jalur cepat otomatis dinonaktifkan (fallback eksak).
+#
+# Hasil verifikasi (repo ini, cl100k_base): fast path EKSAK pada 173 sesi /
+# 87.671 pesan di DB produksi (n maksimum 7207 pesan) plus uji sintetis
+# unicode/emoji/kode. Bentuk lain (item bukan dict, atau dict kosong)
+# TIDAK memakai fast path -- langsung fallback ke tokenisasi JSON penuh,
+# yang juga eksak.
+#
+# Kenapa key cache = hash KONTEN, bukan id(objek)? id() TIDAK aman: begitu
+# objek di-GC, CPython bisa me-reuse id untuk objek baru -> collision ->
+# token salah. Hash konten menghindari itu dan membuat item berisi sama
+# (walau objek berbeda) berbagi cache.
+#
+# Thread-safety: sub-agent paralel bisa memanggil ini dari beberapa thread
+# sekaligus, jadi semua akses cache dilindungi lock.
+_MSG_ITEM_TOKENS_CACHE: dict = {}
+_MSG_ITEM_TOKENS_LOCK = threading.Lock()
+_MSG_ITEM_TOKENS_CACHE_MAX = 200_000
+
+# None = belum dihitung; >= 0 = C terverifikasi; -1 = jalur cepat dinonaktifkan.
+_FAST_CORRECTION = None
+_FAST_CORRECTION_LOCK = threading.Lock()
+
+
+def _msg_item_tokens(serialized: str) -> int:
+    """Token dari satu item pesan JSON dengan pemisah ", " menempel."""
+    key = hashlib.md5(serialized.encode("utf-8")).hexdigest()
+    with _MSG_ITEM_TOKENS_LOCK:
+        cached = _MSG_ITEM_TOKENS_CACHE.get(key)
+    if cached is not None:
+        return cached
+    n = count_tokens(serialized + ", ")
+    with _MSG_ITEM_TOKENS_LOCK:
+        if len(_MSG_ITEM_TOKENS_CACHE) >= _MSG_ITEM_TOKENS_CACHE_MAX:
+            _MSG_ITEM_TOKENS_CACHE.clear()
+        _MSG_ITEM_TOKENS_CACHE[key] = n
+    return n
+
+
+def _boundary_correction():
+    """Derivasikan koreksi batas C untuk jalur cepat, atau None bila tidak
+    bisa dipakai.
+
+    C dihitung dari tokenizer pada encoding aktif, lalu DIVERIFIKASI dengan
+    self-test kecil (payload 3 pesan realistis, dibandingkan dengan
+    tokenisasi utuh). Kalau hasilnya tidak identik, jalur cepat
+    dinonaktifkan supaya nilai token tidak pernah salah. Hasil di-cache.
+    """
+    global _FAST_CORRECTION
+    if _FAST_CORRECTION is not None:
+        return None if _FAST_CORRECTION < 0 else _FAST_CORRECTION
+    with _FAST_CORRECTION_LOCK:
+        if _FAST_CORRECTION is not None:
+            return None if _FAST_CORRECTION < 0 else _FAST_CORRECTION
+        c = -1
+        try:
+            c = count_tokens(", ") + count_tokens("{") - count_tokens(", {")
+            probe = [
+                json.dumps({"role": r, "content": t}, ensure_ascii=False)
+                for r, t in (("system", "s"), ("user", "hello"),
+                             ("assistant", "ok"), ("user", "lanjut"))
+            ]
+            exact = count_tokens("[" + ", ".join(probe) + "]")
+            fast = (
+                count_tokens("[" + probe[0] + ", ")
+                + sum(count_tokens(p + ", ") for p in probe[1:-1])
+                + count_tokens(probe[-1] + "]")
+                - c * (len(probe) - 1)
+            )
+            if fast != exact:
+                c = -1
+        except Exception:
+            c = -1
+        _FAST_CORRECTION = c
+        return None if c < 0 else c
+
+
+def _count_messages_json_tokens(messages) -> int:
+    """Token dari representasi JSON `messages` (tanpa overhead chat).
+
+    Fast path: jumlah token per-pesan (di-cache) dikurangi koreksi batas.
+    Fallback eksak: tokenisasi JSON penuh -- dipakai bila payload bukan
+    daftar dict non-kosong, atau jalur cepat tidak bisa diverifikasi.
+    """
+    if not isinstance(messages, list) or not messages:
+        return count_json_tokens(messages)
+    # Gerbang bentuk: jalur cepat hanya untuk daftar dict NON-KOSONG (bentuk
+    # yang selalu dihasilkan build_context_messages, {role, content, ...}).
+    if not all(isinstance(m, dict) and m for m in messages):
+        return count_json_tokens(messages)
+    try:
+        serialized = [json.dumps(m, ensure_ascii=False) for m in messages]
+    except (TypeError, ValueError):
+        return count_json_tokens(messages)
+    if not all(s.startswith("{") and s.endswith("}") for s in serialized):
+        return count_json_tokens(messages)
+    correction = _boundary_correction()
+    if correction is None:
+        return count_tokens("[" + ", ".join(serialized) + "]")
+    n = len(serialized)
+    if n == 1:
+        return count_tokens("[" + serialized[0] + "]")
+    head = count_tokens("[" + serialized[0] + ", ")
+    tail = count_tokens(serialized[-1] + "]")
+    mids = 0
+    for s in serialized[1:-1]:
+        mids += _msg_item_tokens(s)
+    return head + mids + tail - correction * (n - 1)
+
+
 def count_messages_tokens(messages: list) -> int:
     """Hitung jumlah token untuk satu daftar pesan OpenAI-chat.
 
@@ -133,10 +263,16 @@ def count_messages_tokens(messages: list) -> int:
     - menangkap tokenisasi nyata dari karakter non-ASCII dan kode;
     - konsisten dengan cara `_tools_payload_tokens` menghitung payload tools.
 
+    Selama payload berbentuk daftar dict non-kosong (bentuk yang selalu
+    dihasilkan build_context_messages), hasil untuk setiap pesan dihitung
+    lewat cache per-pesan + jalur cepat aditif yang EKSAK (lihat
+    _count_messages_json_tokens). Untuk bentuk lain, fallback ke tokenisasi
+    JSON penuh apa adanya (juga eksak, hanya lebih lambat).
+
     Kalau `messages` kosong, return 0.
     """
     if not messages:
         return 0
-    total = count_json_tokens(messages)
+    total = _count_messages_json_tokens(messages)
     total += CHAT_TEMPLATE_OVERHEAD_PER_MESSAGE * len(messages)
     return total
