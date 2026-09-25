@@ -149,6 +149,16 @@ def _stream_visible_text(state: dict, text: str) -> str:
     dicetak) -- kalau ternyata bukan <tool_call> (ada teks lain
     menyusul), whitespace itu digabung kembali di depan teks berikutnya
     sehingga urutan/isi keseluruhan tetap sama persis seperti sebelumnya.
+
+    BATAS yang disengaja (P2 code fence): parser live ini menyembunyikan
+    SETIAP blok `<tool_call>...</tool_call>` dari layar, termasuk yang cuma
+    CONTOH di dalam ``` ... ```. Layer EKSEKUSI tidak lagi begitu (lihat
+    `json_repair._fenced_code_spans`), jadi contoh di fence tidak dijalankan;
+    hanya tampilan live-nya yang tetap menyembunyikan contoh tsb. Menjadikan
+    parser live sadar-fence tidak bisa dilakukan tanpa buffering sampai fence
+    ditutup -- keputusan "fence tertutup atau tidak" baru valid di akhir teks,
+    sedangkan stream harus memutuskan saat marker muncul. Dampaknya kosmetik
+    (contoh tidak tampil live), bukan fungsional.
     """
     if not text:
         return ""

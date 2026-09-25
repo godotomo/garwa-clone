@@ -89,6 +89,14 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
     _loop_count = 0
     _MAX_LOOP_RETRIES = 2
 
+    # P0 (STOP senyap): model menulis blok <tool_call> tapi JSON-nya rusak /
+    # tidak berimbang (respon terpotong di tengah, penutup tag rusak, dsb)
+    # sehingga extract_tool_calls kosong. Sebelum perbaikan, giliran langsung
+    # [STOP] senyap. Sekarang kita suntikkan koreksi dan coba lagi, dengan
+    # batas supaya tidak menjadi loop tak berujung.
+    _malformed_count = 0
+    _MAX_MALFORMED_RETRIES = 2
+
     _t_start = time.monotonic()          # awal giliran (untuk durasi total)
     _iteration_count = 0                 # jumlah iterasi loop (putaran model)
     _error_count = 0                     # jumlah tool_call yang menghasilkan error
@@ -537,6 +545,44 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                 tool_calls = [_legacy_call]
 
         if not tool_calls:
+            # P0 (STOP senyap): model JELAS berniat memanggil tool (ada tag
+            # `<tool_call` di teks) tapi TIDAK ada satu pun blok yang berhasil
+            # di-parse. Penyebab tersering: JSON terpotong / kurung kurawal tak
+            # berimbang (respon kepotong di tengah argumen panjang) atau penutup
+            # tag rusak. Sebelum perbaikan: giliran langsung [STOP] senyap dan
+            # user harus memaksa lanjut manual. Sekarang suntikkan koreksi lalu
+            # coba lagi, dibatasi supaya tidak jadi loop tak berujung.
+            if "<tool_call" in assistant_text and _malformed_count < _MAX_MALFORMED_RETRIES:
+                _malformed_count += 1
+                print(c(
+                    f"  [MALFORMED] Blok <tool_call> ada tapi JSON-nya tidak "
+                    f"valid/terpotong -- menyuntikkan koreksi dan mencoba lagi "
+                    f"({_malformed_count}/{_MAX_MALFORMED_RETRIES})...",
+                    C.YELLOW,
+                ))
+                dbmod.add_message(
+                    args.db_path,
+                    session_id,
+                    "user",
+                    "<tool_result>\n"
+                    "[MALFORMED] Blok <tool_call> pada respon Anda (model) "
+                    "TIDAK bisa di-parse karena JSON-nya tidak valid atau "
+                    "TERPOTONG (kurung kurawal/kutip tidak berimbang, koma "
+                    "antar-field hilang, atau penutup tag rusak). Akibatnya "
+                    "TIDAK ada tool yang dieksekusi. Pada percobaan "
+                    "berikutnya: tulis ULANG pemanggilan tool secara lengkap "
+                    "dan valid -- tanda kutip ganda, koma antar-field, kurung "
+                    "kurawal berimbang. Kalau argumen panjang (mis. "
+                    "new_str/content/command) membuat respon terpotong, PECAH "
+                    "menjadi beberapa pemanggilan yang lebih kecil.\n"
+                    "</tool_result>",
+                    kind="tool_result",
+                )
+                last_visible = (
+                    "[MALFORMED] Blok tool_call tidak valid/terpotong; "
+                    "percobaan diulang dengan instruksi koreksi."
+                )
+                continue
             # P0: jangan berhenti senyap. Emit pesan eksplisit sebelum summary
             # agar user/model tahu giliran berhenti karena TIDAK ADA tool_call
             # valid (bukan karena batas iterasi atau crash tersembunyi).
@@ -546,6 +592,11 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
             ))
             _emit_summary()
             return last_visible
+
+        # Iterasi ini berhasil menghasilkan tool_call yang dieksekusi; reset
+        # hitungan koreksi malformed supaya kejadian rusak berikutnya di giliran
+        # yang sama tetap mendapat jatah percobaan penuh.
+        _malformed_count = 0
 
         # P0: `todo_write` = FULL REPLACE per workdir. Kalau model memecah daftar
         # todo ke beberapa blok dalam satu giliran, eksekusi berurutan membuat

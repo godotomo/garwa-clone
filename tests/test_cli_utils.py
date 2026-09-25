@@ -169,6 +169,73 @@ class TestExtractToolCall:
         assert name == "PARSE_ERROR"
 
 
+class TestCodeFenceToolCall:
+    """P2 (code fence): contoh `<tool_call>` di dalam ``` TIDAK dieksekusi.
+
+    Heuristik sengaja konservatif: hanya fence yang BENAR-BENAR TERTUTUP
+    yang menonaktifkan tool_call. Fence menggantung (tanpa penutup) tetap
+    dianggap berisi tool_call nyata supaya pemanggilan sah tidak hilang.
+    """
+
+    OPEN = "<tool_call" + ">"
+    CLOSE = "</tool_call" + ">"
+    DOC = '{"name": "bash", "arguments": {"command": "echo hi"}}'
+
+    def test_fenced_with_language_is_not_executed(self):
+        text = "Contoh:\n\n```json\n" + self.OPEN + self.DOC + self.CLOSE + "\n```\n"
+        assert json_repair.extract_tool_calls(text) == []
+
+    def test_fenced_without_language_is_not_executed(self):
+        text = "Contoh:\n\n```\n" + self.OPEN + self.DOC + self.CLOSE + "\n```\n"
+        assert json_repair.extract_tool_calls(text) == []
+
+    def test_two_examples_in_one_fence_not_executed(self):
+        text = (
+            "```\n"
+            + self.OPEN
+            + self.DOC
+            + self.CLOSE
+            + "\n"
+            + self.OPEN
+            + self.DOC
+            + self.CLOSE
+            + "\n```"
+        )
+        assert json_repair.extract_tool_calls(text) == []
+
+    def test_tilde_fence_is_not_executed(self):
+        text = "~~~\n" + self.OPEN + self.DOC + self.CLOSE + "\n~~~\n"
+        assert json_repair.extract_tool_calls(text) == []
+
+    def test_real_call_after_fence_still_executed(self):
+        text = (
+            "Contoh pakai fence:\n```\n"
+            + self.OPEN
+            + self.DOC
+            + self.CLOSE
+            + "\n```\n\nSekarang saya jalankan:\n"
+            + self.OPEN
+            + self.DOC
+            + self.CLOSE
+        )
+        calls = json_repair.extract_tool_calls(text)
+        assert calls == [("bash", {"command": "echo hi"})]
+
+    def test_unclosed_fence_does_not_swallow_real_call(self):
+        # Fence dibuka tapi tidak pernah ditutup: JANGAN anggap contoh —
+        # risiko kehilangan pemanggilan sah lebih besar daripada risiko
+        # mengeksekusi contoh.
+        text = "```\n" + self.OPEN + self.DOC + self.CLOSE + "\n"
+        assert json_repair.extract_tool_calls(text) == [("bash", {"command": "echo hi"})]
+
+    def test_strip_tool_call_blocks_keeps_example_visible(self):
+        # Contoh di dalam fence harus TETAP tampil di visible_text (bukan
+        # dihapus), karena ia bukan blok yang dieksekusi.
+        text = "Contoh:\n```\n" + self.OPEN + self.DOC + self.CLOSE + "\n```\n"
+        stripped = json_repair.strip_tool_call_blocks(text)
+        assert self.OPEN in stripped
+
+
 # ---------------------------------------------------------------------------
 # stream_parse
 # ---------------------------------------------------------------------------

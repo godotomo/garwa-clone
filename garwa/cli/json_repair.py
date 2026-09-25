@@ -233,6 +233,44 @@ def _find_json_object_end(text: str, start: int) -> int:
     return -1
 
 
+_FENCE_MARKER_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})")
+
+
+def _fenced_code_spans(text: str):
+    """Span `(start, end)` isi blok kode markdown yang BENAR-BENAR TERTUTUP.
+
+    Dipakai untuk membedakan `<tool_call>` SUNGGUHAN dari `<tool_call>` yang
+    cuma CONTOH/dokumentasi di dalam ``` ... ``` (mis. model menjelaskan
+    format tool call, atau mengutip instruksi system prompt). Tanpa ini,
+    contoh di dalam fence ikut dieksekusi sebagai pemanggilan tool nyata.
+
+    Heuristik sengaja KONSERVATIF: hanya pasangan fence yang punya baris
+    penutup yang dihitung. Fence yang dibuka tapi tidak pernah ditutup
+    (model lupa menutup) TIDAK menghasilkan span apa pun, sehingga
+    `<tool_call>` di dalamnya tetap dianggap nyata -- ini penting supaya
+    fence "menggantung" tidak menelan pemanggilan yang sah.
+
+    Indeks `start` = tepat setelah baris pembuka (yaitu awal baris pertama
+    isi fence), `end` = awal baris penutup. Baris fence itu sendiri (yang
+    memuat ``` / ~~~) tidak termasuk span.
+    """
+    spans = []
+    stack = None  # (marker_char, posisi_akhir_baris_pembuka)
+    pos = 0
+    for line in text.split("\n"):
+        match = _FENCE_MARKER_RE.match(line)
+        line_end = pos + len(line)
+        if match:
+            marker = match.group(1)[0]
+            if stack is None:
+                stack = (marker, line_end)
+            elif stack[0] == marker:
+                spans.append((stack[1], pos))
+                stack = None
+        pos = line_end + 1
+    return spans
+
+
 def _iter_tool_call_blocks(text: str):
     """Yield `(start, end, raw_json)` untuk SETIAP blok `<tool_call>...</tool_call>`.
 
@@ -253,12 +291,25 @@ def _iter_tool_call_blocks(text: str):
     JSON (bila tag penutup tidak ada). Yield semua blok ber-object berimbang;
     validitas isinya diserahkan ke `_parse_raw_json`.
     """
+    fenced = _fenced_code_spans(text)
+
+    def _in_fence(position: int) -> bool:
+        for span_start, span_end in fenced:
+            if span_start <= position < span_end:
+                return True
+        return False
+
     idx = 0
     n = len(text)
     while True:
         open_pos = text.find(state.TOOL_OPEN, idx)
         if open_pos == -1:
             return
+        if _in_fence(open_pos):
+            # P2 (code fence): marker ini berada di dalam ``` ... ``` tertutup
+            # -> itu CONTOH/dokumentasi, bukan pemanggilan nyata. Lewati.
+            idx = open_pos + len(state.TOOL_OPEN)
+            continue
         # Mulai scan JSON tepat setelah tag pembuka; lewati whitespace.
         json_start = open_pos + len(state.TOOL_OPEN)
         while json_start < n and text[json_start] in " \t\r\n":
