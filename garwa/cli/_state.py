@@ -208,29 +208,6 @@ ERROR_REPEAT_THRESHOLD = 2
 REPEAT_MAX_OCCUR = 5
 REPEAT_CHECK_EVERY = 200
 LOOP_SIMILARITY_THRESHOLD = 0.95
-# Ambang line-repeat untuk reasoning (chain of thought). Model secara
-# natural menulis ulang rencana/konsep yang sama di dalam CoT, jadi
-# deteksi yang terlalu agresif memicu false positive. Content (jawaban
-# asli) memakai ambang ketat (REPEAT_MAX_OCCUR).
-REPEAT_MAX_OCCUR_REASONING = 8
-# Threshold khusus untuk simbol separator berulang (---, ===, ***, ...).
-# Simbol separator biasanya pendek (1-5 karakter), jadi threshold lebih rendah.
-SEPARATOR_REPEAT_THRESHOLD = 3
-# Diversity check (rolling n-gram): rasio n-gram unik terhadap total n-gram
-# setelah normalisasi whitespace. Teks natural (prosa/kode/markdown) yang
-# diukur dari repo ini punya rasio >= 0.60; pola degenerate (interleaved
-# A/B, segmen pendek berulang, near-duplicate whitespace) berada di 0.01-0.20.
-# Threshold 0.35 memberi margin lebar ke dua arah.
-REPEAT_DIVERSITY_WINDOW = 25
-REPEAT_DIVERSITY_THRESHOLD = 0.35
-# Ambang diversity longgar untuk reasoning (chain of thought). Model
-# secara natural mengulang istilah/rencana yang sama di dalam CoT, jadi
-# rasio n-gram uniknya lebih rendah daripada content. Content memakai
-# ambang ketat (REPEAT_DIVERSITY_THRESHOLD).
-REPEAT_DIVERSITY_THRESHOLD_REASONING = 0.25
-# Panjang minimal teks (setelah normalisasi whitespace) sebelum diversity
-# check dijalankan; di bawah ini sampel n-gram terlalu sedikit untuk andal.
-REPEAT_DIVERSITY_MIN_LEN = 150
 PASTE_PREVIEW_CHARS = 10
 IMAGE_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg",
@@ -392,8 +369,12 @@ OPENROUTER_MAX_CACHE_BREAKPOINTS = 4
 OPENROUTER_CACHE_TAIL_BREAKPOINTS = 3
 AGENT_NAME = "Garwa"
 _DEBUG_EXTRA_SINK = [None]  # optional file-like object; run_overnight_mode
-RATE_LIMIT_RETRY_ATTEMPTS = _env_int("GARWA_RATE_LIMIT_RETRY", 3)
-RATE_LIMIT_BACKOFF_SECONDS = [15, 15, 15]
+RATE_LIMIT_RETRY_ATTEMPTS = _env_int("GARWA_RATE_LIMIT_RETRY", 5)
+# Jeda pendek 3 detik per percobaan: server proxy (mis. byteplus.garwa.id)
+# sering hanya 429 sesaat karena burst, jadi retry cepat lebih efektif
+# daripada menunggu lama. Total tunggu 5x3=15 detik (jauh di bawah 45 detik
+# sebelumnya).
+RATE_LIMIT_BACKOFF_SECONDS = [3, 3, 3, 3, 3]
 # Concurrent limit (HTTP 429 dengan code "concurrent_limit"): server proxy
 # hanya mengizinkan sejumlah request aktif (mis. 1/1). Request yang masih
 # diproses server memblokir slot, jadi retry butuh backoff JAUH lebih panjang
@@ -422,6 +403,32 @@ NONSTREAM_TIMEOUT_SECONDS = _env_int("GARWA_NONSTREAM_TIMEOUT", 45)
 # giliran karena server kebetulan lagi sibuk/error sesaat.
 SERVER_ERROR_RETRY_ATTEMPTS = 3
 SERVER_ERROR_BACKOFF_SECONDS = [30, 30, 30]
+# ---------------------------------------------------------------------------
+# Admission control untuk pemanggilan LLM
+# ---------------------------------------------------------------------------
+# Server proxy (mis. byteplus.garwa.id) hanya mengizinkan sejumlah request
+# AKTIF (concurrent) yang sangat kecil -- sering 1. Sebelum ini, setiap
+# pemanggil (loop induk + semua sub-agent paralel) menembak request tanpa
+# koordinasi, sehingga 4 sub-agent paralel saling menabrak dan memicu 429
+# "concurrent_limit" berulang. Total waktu membengkak dari ~0.5s menjadi
+# 6.5s+ (dan dengan backoff asli 30-120s bisa 5+ menit), sementara seluruh
+# chat ikut terblokir karena spawn dijalankan sinkron di loop utama.
+#
+# Solusinya: SATU semaphore proses-wide yang membatasi jumlah request LLM
+# aktif. Semua panggilan call_llama_server() mengambil slot sebelum menembak
+# request dan melepaskannya setelah selesai. Dengan begitu sub-agent paralel
+# tetap jalan (bergiliran), tapi tidak lagi saling memicu concurrent_limit.
+#
+# Default 1 (konservatif, cocok untuk server single-slot). Set 0 untuk
+# menonaktifkan admission control (perilaku lama). Override via env
+# GARWA_LLM_MAX_CONCURRENCY.
+LLM_MAX_CONCURRENCY = _env_int("GARWA_LLM_MAX_CONCURRENCY", 1)
+# Batas waktu (detik) untuk MENUNGGU slot admission sebelum menyerah. Kalau
+# slot tidak didapat dalam waktu ini (mis. ada request yang menggantung),
+# request dilewatkan TANPA slot -- lebih baik tetap mencoba dan kena 429
+# (yang sudah ada retry-nya) daripada menggantung selamanya. Override via
+# env GARWA_LLM_ADMISSION_WAIT.
+LLM_ADMISSION_WAIT_SECONDS = _env_int("GARWA_LLM_ADMISSION_WAIT", 90)
 _MAX_JSON_ESCAPE_REPAIR_ATTEMPTS = 50  # jaring pengaman terhadap kasus aneh
 _MOJIBAKE_C1_CONTROL_RANGE = range(0x80, 0xA0)  # U+0080..U+009F
 _MOJIBAKE_LEAD_CHARS = set("ÃÂâ")

@@ -211,9 +211,7 @@ def _call_llama_server_stream(url: str, model: str, messages: list,
                 if _reasoning_chars_since_check >= state.REPEAT_CHECK_EVERY:
                     _reasoning_chars_since_check = 0
                     _reasoning_so_far = "".join(reasoning_parts)
-                    # Reasoning (chain of thought) memakai ambang longgar:
-                    # model secara natural menulis ulang rencana yang sama.
-                    if _detect_repetition(_reasoning_so_far, strict=False):
+                    if _detect_repetition(_reasoning_so_far):
                         if reasoning_preview is not None:
                             reasoning_preview.close()
                         visible_state["renderer"].abort()

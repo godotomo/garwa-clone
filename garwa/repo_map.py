@@ -34,7 +34,6 @@ from . import db as dbmod
 
 
 _TS_AVAILABLE = False
-_get_parser = None
 
 # ---------------------------------------------------------------------------
 # Loader tree-sitter multi-tier (poor-man's LSP, tanpa LSP/daemon).
@@ -230,8 +229,9 @@ def _ts_available() -> bool:
     language-pack / tree_sitter_languages terinstall. Grammar individual
     butuh modul `tree_sitter` (core) yang menyediakan Parser + Language."""
     try:
-        import tree_sitter  # noqa: F401
-        core_ok = True
+        import tree_sitter as _ts_core
+
+        core_ok = _ts_core is not None
     except Exception:
         core_ok = False
     return _lp_get_parser is not None or _tl_get_parser is not None or core_ok

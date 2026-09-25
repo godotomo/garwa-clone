@@ -3,11 +3,9 @@ Dipecah otomatis dari cli.py (lihat cli/_state.py untuk state bersama).
 """
 import difflib
 import json
-import os
 import re
-import sys
 import unicodedata
-from datetime import datetime
+from collections import Counter
 
 try:
 
@@ -211,18 +209,6 @@ def _similarity(a: str, b: str) -> float:
     return max(seq_sim, jaccard, ent_sim, char_ngram_sim, content_sim)
 
 
-def _warn_repetition(kind: str, detail: str, sample: str) -> None:
-    """Log diagnostik repetisi ke stderr (real-time, tidak buffered).
-    Hanya dipanggil kalau env GARWA_DEBUG_REPETITION=1.
-    """
-    ts = datetime.now().strftime("%H:%M:%S")
-    sys.stderr.write(
-        f"\n[REP-DBG {ts}] {kind} | {detail}\n"
-        f"  sample: {sample!r}\n"
-    )
-    sys.stderr.flush()
-
-
 # ----------------------------------------------------------------------
 # Tool-call parsing untuk deteksi loop antar-respon.
 #
@@ -310,7 +296,6 @@ def _loop_similarity(a: str, b: str) -> float:
         # adalah loop yang sama. Jumlah kemunculan tetap diperhitungkan:
         # [read_file] vs [read_file, read_file] BUKAN loop (respon kedua
         # menambah tool = langkah progresif yang sah).
-        from collections import Counter
         return 1.0 if Counter(sig_a) == Counter(sig_b) else 0.0
     if sig_a is not None or sig_b is not None:
         # Satu berisi tool_call, satu tidak: jelas langkah berbeda, bukan loop.
@@ -318,329 +303,72 @@ def _loop_similarity(a: str, b: str) -> float:
     return _similarity(a, b)
 
 
+def _longest_line_run(text: str) -> tuple[str, int]:
+    """Cari run terpanjang baris non-kosong yang identik BERTURUT-TURUT.
+
+    Mengembalikan (baris, panjang_run) atau ("", 0) bila tidak ada.
+
+    Sengaja memakai run berturut-turut (bukan total kemunculan di seluruh
+    teks): jawaban wajar acap memuat baris struktur markdown yang identik
+    tetapi TERSEBAR, mis. fence '```' / '```python' untuk setiap blok kode,
+    baris pemisah '---' antar seksi, atau header tabel yang sama untuk
+    beberapa tabel berbeda. Menghitung total kemunculan membuat jawaban
+    normal berisi >=5 blok kode salah diklasifikasikan sebagai degenerate
+    loop -> stream dihentikan di tengah jawaban dan giliran berhenti
+    sebelum tugas selesai. Loop degeneratif yang nyata mengulang baris yang
+    sama secara BERTURUT-TURUT, jadi run adalah sinyal yang tepat.
+    """
+    if not text:
+        return "", 0
+
+    best_line = ""
+    best_run = 0
+    cur_line = ""
+    cur_run = 0
+    for raw in text.split("\n"):
+        ln = raw.strip()
+        if not ln:
+            # Baris kosong memutus run: bukan bagian dari repetisi.
+            cur_line, cur_run = "", 0
+            continue
+        if ln == cur_line:
+            cur_run += 1
+        else:
+            cur_line, cur_run = ln, 1
+        if cur_run > best_run:
+            best_line, best_run = cur_line, cur_run
+    return best_line, best_run
+
+
 def _find_repeated_text(text: str, max_sample: int = 160) -> str:
-    """Ekstrak contoh kata/baris yang paling mungkin jadi sumber loop, untuk
-    ditampilkan di pesan [LOOP] agar debugging lebih jelas.
+    """Ambil contoh baris yang paling sering diulang berturut-turut.
 
-    Strategi (makin spesifik makin diprioritaskan):
-      0. Tool-call yang sama persis (nama + argumen) muncul >= 2x.
-      1. Baris non-kosong yang muncul paling banyak (LINE-REPEAT).
-      2. Kata konten (anti-stopword) yang muncul paling banyak.
-      3. Kalimat/segmen pendek yang paling sering muncul sebagai substring.
-
-    Mengembalikan string pendek (<= max_sample karakter) berisi sample + jumlah
-    kemunculan, atau string kosong kalau tidak ada tanda repetisi yang jelas.
+    Mengembalikan string pendek (<= max_sample karakter) berisi sample +
+    jumlah kemunculan, atau "" kalau tidak ada baris yang terulang.
+    Memakai definisi run yang sama dengan _detect_repetition supaya pesan
+    [LOOP] selalu konsisten dengan keputusan deteksinya.
     """
     if not text:
         return ""
 
-    # 0. Tool-call repeat: sumber loop paling jelas dan informatif. Delimiter
-    #    <tool_call>/</tool_call> sengaja TIDAK dihitung (selalu muncul di setiap
-    #    tool_call, jadi bukan indikasi repetisi), hanya nama+argumen yang sama.
-    calls = _extract_tool_calls(text)
-    if len(calls) >= 2:
-        from collections import Counter
-        sig_counts = Counter(_call_signature(c) for c in calls)
-        most_sig, sig_n = sig_counts.most_common(1)[0]
-        if sig_n >= 2:
-            name, args = most_sig
-            sample = f"{name} {dict(args)}"
-            if len(sample) <= max_sample:
-                return f"tool_call {sig_n}x: {sample!r}"
-            return f"tool_call {sig_n}x: {name!r}"
-
-    lines = [ln.strip() for ln in text.split("\n")]
-    non_empty = [
-        ln for ln in lines
-        if ln and ln not in ("<tool_call>", "</tool_call>")
-    ]
-
-    # 1. Baris paling sering muncul (kandidat LINE-REPEAT).
-    if non_empty:
-        from collections import Counter
-        line_counts = Counter(non_empty)
-        most_line, line_n = line_counts.most_common(1)[0]
-        if line_n >= 2 and len(most_line) <= max_sample:
-            return f"baris {line_n}x: {most_line[:max_sample]!r}"
-
-    # 2. Kalimat/segmen pendek yang paling sering muncul (lebih informatif
-    #    daripada kata, dan menangkap loop kalimat penuh dalam satu baris).
-    sentences = re.split(r"[.!?]\s|\n", text)
-    sentences = [
-        s.strip() for s in sentences
-        if len(s.strip()) >= 8 and s.strip() not in ("<tool_call>", "</tool_call>")
-    ]
-    if sentences:
-        from collections import Counter
-        sent_counts = Counter(sentences)
-        most_sent, sent_n = sent_counts.most_common(1)[0]
-        if sent_n >= 2:
-            return f"kalimat {sent_n}x: {most_sent[:max_sample]!r}"
-
-    # 3. Kata konten paling sering muncul (fallback terakhir).
-    tokens = re.findall(r"[A-Za-z0-9_]+", text.lower())
-    stop = {
-        "yang", "dan", "di", "ke", "dari", "ini", "itu", "untuk", "dengan",
-        "pada", "adalah", "akan", "tidak", "the", "and", "of", "to", "in",
-        "a", "is", "for", "on", "with", "as", "at", "by", "or", "an",
-        "tool_call", "tool",
-    }
-    content_tokens = [t for t in tokens if t not in stop and len(t) > 1]
-    if content_tokens:
-        from collections import Counter
-        token_counts = Counter(content_tokens)
-        most_token, token_n = token_counts.most_common(1)[0]
-        if token_n >= 3:
-            return f"kata {token_n}x: {most_token!r}"
-
-    return ""
+    most_line, line_n = _longest_line_run(text)
+    if line_n < 2:
+        return ""
+    return f"baris {line_n}x: {most_line[:max_sample]!r}"
 
 
-def _detect_repetition(text: str, strict: bool = True) -> bool:
-    """Deteksi pola repetisi/degenerasi di dalam satu respon.
+def _detect_repetition(text: str) -> bool:
+    """Deteksi degenerate loop: baris sama berulang >= REPEAT_MAX_OCCUR.
 
-    Mengembalikan True kalau teks yang sudah terkumpul menunjukkan tanda
-    loop: simbol separator/fence/tabel yang bertumpuk berurutan tanpa
-    konten, ATAU baris yang sama muncul minimal REPEAT_MAX_OCCUR kali,
-    ATAU diversity n-gram (rasio unik) turun di bawah ambang.
-
-    ``strict`` membedakan dua konteks pemakaian:
-    - ``strict=True`` (default): untuk jawaban asli (content). Model tidak
-      seharusnya menulis ulang kalimat yang identik berkali-kali, jadi
-      ambang line-repeat ketat (REPEAT_MAX_OCCUR).
-    - ``strict=False``: untuk reasoning (chain of thought). Model secara
-      natural menulis ulang rencana/konsep yang sama sebagai bagian normal
-      berpikir, sehingga ambang line-repeat dilonggarkan
-      (REPEAT_MAX_OCCUR_REASONING) untuk menekan false positive.
-
-    Arsitektur (hasil penyederhanaan): hanya memakai
-    - run-detection (separator / fence / table-row) yang bertumpuk,
-    - line-repeat,
-    - diversity check (rolling n-gram stride 1 setelah normalisasi
-      whitespace).
-    Tahap unit-repeat dan multi-scale n-gram fuzzy dihapus karena terbukti
-    redundan: diversity check bebas asumsi alignment sudah menangkap semua
-    pola yang mereka tangani (interleaved, segmen non-aligned, unit overlap,
-    near-duplicate whitespace).
-
-    Setel GARWA_DEBUG_REPETITION=1 untuk logging diagnostik real-time ke
-    stderr setiap kali fungsi ini mencurigai adanya loop (termasuk yang
-    akhirnya diputuskan false positive).
+    Satu sinyal saja (sengaja sesederhana mungkin): baris non-kosong yang
+    persis sama muncul minimal REPEAT_MAX_OCCUR kali SECARA BERTURUT-TURUT.
+    Lihat _longest_line_run untuk alasan memakai run, bukan total kemunculan.
     """
-    _dbg = os.environ.get("GARWA_DEBUG_REPETITION") == "1"
+    if not text:
+        return False
 
-    # ------------------------------------------------------------------
-    # 0. Separator detection: simbol berulang seperti ---, ===, ***, ...
-    #    HANYA dianggap loop jika separator muncul BERURUTAN (bertumpuk
-    #    tanpa konten di antaranya). Markdown normal sering memakai 3-5
-    #    horizontal rules (---) yang TERSebar di antara section untuk
-    #    memisahkan bagian -- itu bukan loop dan tidak boleh ditandai.
-    #    Loop degenerate justru menghasilkan banyak separator berturut-
-    #    turut (mis. "---\n---\n---\n...").
-    # ------------------------------------------------------------------
-    separator_pattern = re.compile(
-        r'^[\s]*([\-=_*#~+]{2,})[\s]*$',
-    )
-    separator_run = 0
-    max_separator_run = 0
-    for ln in text.split("\n"):
-        if separator_pattern.match(ln):
-            separator_run += 1
-            if separator_run > max_separator_run:
-                max_separator_run = separator_run
-        elif ln.strip() == "":
-            # Baris kosong tidak memutus run: dalam loop degenerate
-            # separator sering dipisah baris kosong ("---\n\n---\n\n---").
-            continue
-        else:
-            # Baris berisi konten memutus run (markdown normal).
-            separator_run = 0
-    if max_separator_run >= state.SEPARATOR_REPEAT_THRESHOLD:
-        if _dbg:
-            _warn_repetition(
-                "SEPARATOR-REPEAT",
-                f"simbol separator muncul {max_separator_run}x berurutan (threshold={state.SEPARATOR_REPEAT_THRESHOLD})",
-                text[:200],
-            )
-        return True
-
-    # ------------------------------------------------------------------
-    # 0b. Fence-run detection: fence markdown (```, ```python, ~~~, ...)
-    #     yang muncul BERURUTAN tanpa konten di antaranya adalah loop
-    #     degenerate (mirip separator bertumpuk). Fence yang TERSebar di
-    #     antara konten adalah markdown sah (banyak blok kode pendek) dan
-    #     TIDAK ditandai di sini.
-    # ------------------------------------------------------------------
-    fence_pattern = re.compile(r'^[\s]*`{3,}[\w+\-.]*[\s]*$|^[\s]*~{3,}[\w+\-.]*[\s]*$')
-    # Baris yang hanya berisi karakter struktural (kurung kurawal/siku/paren,
-    # koma, titik-koma) adalah sintaks JSON/kode yang sah. Dalam blok JSON
-    # bersarang, penutup objek "}" bisa muncul berkali-kali di antara konten
-    # yang valid -- itu BUKAN loop degenerate. Menghitungnya sebagai
-    # LINE-REPEAT memicu false positive saat model sah menulis contoh JSON
-    # atau kode dengan banyak kurung penutup bertingkat.
-    structural_pattern = re.compile(r'^[\s]*[\[\]{}();,]+[\s]*$')
-    # Baris tabel markdown (dimulai & diakhiri pipe "|") adalah struktur
-    # markdown SAH yang sering muncul identik di banyak tabel berbeda
-    # (mis. header "| Tool | Fungsi |" di setiap tabel). Menghitungnya
-    # sebagai LINE-REPEAT memicu false positive saat model sah menyusun
-    # beberapa tabel dengan header kolom yang sama. Loop degenerate yang
-    # benar-benar mengulang baris tabel tetap tertangkap oleh tahap 3
-    # (n-gram) dan tahap 4 (diversity check).
-    table_row_pattern = re.compile(r'^\s*\|.*\|\s*$')
-    fence_run = 0
-    max_fence_run = 0
-    for ln in text.split("\n"):
-        if fence_pattern.match(ln):
-            fence_run += 1
-            if fence_run > max_fence_run:
-                max_fence_run = fence_run
-        elif ln.strip() == "":
-            continue  # baris kosong tidak memutus run
-        else:
-            fence_run = 0  # konten memutus run
-    if max_fence_run >= state.SEPARATOR_REPEAT_THRESHOLD:
-        if _dbg:
-            _warn_repetition(
-                "FENCE-REPEAT",
-                f"fence markdown muncul {max_fence_run}x berurutan (threshold={state.SEPARATOR_REPEAT_THRESHOLD})",
-                text[:200],
-            )
-        return True
-
-    # ------------------------------------------------------------------
-    # 0c. Table-row-run detection: baris tabel markdown ("| ... |") yang
-    #     IDENTIK muncul BERURUTAN tanpa konten lain di antaranya adalah
-    #     loop degenerate (mis. model macet mengulang "| Tool | Fungsi |").
-    #     Header tabel yang TERSebar di banyak tabel berbeda (konten di
-    #     antara) adalah markdown SAH dan tidak ditandai di sini -- itu
-    #     ditangani oleh pengecualian table_row di tahap LINE-REPEAT.
-    # ------------------------------------------------------------------
-    table_run = 0
-    max_table_run = 0
-    prev_table_row = None
-    for ln in text.split("\n"):
-        stripped = ln.strip()
-        if table_row_pattern.match(stripped):
-            if stripped == prev_table_row:
-                table_run += 1
-            else:
-                table_run = 1
-                prev_table_row = stripped
-            if table_run > max_table_run:
-                max_table_run = table_run
-        elif stripped == "":
-            continue  # baris kosong tidak memutus run
-        else:
-            table_run = 0
-            prev_table_row = None
-    if max_table_run >= state.SEPARATOR_REPEAT_THRESHOLD:
-        if _dbg:
-            _warn_repetition(
-                "TABLE-ROW-REPEAT",
-                f"baris tabel identik muncul {max_table_run}x berurutan (threshold={state.SEPARATOR_REPEAT_THRESHOLD})",
-                text[:200],
-            )
-        return True
-
-    # ------------------------------------------------------------------
-    # 1. Line-repeat: baris yang sama muncul >= threshold kali.
-    #    Baris pendek (1-2 karakter) yang berupa simbol repetitif tetap
-    #    diperiksa; hanya baris kosong yang diabaikan.
-    #    Ambang bergantung pada `strict`: content ketat (REPEAT_MAX_OCCUR),
-    #    reasoning longgar (REPEAT_MAX_OCCUR_REASONING).
-    # ------------------------------------------------------------------
-    line_repeat_threshold = (
-        state.REPEAT_MAX_OCCUR if strict else state.REPEAT_MAX_OCCUR_REASONING
-    )
-    # fence_pattern sudah didefinisikan di bagian 0b.
-    lines = [ln.strip() for ln in text.split("\n")]
-    # Filter: abaikan baris yang benar-benar kosong setelah strip
-    non_empty_lines = [ln for ln in lines if ln]
-    if non_empty_lines:
-        line_counts: dict = {}
-        for ln in non_empty_lines:
-            # Baris yang hanya berisi simbol separator (---, ===, ***, ...)
-            # TIDAK dihitung di sini: separator bertumpuk sudah ditangani
-            # oleh separator-run detection di bagian 0, sedangkan separator
-            # yang TERSebar di antara konten adalah markdown normal (bukan
-            # loop) dan tidak boleh memicu LINE-REPEAT.
-            if separator_pattern.match(ln):
-                continue
-            # Fence markdown yang TERSebar di antara konten juga bukan loop
-            # (sama seperti separator). Fence bertumpuk tanpa konten tetap
-            # ditangkap oleh separator-run / diversity check.
-            if fence_pattern.match(ln):
-                continue
-            # Baris yang hanya berisi karakter struktural (}, ], ), {, [, ;, ,)
-            # adalah sintaks JSON/kode yang sah. Dalam blok JSON bersarang,
-            # penutup objek "}" bisa muncul berkali-kali -- bukan loop.
-            if structural_pattern.match(ln):
-                continue
-            # Baris tabel markdown ("| ... |") yang identik muncul di banyak
-            # tabel berbeda adalah struktur SAH (header kolom yang sama),
-            # bukan loop degenerate. Pengecualian di sini hanya menonaktifkan
-            # LINE-REPEAT untuk baris tabel; repetisi tabel yang SEBENARNYA
-            # tetap tertangkap oleh tahap 3 (n-gram) & tahap 4 (diversity).
-            if table_row_pattern.match(ln):
-                continue
-            # Delimiter tool_call (<tool_call>, </tool_call>) SELALU muncul
-            # di setiap tool_call, jadi bukan indikasi repetisi. Menghitungnya
-            # sebagai LINE-REPEAT memicu false positive saat model sah
-            # mengirim beberapa tool_call berbeda (mis. read_file beberapa
-            # file/baris). Repetisi tool_call yang SEBENARNYA (nama+argumen
-            # identik) ditangkap oleh _find_repeated_text / _loop_similarity.
-            if ln in ("<tool_call>", "</tool_call>"):
-                continue
-            line_counts[ln] = line_counts.get(ln, 0) + 1
-            if line_counts[ln] >= line_repeat_threshold:
-                if _dbg:
-                    _warn_repetition(
-                        "LINE-REPEAT",
-                        f"baris muncul {line_counts[ln]}x "
-                        f"(threshold={line_repeat_threshold}, strict={strict})",
-                        ln[:200],
-                    )
-                return True
-
-    # ------------------------------------------------------------------
-    # 2. Diversity check: rasio n-gram unik terhadap total n-gram.
-    #    Line-repeat & run-detection bergantung pada blok yang aligned
-    #    dan/atau konsekutif, sehingga lolos untuk pola seperti:
-    #      - interleaved (A, B, A, B, A) -- counter reset tiap ketemu B
-    #      - segmen pendek non-aligned ("Hello world! " 13 char)
-    #      - unit overlap yang undercount karena str.find non-overlapping
-    #      - near-duplicate whitespace di posisi tidak aligned
-    #    Rolling window (stride 1) tidak punya asumsi alignment sama
-    #    sekali: kalau teks benar-benar bervariasi, hampir semua n-gram
-    #    unik. Normalisasi whitespace lebih dulu supaya variasi spasi
-    #    tidak menyamarkan repetisi.
-    # ------------------------------------------------------------------
-    text_ws = _normalize_ws(text)
-    window = state.REPEAT_DIVERSITY_WINDOW
-    if len(text_ws) >= max(state.REPEAT_DIVERSITY_MIN_LEN, window + 5):
-        grams = [
-            text_ws[i:i + window]
-            for i in range(len(text_ws) - window + 1)
-        ]
-        if grams:
-            diversity = len(set(grams)) / len(grams)
-            diversity_threshold = (
-                state.REPEAT_DIVERSITY_THRESHOLD
-                if strict
-                else state.REPEAT_DIVERSITY_THRESHOLD_REASONING
-            )
-            if diversity < diversity_threshold:
-                if _dbg:
-                    _warn_repetition(
-                        "LOW-DIVERSITY",
-                        f"rasio n-gram unik {diversity:.3f} < threshold "
-                        f"{diversity_threshold} "
-                        f"(window={window}, total={len(grams)}, strict={strict})",
-                        text_ws[-200:],
-                    )
-                return True
-
-    return False
+    _, line_n = _longest_line_run(text)
+    return line_n >= state.REPEAT_MAX_OCCUR
 
 
 def _terminal_width(text: str) -> int:

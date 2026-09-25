@@ -16,11 +16,10 @@ except ImportError:
 from .. import context_manager
 from .. import db as dbmod
 from . import _state as state
-from .agent_config import AgentConfig
 from .agent_config import coerce_agent_config
 from .colors import C
 from .colors import c
-from .json_repair import extract_tool_call
+from .json_repair import extract_tool_call, extract_tool_calls, strip_tool_call_blocks
 from .llm_client import call_llama_server
 from .ndjson import emit as ndjson_emit
 from .llm_errors import ContextExceededError
@@ -32,6 +31,7 @@ from .spinner import Spinner
 from .system_warning import strip_system_warnings
 from .text_utils import _find_repeated_text
 from .text_utils import _loop_similarity
+from .todo_coalesce import coalesce_todo_writes_verbose
 from .tool_exec import _tool_may_prompt
 from .tool_exec import execute_tool
 from .tool_schema import _convert_alt_tool_call_syntax
@@ -273,6 +273,35 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                 C.YELLOW,
             ))
             time.sleep(state.LOOP_BREAK_COOLDOWN_SECONDS)
+
+            # PENTING: suntikkan koreksi ke percakapan. Tanpa ini percobaan
+            # berikutnya mengirim konteks yang IDENTIK, sehingga model pasti
+            # mengulang pola yang sama -> semua retry (dan giliran) berakhir
+            # sia-sia. Jalur TruncatedGenerationError di bawah sudah melakukan
+            # hal yang sama untuk truncasi; jalur loop sebelumnya TIDAK.
+            _rep_detail = str(e.args[0]) if e.args else ""
+            dbmod.add_message(
+                args.db_path,
+                session_id,
+                "user",
+                "<tool_result>\n"
+                "[LOOP] Respon Anda (model) SEBELUMNYA terdeteksi "
+                "mengulang baris/kalimat yang sama berkali-kali "
+                "(degenerate loop) sehingga stream dihentikan paksa sebelum "
+                "jawaban akhir atau tool_call keluar"
+                + (f". Detail: {_rep_detail}" if _rep_detail else "")
+                + ". Pada percobaan berikutnya: JANGAN mengulang teks/baris "
+                "yang sama. Lanjutkan langsung ke inti -- tulis tool_call "
+                "atau jawaban akhir yang ringkas, tanpa menyalin ulang "
+                "template/contoh atau blok yang sudah Anda tulis.\n"
+                "</tool_result>",
+                kind="tool_result",
+            )
+            last_visible = (
+                "[LOOP] Respon model terdeteksi mengulang teks yang sama "
+                "(degenerate loop); stream dihentikan dan percobaan diulang "
+                "dengan instruksi koreksi."
+            )
             continue
         except TruncatedGenerationError as e:
 
@@ -473,10 +502,14 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
             kind="chat",
         )
 
+        # Hapus blok tool_call dari teks yang ditampilkan memakai matcher yang
+        # SAMA dengan extract_tool_calls (brace-matcher berimbang), sehingga
+        # blok yang dieksekusi persis blok yang disembunyikan — tidak lebih,
+        # tidak kurang. Ini menutup kebocoran sisa tag/sintaks alt yang gagal
+        # dikonversi (sebelumnya TOOL_CALL_RE.sub hanya menghapus `{...}`-nya,
+        # menyisakan `<tool_call>`/`</tool_call>` mentah).
         visible_text = strip_system_warnings(
-            strip_reasoning_tags(
-                state.TOOL_CALL_RE.sub("", assistant_text)
-            )
+            strip_reasoning_tags(strip_tool_call_blocks(assistant_text))
         ).strip()
         if visible_text:
             last_visible = visible_text
@@ -485,341 +518,110 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
         if args.no_stream and visible_text:
             _render_markdown_once(visible_text)
 
-        name, arguments = extract_tool_call(assistant_text)
+        # P0: ekstrak SEMUA blok tool_call (bukan hanya yang pertama). Sebelum
+        # perbaikan, blok ke-2..n dibuang oleh extract_tool_call (regex .search)
+        # dan TOOL_CALL_RE.sub, sehingga todo_write (FULL REPLACE) menyimpan
+        # state parsial.
+        tool_calls = extract_tool_calls(assistant_text)
 
-        if name is None:
+        if not tool_calls:
+            # Kompatibilitas kontrak lama: pemanggil yang memonkeypatch
+            # `extract_tool_call` dengan `fake_extract(text) -> (name, args)`
+            # (lihat tests/test_cli_utils.py TestTurnSummary) tetap dihormati.
+            # Dalam produksi `extract_tool_call` adalah fungsi asli yang
+            # mengembalikan (None, None) saat tidak ada blok valid, jadi
+            # fallback ini tidak mengubah perilaku normal — hanya menutup
+            # jalur test/plugin yang meng-override fungsi lama.
+            _legacy_call = extract_tool_call(assistant_text)
+            if _legacy_call != (None, None):
+                tool_calls = [_legacy_call]
+
+        if not tool_calls:
+            # P0: jangan berhenti senyap. Emit pesan eksplisit sebelum summary
+            # agar user/model tahu giliran berhenti karena TIDAK ADA tool_call
+            # valid (bukan karena batas iterasi atau crash tersembunyi).
+            print(c(
+                "  [STOP] Tidak ada tool_call valid dalam respon model.",
+                C.RED,
+            ))
             _emit_summary()
             return last_visible
 
-        if name == "PARSE_ERROR":
-            error_msg = (
-                f"[ERROR] tool_call JSON tidak valid: {arguments}. "
-                "Perbaiki format JSON dan coba lagi."
-            )
-            print(c(f"  {error_msg}", C.RED))
+        # P0: `todo_write` = FULL REPLACE per workdir. Kalau model memecah daftar
+        # todo ke beberapa blok dalam satu giliran, eksekusi berurutan membuat
+        # blok terakhir menimpa sebelumnya -> todo tersimpan PARSIAL. Gabung dulu.
+        tool_calls = coalesce_todo_writes_verbose(tool_calls)
 
-            # Track PARSE_ERROR di history yang sama dengan error tool biasa,
-            # supaya model yang terus-menerus menghasilkan JSON tidak valid
-            # (mis. placeholder '...') ikut terdeteksi sebagai loop dan bisa
-            # dipaksa berhenti, bukan loop tak berujung tanpa intervensi.
-            _parse_fp = f"PARSE_ERROR::{arguments.strip()}"
-            _error_history.append(_parse_fp)
-            if len(_error_history) > state.ERROR_REPEAT_WINDOW:
-                _error_history.pop(0)
-            _parse_repeat_count = _error_history.count(_parse_fp)
-            _is_parse_loop = _parse_repeat_count >= state.ERROR_REPEAT_THRESHOLD
+        for name, arguments in tool_calls:
 
-            if _is_parse_loop and _error_interventions < 1:
-                _error_interventions += 1
-                print(c(
-                    f"  [ERROR-LOOP] Model mengulang tool_call JSON yang "
-                    f"tidak valid ({_parse_repeat_count}x dalam "
-                    f"{state.ERROR_REPEAT_WINDOW} iterasi terakhir). "
-                    f"Menyuntikkan peringatan tegas agar model memperbaiki "
-                    f"format JSON-nya..."
-                    + (f"\n  ulang: {_shorten(arguments)}" if arguments else ""),
-                    C.YELLOW,
-                ))
-                tool_result_msg = (
-                    "<tool_result>\n"
-                    "[ERROR-LOOP-DETECTED] PERINGATAN TEGAS: Anda (model) "
-                    "berulang kali menghasilkan tool_call dengan JSON yang "
-                    "TIDAK VALID (format sama/serupa) tanpa pernah "
-                    "memperbaikinya.\n"
-                    + (f"JSON YANG GAGAL: {_shorten(arguments)}\n" if arguments else "")
-                    + "\n"
-                    "INSTRUKSI WAJIB:\n"
-                    "1. BERHENTI mengulang tool_call dengan format yang sama.\n"
-                    "2. Periksa pesan error di atas dengan saksama dan "
-                    "PERBAIKI format JSON Anda secara fundamental (jangan "
-                    "sekadar mengirim ulang hal yang sama).\n"
-                    "3. Kalau Anda menulis '...' (ellipsis) sebagai "
-                    "placeholder, ganti dengan field lengkap yang valid.\n"
-                    "4. Kalau sudah tidak ada cara yang benar, BERHENTI dan "
-                    "berikan jawaban akhir yang jujur.\n"
-                    "\n"
-                    "Mengulang JSON tidak valid yang sama lagi akan "
-                    "dianggap kegagalan dan giliran ini dihentikan paksa.\n"
-                    "</tool_result>"
+            if name == "PARSE_ERROR":
+                error_msg = (
+                    f"[ERROR] tool_call JSON tidak valid: {arguments}. "
+                    "Perbaiki format JSON dan coba lagi."
                 )
-                dbmod.add_message(
-                    args.db_path,
-                    session_id,
-                    "user",
-                    tool_result_msg,
-                    kind="tool_result",
-                )
-                continue
+                print(c(f"  {error_msg}", C.RED))
 
-            if _is_parse_loop:
-                print(c(
-                    f"  [ERROR-LOOP] Model masih mengulang tool_call JSON "
-                    f"yang tidak valid ({_parse_repeat_count}x dalam "
-                    f"{state.ERROR_REPEAT_WINDOW} iterasi terakhir) meski "
-                    f"sudah diperingatkan. Menghentikan giliran ini untuk "
-                    f"mencegah loop tak berujung."
-                    + (f"\n  ulang: {_shorten(arguments)}" if arguments else ""),
-                    C.RED,
-                ))
-                print(c(
-                    f"  [ERROR-LOOP] Menunggu {state.LOOP_BREAK_COOLDOWN_SECONDS} "
-                    f"detik sebelum melanjutkan proses terakhir...",
-                    C.DIM,
-                ))
-                time.sleep(state.LOOP_BREAK_COOLDOWN_SECONDS)
-                _emit_summary()
-                return last_visible
+                # Track PARSE_ERROR di history yang sama dengan error tool biasa,
+                # supaya model yang terus-menerus menghasilkan JSON tidak valid
+                # (mis. placeholder '...') ikut terdeteksi sebagai loop dan bisa
+                # dipaksa berhenti, bukan loop tak berujung tanpa intervensi.
+                _parse_fp = f"PARSE_ERROR::{arguments.strip()}"
+                _error_history.append(_parse_fp)
+                if len(_error_history) > state.ERROR_REPEAT_WINDOW:
+                    _error_history.pop(0)
+                _parse_repeat_count = _error_history.count(_parse_fp)
+                _is_parse_loop = _parse_repeat_count >= state.ERROR_REPEAT_THRESHOLD
 
-            tool_result_msg = (
-                "<tool_result>\n"
-                f"[ERROR] tool_call JSON tidak valid: {arguments}.\n"
-                "\n"
-                "INSTRUKSI TEGAS: JANGAN mengulang tool_call yang sama "
-                "persis dengan yang baru saja gagal di-parse. Periksa "
-                "kembali format JSON Anda -- pastikan sintaksnya valid "
-                "(tanda kutip ganda, koma, kurung kurawal seimbang) -- "
-                "lalu kirim tool_call yang BENAR dan BERBEDA. Kalau Anda "
-                "terus mengulang tool_call yang sama, giliran ini akan "
-                "dihentikan paksa.\n"
-                "</tool_result>"
-            )
-            dbmod.add_message(
-                args.db_path,
-                session_id,
-                "user",
-                tool_result_msg,
-                kind="tool_result",
-            )
-            continue
-
-        _tool_call_seq += 1
-        state._tool_call_index.set(_tool_call_seq)
-        ndjson_emit("tool_call", name=name, arguments=arguments)
-
-        # --- Plan mode: blokir tool yang mengubah file/sistem (layer 2) ---
-        # Kalau model tetap memanggil tool yang diblokir (mis. payload di-cache
-        # atau model menyimpang), tolak eksekusi dan kembalikan pesan error
-        # sebagai tool_result supaya model tahu sedang di plan mode.
-        if state.get_mode() == "plan":
-            from .plan_mode import is_tool_blocked_in_plan_mode, format_plan_blocked_tool_error
-            if is_tool_blocked_in_plan_mode(name):
-                print(c(
-                    f"  ⛔ {name} diblokir di PLAN MODE (tool mengubah file/sistem).",
-                    C.YELLOW,
-                ))
-                dbmod.add_message(
-                    args.db_path,
-                    session_id,
-                    "user",
-                    format_plan_blocked_tool_error(name),
-                    kind="tool_result",
-                )
-                continue
-
-        _t0 = time.monotonic()
-
-        # --- Hooks: PreToolUse (tool_call) ---
-        # Jalankan skrip hook sebelum tool dieksekusi. Hook bisa cancel
-        # (hentikan tool), minta review (konfirmasi user), atau override
-        # argumen tool (overrideInput). Best-effort: kalau tidak ada hook,
-        # HookControl() kosong dan eksekusi berjalan normal.
-        _hook = None
-        try:
-            from ..hooks import HookControl as _HC
-            from ..hooks import build_payload
-            from ..hooks import run_hooks
-            _hook = run_hooks(
-                "tool_call",
-                build_payload(
-                    event="tool_call",
-                    tool_name=name,
-                    tool_input=arguments,
-                    session_id=session_id,
-                ),
-                workdir=args.workdir,
-            )
-        except Exception:  # noqa: BLE001 - hook opsional, jangan gagalkan giliran
-            _hook = None
-        if _hook is None:
-            from ..hooks import HookControl as _HC
-            _hook = _HC()
-
-        if _hook.cancel:
-            _reason = _hook.cancelReason or "dibatalkan oleh hook"
-            print(c(f"  ⛔ {name} dibatalkan oleh PreToolUse hook: {_reason}", C.YELLOW))
-            dbmod.add_message(
-                args.db_path,
-                session_id,
-                "user",
-                f"<tool_result>\n[HOOK-CANCEL] Tool `{name}` dibatalkan oleh PreToolUse hook: {_reason}\n</tool_result>",
-                kind="tool_result",
-            )
-            continue
-
-        # overrideInput: ganti argumen tool sebelum dieksekusi.
-        if _hook.overrideInput is not None:
-            arguments = _hook.overrideInput
-            print(c(f"  ↻ {name} argumen di-override oleh hook.", C.DIM))
-
-        # review: minta konfirmasi user sebelum tool yang mengubah file.
-        if _hook.review and not args.auto_approve:
-            print(c(
-                f"  🔍 {name} diminta review oleh hook. "
-                f"Ketik 'y' untuk lanjut, lainnya untuk batal.",
-                C.BOLD_YELLOW,
-            ))
-            try:
-                _ans = input("  review ❯ ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                _ans = ""
-            if _ans != "y":
-                print(c(f"  ⛔ {name} dibatalkan oleh user (review hook).", C.YELLOW))
-                dbmod.add_message(
-                    args.db_path,
-                    session_id,
-                    "user",
-                    f"<tool_result>\n[HOOK-REVIEW] Tool `{name}` dibatalkan oleh user saat review hook.\n</tool_result>",
-                    kind="tool_result",
-                )
-                continue
-
-        # Nyalakan spinner HANYA kalau tool ini tidak berpotensi memunculkan
-        # prompt konfirmasi ke stdin. Meskipun auto_approve aktif, beberapa
-        # tool TETAP meminta konfirmasi (path eksternal saat sandbox aktif,
-        # bash berbahaya/"force"). Kalau spinner menyala saat prompt muncul,
-        # karakter spinner menimpa prompt sehingga user tidak melihatnya.
-        if not _tool_may_prompt(name, arguments, args.auto_approve):
-            with Spinner(f"menjalankan {name}"):
-                result = execute_tool(name, arguments, args.auto_approve)
-        else:
-            result = execute_tool(name, arguments, args.auto_approve)
-        _elapsed = time.monotonic() - _t0
-
-        # --- Hooks: PostToolUse (tool_result) ---
-        # Jalankan skrip hook setelah tool dieksekusi. Hook bisa cancel
-        # (mengganti hasil jadi error) atau menambah konteks (context) yang
-        # disuntikkan ke pesan berikutnya. Best-effort.
-        try:
-            from ..hooks import build_payload
-            from ..hooks import run_hooks
-            _post_hook = run_hooks(
-                "tool_result",
-                build_payload(
-                    event="tool_result",
-                    tool_name=name,
-                    tool_input=arguments,
-                    tool_output=result,
-                    is_error=_is_error,
-                    session_id=session_id,
-                ),
-                workdir=args.workdir,
-            )
-        except Exception:  # noqa: BLE001 - hook opsional
-            _post_hook = None
-
-        if _post_hook is not None and _post_hook.cancel:
-            _reason = _post_hook.cancelReason or "dibatalkan oleh PostToolUse hook"
-            print(c(f"  ⛔ {name} hasil dibatalkan oleh PostToolUse hook: {_reason}", C.YELLOW))
-            result = f"[ERROR] {_reason}"
-            _is_error = True
-        elif _post_hook is not None and _post_hook.context:
-            # Suntikkan konteks tambahan dari hook ke tool_result.
-            result = f"{result}\n\n[HOOK-CONTEXT] {_post_hook.context}"
-        _is_error = result.strip().startswith("[ERROR]") or result.strip().startswith("[DITOLAK]")
-        _icon = "✗" if _is_error else "✓"
-        _status_color = C.BOLD_RED if _is_error else C.BOLD_GREEN
-        print(c(
-            f"  {_icon} {name} ({_elapsed:.2f}s)",
-            _status_color,
-        ))
-        print(c("  ← hasil:", C.MAGENTA))
-        preview = result if len(result) < 1500 else result[:1500] + "\n...(dipotong)"
-        print(c(preview, C.DIM))
-
-        _is_error = result.strip().startswith("[ERROR]") or result.strip().startswith("[DITOLAK]")
-        ndjson_emit("tool_result", name=name, ok=not _is_error, result=result)
-        if _is_error:
-            _error_count += 1
-
-            try:
-                _arg_fp = json.dumps(arguments, sort_keys=True, ensure_ascii=False)
-            except (TypeError, ValueError):
-                _arg_fp = repr(arguments)
-            _error_fp = f"{name}::{_arg_fp}::{result.strip()}"
-            _error_history.append(_error_fp)
-            if len(_error_history) > state.ERROR_REPEAT_WINDOW:
-                _error_history.pop(0)
-
-            _error_repeat_count = _error_history.count(_error_fp)
-            _is_error_loop = _error_repeat_count >= state.ERROR_REPEAT_THRESHOLD
-
-            if _is_error_loop:
-                _err_detail = f"{name} {_shorten(_arg_fp)}"
-                if _error_interventions < 1:
-
+                if _is_parse_loop and _error_interventions < 1:
                     _error_interventions += 1
                     print(c(
-                        f"  [ERROR-LOOP] Model mengulang tool_call yang "
-                        f"menghasilkan error yang sama "
-                        f"({_error_repeat_count}x dalam {state.ERROR_REPEAT_WINDOW} "
-                        f"iterasi terakhir). Menyuntikkan peringatan tegas "
-                        f"agar model berhenti mengulang dan mengambil "
-                        f"langkah baru..."
-                        + (f"\n  ulang: {_err_detail}" if _err_detail else ""),
+                        f"  [ERROR-LOOP] Model mengulang tool_call JSON yang "
+                        f"tidak valid ({_parse_repeat_count}x dalam "
+                        f"{state.ERROR_REPEAT_WINDOW} iterasi terakhir). "
+                        f"Menyuntikkan peringatan tegas agar model memperbaiki "
+                        f"format JSON-nya..."
+                        + (f"\n  ulang: {_shorten(arguments)}" if arguments else ""),
                         C.YELLOW,
                     ))
-                    error_loop_warning = (
+                    tool_result_msg = (
                         "<tool_result>\n"
                         "[ERROR-LOOP-DETECTED] PERINGATAN TEGAS: Anda (model) "
-                        "baru saja memanggil tool yang sama dengan argumen "
-                        "yang sama (atau hampir sama) beberapa kali "
-                        "berturut-turut, dan SETIAP KALI mendapat ERROR yang "
-                        "sama persis -- tanpa pernah maju. Ini indikasi "
-                        "jelas Anda terjebak dalam loop yang tidak "
-                        "produktif.\n"
-                        + (f"TOOL_CALL YANG DIULANG: {_err_detail}\n" if _err_detail else "")
+                        "berulang kali menghasilkan tool_call dengan JSON yang "
+                        "TIDAK VALID (format sama/serupa) tanpa pernah "
+                        "memperbaikinya.\n"
+                        + (f"JSON YANG GAGAL: {_shorten(arguments)}\n" if arguments else "")
                         + "\n"
-                        "INSTRUKSI WAJIB -- JANGAN ULANGI RESPON YANG SAMA:\n"
-                        "1. BERHENTI SEKARANG juga memanggil tool yang sama "
-                        "dengan argumen yang sama persis seperti yang baru "
-                        "saja gagal.\n"
-                        "2. JANGAN mengulang tool_call yang identik dengan "
-                        "yang sudah Anda kirim sebelumnya.\n"
-                        "3. Ambil langkah BARU yang berbeda dari semua "
-                        "langkah sebelumnya: periksa ulang pesan error "
-                        "terakhir dengan saksama, pahami AKAR MASALAHNYA, "
-                        "lalu perbaiki argumen/strategi Anda secara "
-                        "fundamental -- jangan sekadar mengirim ulang hal "
-                        "yang sama.\n"
-                        "4. Kalau semua langkah yang masuk akal sudah "
-                        "dicoba dan tidak ada yang berhasil, BERHENTI "
-                        "mencoba dan berikan jawaban akhir yang jujur "
-                        "tentang apa yang sudah dikerjakan dan apa yang "
-                        "gagal.\n"
+                        "INSTRUKSI WAJIB:\n"
+                        "1. BERHENTI mengulang tool_call dengan format yang sama.\n"
+                        "2. Periksa pesan error di atas dengan saksama dan "
+                        "PERBAIKI format JSON Anda secara fundamental (jangan "
+                        "sekadar mengirim ulang hal yang sama).\n"
+                        "3. Kalau Anda menulis '...' (ellipsis) sebagai "
+                        "placeholder, ganti dengan field lengkap yang valid.\n"
+                        "4. Kalau sudah tidak ada cara yang benar, BERHENTI dan "
+                        "berikan jawaban akhir yang jujur.\n"
                         "\n"
-                        "Mengulang tool_call yang sama lagi akan dianggap "
-                        "sebagai kegagalan dan giliran ini akan dihentikan "
-                        "paksa.\n"
+                        "Mengulang JSON tidak valid yang sama lagi akan "
+                        "dianggap kegagalan dan giliran ini dihentikan paksa.\n"
                         "</tool_result>"
                     )
                     dbmod.add_message(
                         args.db_path,
                         session_id,
                         "user",
-                        error_loop_warning,
+                        tool_result_msg,
                         kind="tool_result",
                     )
                     continue
-                else:
 
+                if _is_parse_loop:
                     print(c(
-                        f"  [ERROR-LOOP] Model masih mengulang tool_call "
-                        f"yang menghasilkan error yang sama "
-                        f"({_error_repeat_count}x dalam {state.ERROR_REPEAT_WINDOW} "
-                        f"iterasi terakhir) meski sudah diperingatkan. "
-                        f"Menghentikan giliran ini untuk mencegah loop tak "
-                        f"berujung."
-                        + (f"\n  ulang: {_err_detail}" if _err_detail else ""),
+                        f"  [ERROR-LOOP] Model masih mengulang tool_call JSON "
+                        f"yang tidak valid ({_parse_repeat_count}x dalam "
+                        f"{state.ERROR_REPEAT_WINDOW} iterasi terakhir) meski "
+                        f"sudah diperingatkan. Menghentikan giliran ini untuk "
+                        f"mencegah loop tak berujung."
+                        + (f"\n  ulang: {_shorten(arguments)}" if arguments else ""),
                         C.RED,
                     ))
                     print(c(
@@ -831,48 +633,313 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                     _emit_summary()
                     return last_visible
 
-        # P3 poor-man's LSP: kalau tool 'check'/'snippet' gagal dan hasilnya
-        # belum memuat snippet konteks AST, sisipkan otomatis supaya model
-        # langsung melihat kode bermasalah pada iterasi berikutnya. Guard
-        # '[snippet]' mencegah duplikasi (tool_check sendiri sudah menambahkannya).
-        if name in ("check", "snippet") and _is_error and "[snippet]" not in result:
+                tool_result_msg = (
+                    "<tool_result>\n"
+                    f"[ERROR] tool_call JSON tidak valid: {arguments}.\n"
+                    "\n"
+                    "INSTRUKSI TEGAS: JANGAN mengulang tool_call yang sama "
+                    "persis dengan yang baru saja gagal di-parse. Periksa "
+                    "kembali format JSON Anda -- pastikan sintaksnya valid "
+                    "(tanda kutip ganda, koma, kurung kurawal seimbang) -- "
+                    "lalu kirim tool_call yang BENAR dan BERBEDA. Kalau Anda "
+                    "terus mengulang tool_call yang sama, giliran ini akan "
+                    "dihentikan paksa.\n"
+                    "</tool_result>"
+                )
+                dbmod.add_message(
+                    args.db_path,
+                    session_id,
+                    "user",
+                    tool_result_msg,
+                    kind="tool_result",
+                )
+                continue
+
+            _tool_call_seq += 1
+            state._tool_call_index.set(_tool_call_seq)
+            ndjson_emit("tool_call", name=name, arguments=arguments)
+
+            # --- Plan mode: blokir tool yang mengubah file/sistem (layer 2) ---
+            # Kalau model tetap memanggil tool yang diblokir (mis. payload di-cache
+            # atau model menyimpang), tolak eksekusi dan kembalikan pesan error
+            # sebagai tool_result supaya model tahu sedang di plan mode.
+            if state.get_mode() == "plan":
+                from .plan_mode import is_tool_blocked_in_plan_mode, format_plan_blocked_tool_error
+                if is_tool_blocked_in_plan_mode(name):
+                    print(c(
+                        f"  ⛔ {name} diblokir di PLAN MODE (tool mengubah file/sistem).",
+                        C.YELLOW,
+                    ))
+                    dbmod.add_message(
+                        args.db_path,
+                        session_id,
+                        "user",
+                        format_plan_blocked_tool_error(name),
+                        kind="tool_result",
+                    )
+                    continue
+
+            _t0 = time.monotonic()
+
+            # --- Hooks: PreToolUse (tool_call) ---
+            # Jalankan skrip hook sebelum tool dieksekusi. Hook bisa cancel
+            # (hentikan tool), minta review (konfirmasi user), atau override
+            # argumen tool (overrideInput). Best-effort: kalau tidak ada hook,
+            # HookControl() kosong dan eksekusi berjalan normal.
+            _hook = None
             try:
-                from ..tools.compile_tools import snippet_for_position
-                m = re.search(r"^([^:\n]+):(\d+):", result, re.M)
-                if m:
-                    err_file = m.group(1)
-                    err_line = int(m.group(2))
-                    err_path = err_file if os.path.isabs(err_file) else os.path.join(state.WORKDIR, err_file)
-                    if os.path.isfile(err_path):
-                        result += "\n" + snippet_for_position(err_path, err_line)
-            except Exception:  # noqa: BLE001 — snippet tambahan tidak boleh crash loop
-                pass
+                from ..hooks import build_payload
+                from ..hooks import run_hooks
+                _hook = run_hooks(
+                    "tool_call",
+                    build_payload(
+                        event="tool_call",
+                        tool_name=name,
+                        tool_input=arguments,
+                        session_id=session_id,
+                    ),
+                    workdir=args.workdir,
+                )
+            except Exception:  # noqa: BLE001 - hook opsional, jangan gagalkan giliran
+                _hook = None
+            if _hook is None:
+                from ..hooks import HookControl as _HC
+                _hook = _HC()
 
-        tool_result_msg = f"<tool_result>\n{result}\n</tool_result>"
-        # Poin #5 rilis v0.5.0: simpan metadata tool call di kolom `meta`
-        # (JSON) untuk data training. `token_estimate` diperkirakan dari
-        # panjang string (kasar, ~4 char/token) karena token sungguhan hanya
-        # diketahui server pada request berikutnya.
-        _meta = {
-            "tool_name": name,
-            "args": arguments,
-            "is_error": _is_error,
-            "token_estimate": max(len(tool_result_msg) // 4, 1),
-        }
-        dbmod.add_message(
-            args.db_path,
-            session_id,
-            "user",
-            tool_result_msg,
-            kind="tool_result",
-            meta=_meta,
-        )
+            if _hook.cancel:
+                _reason = _hook.cancelReason or "dibatalkan oleh hook"
+                print(c(f"  ⛔ {name} dibatalkan oleh PreToolUse hook: {_reason}", C.YELLOW))
+                dbmod.add_message(
+                    args.db_path,
+                    session_id,
+                    "user",
+                    f"<tool_result>\n[HOOK-CANCEL] Tool `{name}` dibatalkan oleh PreToolUse hook: {_reason}\n</tool_result>",
+                    kind="tool_result",
+                )
+                continue
 
-        # Pacing antar request: jeda singkat setelah setiap tool call sukses
-        # sebelum iterasi berikutnya memicu request model lagi. Mencegah
-        # deretan tool_call cepat (bash/read_file/grep) membanjiri proxy
-        # publik dan memicu rate limit HTTP 429 (lihat TOOL_CALL_PACING_SECONDS).
-        time.sleep(state.TOOL_CALL_PACING_SECONDS)
+            # overrideInput: ganti argumen tool sebelum dieksekusi.
+            if _hook.overrideInput is not None:
+                arguments = _hook.overrideInput
+                print(c(f"  ↻ {name} argumen di-override oleh hook.", C.DIM))
+
+            # review: minta konfirmasi user sebelum tool yang mengubah file.
+            if _hook.review and not args.auto_approve:
+                print(c(
+                    f"  🔍 {name} diminta review oleh hook. "
+                    f"Ketik 'y' untuk lanjut, lainnya untuk batal.",
+                    C.BOLD_YELLOW,
+                ))
+                try:
+                    _ans = input("  review ❯ ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    _ans = ""
+                if _ans != "y":
+                    print(c(f"  ⛔ {name} dibatalkan oleh user (review hook).", C.YELLOW))
+                    dbmod.add_message(
+                        args.db_path,
+                        session_id,
+                        "user",
+                        f"<tool_result>\n[HOOK-REVIEW] Tool `{name}` dibatalkan oleh user saat review hook.\n</tool_result>",
+                        kind="tool_result",
+                    )
+                    continue
+
+            # Nyalakan spinner HANYA kalau tool ini tidak berpotensi memunculkan
+            # prompt konfirmasi ke stdin. Meskipun auto_approve aktif, beberapa
+            # tool TETAP meminta konfirmasi (path eksternal saat sandbox aktif,
+            # bash berbahaya/"force"). Kalau spinner menyala saat prompt muncul,
+            # karakter spinner menimpa prompt sehingga user tidak melihatnya.
+            if not _tool_may_prompt(name, arguments, args.auto_approve):
+                with Spinner(f"menjalankan {name}"):
+                    result = execute_tool(name, arguments, args.auto_approve)
+            else:
+                result = execute_tool(name, arguments, args.auto_approve)
+            _elapsed = time.monotonic() - _t0
+            # P1: hitung status error SEBELUM dipakai oleh hook PostToolUse di
+            # bawah. Sebelumnya _is_error baru di-assign setelah run_hooks,
+            # sehingga hook tool pertama tiap giliran melempar UnboundLocalError
+            # dan jalur PostToolUse dilewati.
+            _is_error = result.strip().startswith("[ERROR]") or result.strip().startswith("[DITOLAK]")
+
+            # --- Hooks: PostToolUse (tool_result) ---
+            # Jalankan skrip hook setelah tool dieksekusi. Hook bisa cancel
+            # (mengganti hasil jadi error) atau menambah konteks (context) yang
+            # disuntikkan ke pesan berikutnya. Best-effort.
+            try:
+                from ..hooks import build_payload
+                from ..hooks import run_hooks
+                _post_hook = run_hooks(
+                    "tool_result",
+                    build_payload(
+                        event="tool_result",
+                        tool_name=name,
+                        tool_input=arguments,
+                        tool_output=result,
+                        is_error=_is_error,
+                        session_id=session_id,
+                    ),
+                    workdir=args.workdir,
+                )
+            except Exception:  # noqa: BLE001 - hook opsional
+                _post_hook = None
+
+            if _post_hook is not None and _post_hook.cancel:
+                _reason = _post_hook.cancelReason or "dibatalkan oleh PostToolUse hook"
+                print(c(f"  ⛔ {name} hasil dibatalkan oleh PostToolUse hook: {_reason}", C.YELLOW))
+                result = f"[ERROR] {_reason}"
+                _is_error = True
+            elif _post_hook is not None and _post_hook.context:
+                # Suntikkan konteks tambahan dari hook ke tool_result.
+                result = f"{result}\n\n[HOOK-CONTEXT] {_post_hook.context}"
+            _is_error = result.strip().startswith("[ERROR]") or result.strip().startswith("[DITOLAK]")
+            _icon = "✗" if _is_error else "✓"
+            _status_color = C.BOLD_RED if _is_error else C.BOLD_GREEN
+            print(c(
+                f"  {_icon} {name} ({_elapsed:.2f}s)",
+                _status_color,
+            ))
+            print(c("  ← hasil:", C.MAGENTA))
+            preview = result if len(result) < 1500 else result[:1500] + "\n...(dipotong)"
+            print(c(preview, C.DIM))
+
+            _is_error = result.strip().startswith("[ERROR]") or result.strip().startswith("[DITOLAK]")
+            ndjson_emit("tool_result", name=name, ok=not _is_error, result=result)
+            if _is_error:
+                _error_count += 1
+
+                try:
+                    _arg_fp = json.dumps(arguments, sort_keys=True, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    _arg_fp = repr(arguments)
+                _error_fp = f"{name}::{_arg_fp}::{result.strip()}"
+                _error_history.append(_error_fp)
+                if len(_error_history) > state.ERROR_REPEAT_WINDOW:
+                    _error_history.pop(0)
+
+                _error_repeat_count = _error_history.count(_error_fp)
+                _is_error_loop = _error_repeat_count >= state.ERROR_REPEAT_THRESHOLD
+
+                if _is_error_loop:
+                    _err_detail = f"{name} {_shorten(_arg_fp)}"
+                    if _error_interventions < 1:
+
+                        _error_interventions += 1
+                        print(c(
+                            f"  [ERROR-LOOP] Model mengulang tool_call yang "
+                            f"menghasilkan error yang sama "
+                            f"({_error_repeat_count}x dalam {state.ERROR_REPEAT_WINDOW} "
+                            f"iterasi terakhir). Menyuntikkan peringatan tegas "
+                            f"agar model berhenti mengulang dan mengambil "
+                            f"langkah baru..."
+                            + (f"\n  ulang: {_err_detail}" if _err_detail else ""),
+                            C.YELLOW,
+                        ))
+                        error_loop_warning = (
+                            "<tool_result>\n"
+                            "[ERROR-LOOP-DETECTED] PERINGATAN TEGAS: Anda (model) "
+                            "baru saja memanggil tool yang sama dengan argumen "
+                            "yang sama (atau hampir sama) beberapa kali "
+                            "berturut-turut, dan SETIAP KALI mendapat ERROR yang "
+                            "sama persis -- tanpa pernah maju. Ini indikasi "
+                            "jelas Anda terjebak dalam loop yang tidak "
+                            "produktif.\n"
+                            + (f"TOOL_CALL YANG DIULANG: {_err_detail}\n" if _err_detail else "")
+                            + "\n"
+                            "INSTRUKSI WAJIB -- JANGAN ULANGI RESPON YANG SAMA:\n"
+                            "1. BERHENTI SEKARANG juga memanggil tool yang sama "
+                            "dengan argumen yang sama persis seperti yang baru "
+                            "saja gagal.\n"
+                            "2. JANGAN mengulang tool_call yang identik dengan "
+                            "yang sudah Anda kirim sebelumnya.\n"
+                            "3. Ambil langkah BARU yang berbeda dari semua "
+                            "langkah sebelumnya: periksa ulang pesan error "
+                            "terakhir dengan saksama, pahami AKAR MASALAHNYA, "
+                            "lalu perbaiki argumen/strategi Anda secara "
+                            "fundamental -- jangan sekadar mengirim ulang hal "
+                            "yang sama.\n"
+                            "4. Kalau semua langkah yang masuk akal sudah "
+                            "dicoba dan tidak ada yang berhasil, BERHENTI "
+                            "mencoba dan berikan jawaban akhir yang jujur "
+                            "tentang apa yang sudah dikerjakan dan apa yang "
+                            "gagal.\n"
+                            "\n"
+                            "Mengulang tool_call yang sama lagi akan dianggap "
+                            "sebagai kegagalan dan giliran ini akan dihentikan "
+                            "paksa.\n"
+                            "</tool_result>"
+                        )
+                        dbmod.add_message(
+                            args.db_path,
+                            session_id,
+                            "user",
+                            error_loop_warning,
+                            kind="tool_result",
+                        )
+                        continue
+                    else:
+
+                        print(c(
+                            f"  [ERROR-LOOP] Model masih mengulang tool_call "
+                            f"yang menghasilkan error yang sama "
+                            f"({_error_repeat_count}x dalam {state.ERROR_REPEAT_WINDOW} "
+                            f"iterasi terakhir) meski sudah diperingatkan. "
+                            f"Menghentikan giliran ini untuk mencegah loop tak "
+                            f"berujung."
+                            + (f"\n  ulang: {_err_detail}" if _err_detail else ""),
+                            C.RED,
+                        ))
+                        print(c(
+                            f"  [ERROR-LOOP] Menunggu {state.LOOP_BREAK_COOLDOWN_SECONDS} "
+                            f"detik sebelum melanjutkan proses terakhir...",
+                            C.DIM,
+                        ))
+                        time.sleep(state.LOOP_BREAK_COOLDOWN_SECONDS)
+                        _emit_summary()
+                        return last_visible
+
+            # P3 poor-man's LSP: kalau tool 'check'/'snippet' gagal dan hasilnya
+            # belum memuat snippet konteks AST, sisipkan otomatis supaya model
+            # langsung melihat kode bermasalah pada iterasi berikutnya. Guard
+            # '[snippet]' mencegah duplikasi (tool_check sendiri sudah menambahkannya).
+            if name in ("check", "snippet") and _is_error and "[snippet]" not in result:
+                try:
+                    from ..tools.compile_tools import snippet_for_position
+                    m = re.search(r"^([^:\n]+):(\d+):", result, re.M)
+                    if m:
+                        err_file = m.group(1)
+                        err_line = int(m.group(2))
+                        err_path = err_file if os.path.isabs(err_file) else os.path.join(state.WORKDIR, err_file)
+                        if os.path.isfile(err_path):
+                            result += "\n" + snippet_for_position(err_path, err_line)
+                except Exception:  # noqa: BLE001 — snippet tambahan tidak boleh crash loop
+                    pass
+
+            tool_result_msg = f"<tool_result>\n{result}\n</tool_result>"
+            # Poin #5 rilis v0.5.0: simpan metadata tool call di kolom `meta`
+            # (JSON) untuk data training. `token_estimate` diperkirakan dari
+            # panjang string (kasar, ~4 char/token) karena token sungguhan hanya
+            # diketahui server pada request berikutnya.
+            _meta = {
+                "tool_name": name,
+                "args": arguments,
+                "is_error": _is_error,
+                "token_estimate": max(len(tool_result_msg) // 4, 1),
+            }
+            dbmod.add_message(
+                args.db_path,
+                session_id,
+                "user",
+                tool_result_msg,
+                kind="tool_result",
+                meta=_meta,
+            )
+
+            # Pacing antar request: jeda singkat setelah setiap tool call sukses
+            # sebelum iterasi berikutnya memicu request model lagi. Mencegah
+            # deretan tool_call cepat (bash/read_file/grep) membanjiri proxy
+            # publik dan memicu rate limit HTTP 429 (lihat TOOL_CALL_PACING_SECONDS).
+            time.sleep(state.TOOL_CALL_PACING_SECONDS)
     else:
         print(c(
             f"[WARN] Batas {args.max_tool_iters} pemanggilan tool tercapai "

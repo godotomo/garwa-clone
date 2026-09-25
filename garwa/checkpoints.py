@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import subprocess
 import time
 from typing import Any, Dict, List, Optional
@@ -58,8 +57,14 @@ def _run_git(
     cwd: Optional[str] = None,
     check: bool = True,
     timeout: int = 60,
+    env: Optional[Dict[str, str]] = None,
 ) -> "subprocess.CompletedProcess[str]":
-    """Jalankan `git <args>` di cwd (default: cwd saat ini)."""
+    """Jalankan `git <args>` di cwd (default: cwd saat ini).
+
+    `env` opsional: bila diberikan, dipakai sebagai environment proses git.
+    Penting untuk operasi pada index sementara (GIT_INDEX_FILE) agar TIDAK
+    menyentuh .git/index asli.
+    """
     if not _git_available():
         raise CheckpointError(
             "git tidak tersedia di sistem (binary `git` tidak ditemukan di PATH)."
@@ -72,6 +77,7 @@ def _run_git(
             text=True,
             timeout=timeout,
             check=False,
+            env=env,
         )
     except subprocess.TimeoutExpired as e:
         raise CheckpointError(
@@ -124,6 +130,20 @@ def git_dirty_files(cwd: Optional[str] = None) -> List[str]:
 # Snapshot creation
 # ---------------------------------------------------------------------------
 
+def _real_index_path(cwd: str) -> Optional[str]:
+    """Path file index ASLI repo (menghormati GIT_INDEX_FILE bila diset).
+
+    Dipakai untuk guard: memastikan operasi snapshot tidak mengubah index asli.
+    """
+    proc = _run_git(["rev-parse", "--git-path", "index"], cwd=cwd, check=False)
+    path = proc.stdout.strip()
+    if not path:
+        return None
+    if not os.path.isabs(path):
+        path = os.path.join(cwd, path)
+    return path
+
+
 def _create_untracked_commit(
     cwd: str, stash_ref: str, message: str
 ) -> Optional[str]:
@@ -143,12 +163,26 @@ def _create_untracked_commit(
     import tempfile
     fd, index_file = tempfile.mkstemp(prefix=CHECKPOINT_SCRATCH_PREFIX)
     os.close(fd)
+    # Semua operasi index HARUS lewat env ini, termasuk read-tree: tanpa ini
+    # `git read-tree` menulis ke .git/index ASLI dan mengoblom index repo.
+    env = dict(os.environ, GIT_INDEX_FILE=index_file)
+
+    # Guard: simpan salinan index ASLI; bila operasi di bawah mengubahnya
+    # (regresi/versi git lain), pulihkan otomatis agar repo tidak rusak senyap.
+    real_index = _real_index_path(cwd)
+    index_backup: Optional[bytes] = None
+    if real_index and os.path.exists(real_index):
+        try:
+            with open(real_index, "rb") as f:
+                index_backup = f.read()
+        except OSError:
+            index_backup = None
+
     try:
         # reset index sementara
-        _run_git(["read-tree", "HEAD"], cwd=cwd, check=False)
-        env = dict(os.environ, GIT_INDEX_FILE=index_file)
+        _run_git(["read-tree", "HEAD"], cwd=cwd, check=False, env=env)
         # Bersihkan index sementara (kosongkan) lalu tambah untracked.
-        _run_git(["read-tree", "--empty"], cwd=cwd, check=False)
+        _run_git(["read-tree", "--empty"], cwd=cwd, check=False, env=env)
         # Stage untracked files ke index sementara.
         proc = subprocess.run(
             ["git", "add", "--", *untracked],
@@ -181,9 +215,13 @@ def _create_untracked_commit(
         index_parent = _run_git(
             ["rev-parse", f"{stash_ref}^2"], cwd=cwd, check=False
         ).stdout.strip()
-        parents = [base, index_parent] if index_parent else [base]
+        # Setiap parent WAJIB didahului flag -p; tanpa itu git menganggap
+        # argumen kedua sebagai tree kedua -> "fatal: must give exactly one tree".
+        parent_args: List[str] = []
+        for p in ([base, index_parent] if index_parent else [base]):
+            parent_args += ["-p", p]
         proc = subprocess.run(
-            ["git", "commit-tree", tree, "-m", message, *parents],
+            ["git", "commit-tree", tree, "-m", message, *parent_args],
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -194,6 +232,19 @@ def _create_untracked_commit(
             return None
         return proc.stdout.strip() or None
     finally:
+        # Guard: bila index asli berubah selama operasi, pulihkan.
+        if real_index and index_backup is not None:
+            try:
+                with open(real_index, "rb") as f:
+                    now_bytes = f.read()
+            except OSError:
+                now_bytes = None
+            if now_bytes != index_backup:
+                try:
+                    with open(real_index, "wb") as f:
+                        f.write(index_backup)
+                except OSError:
+                    pass
         try:
             os.unlink(index_file)
         except OSError:

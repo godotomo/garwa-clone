@@ -27,6 +27,7 @@ import json
 import os
 import sys
 import threading
+import time
 
 from .. import db as dbmod
 from .. import subagent_registry as registry
@@ -370,25 +371,85 @@ def tool_spawn_agents_parallel(tasks: list, role: str = "general",
     n_workers = max(1, int(max_workers or 1))
     substatus.notify_parallel_header(len(tasks), n_workers)
 
+    # Timeout per task. Tanpa ini satu sub-agent yang menggantung (mis. server
+    # LLM macet, retry 429 ber-backoff panjang) membuat SELURUH batch -- dan
+    # karena execute_tool dipanggil sinkron, SELURUH chat -- terblokir tanpa
+    # batas waktu. 0 = tanpa timeout (perilaku lama).
+    try:
+        per_task_timeout = float(os.environ.get("GARWA_SUBAGENT_TIMEOUT", "900"))
+    except (TypeError, ValueError):
+        per_task_timeout = 900.0
+    if per_task_timeout <= 0:
+        per_task_timeout = None
+    # Anggaran waktu batch = timeout per task x jumlah "gelombang" worker.
+    # (ThreadPoolExecutor menjalankan task bergelombang: 4 task dengan
+    # max_workers=4 = 1 gelombang; 9 task dengan 4 worker = 3 gelombang.)
+    n_waves = (len(tasks) + n_workers - 1) // n_workers
+    batch_deadline = (time.monotonic() + per_task_timeout * n_waves
+                      if per_task_timeout else None)
+
     results = []
-    with cf.ThreadPoolExecutor(max_workers=n_workers) as pool:
+    done_idxs = set()
+    timed_out = []
+
+    pool = cf.ThreadPoolExecutor(max_workers=n_workers)
+    try:
         futures = {pool.submit(_run_sub_agent_one, i, t, role, max_iters): i
                    for i, t in enumerate(tasks)}
-        for f in cf.as_completed(futures):
-            idx = futures[f]
-            try:
-                results.append(f.result())
-            except BaseException as e:  # noqa: BLE001 -- jangan robohkan batch
-                # _run_sub_agent_one seharusnya tidak pernah melempar, tapi
-                # kalau ada jalur tak terduga (mis. CancelledError), catat
-                # sebagai hasil GAGAL untuk task itu saja -- task lain tetap
-                # dilaporkan.
-                results.append({
-                    "idx": idx, "sid": None, "role": role, "ok": False,
-                    "report": f"[ERROR] task gagal di level thread pool: "
-                              f"{type(e).__name__}: {e}",
-                    "log": "",
-                })
+        pending = set(futures)
+        while pending:
+            # Tunggu maksimum 5 detik agar progres tetap terlaporkan walau
+            # keepalive dimatikan (GARWA_SUBAGENT_KEEPALIVE=0).
+            chunk = 5.0
+            if batch_deadline is not None:
+                remaining = batch_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                chunk = min(chunk, remaining)
+            finished, pending = cf.wait(pending, timeout=chunk,
+                                        return_when=cf.FIRST_COMPLETED)
+            for f in finished:
+                idx = futures[f]
+                done_idxs.add(idx)
+                try:
+                    r = f.result()
+                except BaseException as e:  # noqa: BLE001 -- jangan robohkan batch
+                    # _run_sub_agent_one seharusnya tidak pernah melempar, tapi
+                    # kalau ada jalur tak terduga (mis. CancelledError), catat
+                    # sebagai hasil GAGAL untuk task itu saja -- task lain tetap
+                    # dilaporkan.
+                    r = {
+                        "idx": idx, "sid": None, "role": role, "ok": False,
+                        "report": f"[ERROR] task gagal di level thread pool: "
+                                  f"{type(e).__name__}: {e}",
+                        "log": "",
+                    }
+                results.append(r)
+                substatus.notify_batch_progress(bool(r.get("ok")))
+        if pending:
+            timed_out = sorted(futures[f] for f in pending)
+            for f in pending:
+                f.cancel()  # hanya berhasil kalau belum mulai
+    finally:
+        # wait=False: JANGAN blokir menunggu thread yang menggantung (itu
+        # justru bug yang sedang diperbaiki). Thread yang belum selesai
+        # dilaporkan sebagai timeout di bawah; ia akan mati sendiri saat
+        # request LLM-nya berakhir.
+        pool.shutdown(wait=False)
+
+    # Task yang tidak selesai dalam anggaran waktu -- laporkan EKSPLISIT,
+    # jangan dihilangkan dari hasil supaya agent induk tahu ada yang belum
+    # kelar (sebelumnya batch bisa menggantung tanpa batas waktu).
+    for i in timed_out:
+        results.append({
+            "idx": i, "sid": None, "role": role, "ok": False,
+            "report": (f"[ERROR] task timeout: melewati anggaran batch "
+                       f"{int(per_task_timeout)}s x {n_waves} gelombang "
+                       f"(masih berjalan di background, hasil diabaikan)."),
+            "log": "",
+        })
+    substatus.notify_batch_done(
+        f"{len(timed_out)} task melewati batas waktu" if timed_out else "")
 
     # Urutkan sesuai urutan tasks asli agar laporan konsisten & mudah dibaca.
     # (as_completed tidak menjamin urutan; kita urutkan ulang via idx.)

@@ -5,7 +5,114 @@ Semua perubahan penting pada proyek ini akan dicatat di file ini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/1.1.0/),
 dan versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.1] - 2026-09-09
+## [0.5.3] - 2026-09-25
+
+Rilis perbaikan bug hasil audit menyeluruh (P0–P3). Fokus: integritas git index,
+keandalan pemanggilan tool (multi-blok + template literal), deteksi *degenerate
+loop* yang salah positif, dan sejumlah bug fungsional di tools.
+
+### Fixed — P0 (kritis)
+
+- **`checkpoints.py` — index git terklobber tiap giliran** (`_create_untracked_commit`).
+  `git read-tree HEAD` / `read-tree --empty` dijalankan TANPA `GIT_INDEX_FILE`,
+  sehingga menulis ke `.git/index` **asli** dan mengosongkannya (index 33 KB → 65 B).
+  Akibatnya seluruh file tracked tampak `D` (deleted) dan `git commit` bisa
+  menghapus semua file dari history. **Fix:** teruskan env `GIT_INDEX_FILE` ke
+  KEDUA `read-tree` (dan semua operasi index lain), plus **guard otomatis**:
+  salinan `.git/index` sebelum operasi, dipulihkan bila isinya berubah.
+- **`agent_loop.py` — hanya blok `tool_call` PERTAMA yang dieksekusi.**
+  `extract_tool_call()` memakai `re.search` (match pertama) sedangkan pembersih
+  `visible_text` menghapus SEMUA blok → blok ke-2..n hilang tanpa eksekusi.
+  Karena `todo_write` bersifat *full-replace*, todo jadi parsial (sebagian `done`,
+  sisanya tidak tersimpan) — inilah penyebab keluhan "todo sebagian tidak
+  terupdate padahal sudah dikerjakan". **Fix:** fungsi baru
+  `json_repair.extract_tool_calls()` (multi-blok) + `agent_loop` mengeksekusi
+  SEMUA blok secara berurutan.
+- **`agent_loop.py` — giliran berhenti senyap** saat tidak ada `tool_call` valid.
+  **Fix:** emit pesan eksplisit `[STOP] Tidak ada tool_call valid dalam respon
+  model.` sebelum `_emit_summary()` + `return`.
+- **`json_repair.py` — contoh TEMPLATE literal dianggap `tool_call` nyata.**
+  Contoh di system prompt yang berisi nama tool bertanda sudut + `...`
+  (placeholder) dikutip model di prosa → diparse sebagai tool_call →
+  `PARSE_ERROR` → memicu jalur `[LOOP]`/`[STOP]` palsu dan **membuang tool_call
+  asli di blok berikutnya**. **Fix:** guard konservatif yang butuh KEDUANYA —
+  (a) nama bertanda sudut (`<...>`) DAN (b) ada `...` — maka blok di-skip sebagai
+  template, bukan tool_call. Tool_call nyata tidak memakai nama bertanda sudut,
+  sehingga risiko menelan pemanggilan sungguhan sangat kecil.
+- **`sub_agent.py` — `spawn_agents_parallel` tanpa admission-control/timeout, memblokir seluruh chat.**
+  Terbukti 4 sub-agent paralel saling `429 concurrent_limit` (6.5 s vs ideal 0.5 s;
+  backoff asli 30–120 s ⇒ bisa 5+ menit), dan `execute_tool` dipanggil sinkron
+  sehingga chat terblokir sampai batch selesai. **Fix:** irama deadline batch
+  (`GARWA_SUBAGENT_TIMEOUT`, default 900 s/task × jumlah gelombang), laporan
+  timeout per task, dan opsi keepalive (`GARWA_SUBAGENT_KEEPALIVE`).
+
+### Fixed — P1
+
+- **`agent_loop.py` — hook `PostToolUse` gagal di tool PERTAMA tiap giliran.**
+  `_is_error` dipakai di `run_hooks(is_error=_is_error, ...)` sebelum di-assign
+  (`UnboundLocalError`; hook dilewati pada iterasi 1, normal di iterasi berikutnya).
+  **Fix:** hitung status error SEBELUM pemanggilan hook.
+- **`json_repair.py` — matcher `tool_call` non-greedy `\{.*?\}`.** JSON dengan
+  `}` di dalam string terpotong, dan fragmen prosa/kutipan bisa disalahartikan
+  sebagai tool_call (memicu `PARSE_ERROR` palsu + kebocoran blok mentah ke
+  `visible_text`). **Fix:** *brace-matcher* berimbang berbasis
+  `json.JSONDecoder().raw_decode` yang menghormati string/escape.
+- **`json_repair.py` — klasifikasi error keliru.** Diagnosa memakai `"..." in raw_json`
+  sehingga error yang akar masalahnya *Unterminated string* salah dilaporkan
+  sebagai soal placeholder ellipsis (dan `...` valid di dalam string ikut ditolak).
+  **Fix:** klasifikasikan lewat `e.msg` (mis. *Unterminated string* → "string tidak
+  ditutup") dan pesan `...` hanya bila benar-benar placeholder.
+- **`comm_tools.py` — override `chat_id` per-turn diabaikan.**
+  `_telegram_chat_id()` membaca env tanpa prefix (`TELEGRAM_CHAT_ID`), sedangkan
+  gateway men-set `GARWA_TELEGRAM_CHAT_ID` per-turn → hasil agent (voice/document/
+  pesan) nyasar ke channel default. **Fix:** prioritaskan `GARWA_TELEGRAM_CHAT_ID`
+  dari env proses, fallback ke config.
+- **`webfetch.py` — `NameError` saat parsing HTML.** Kode memakai `BeautifulSoup`
+  langsung padahal hanya `_BeautifulSoup` yang di-bind dan `_get_bs4()` tak pernah
+  dipanggil. **Fix:** pakai `_get_bs4()` dengan penanganan bila `bs4` tak tersedia.
+- **`agent_loop.py` — pembersih `visible_text` tidak konsisten dengan extractor.**
+  **Fix:** pakai matcher yang SAMA (`strip_tool_call_blocks`) agar sisa sintaks
+  gagal-konversi tidak tampil ke user.
+
+### Fixed — P2
+
+- **`json_repair.py` — `{...}` → `PARSE_ERROR` berpesan jelas** (sebelumnya
+  `(None, None)` senyap yang memicu jalur berhenti bisu).
+- **Code fence & literal** — docstring/contoh sintaks `tool_call` di dalam file
+  yang ditulis agent tidak lagi diperlakukan sebagai tool_call nyata (diverifikasi
+  lewat repro khusus; 0 kasus nyata di DB).
+
+### Fixed — P3 (kebersihan kode)
+
+- **`repo_map.py`** — hapus redefinisi `_get_parser` (sudah ada di atas).
+- **`cli/tool_schema/__init__.py`** — tandai re-export lewat `__all__` (pyflakes
+  4.0.0 menghormati `__all__`, sedangkan `# noqa` tidak).
+- **`checkpoints.py`** — rapikan sisa referensi `sqlite3` yang tak terpakai.
+
+### Changed
+
+- **`cli/todo_coalesce.py` (baru)** — gabungkan >1 blok `todo_write` dalam satu
+  giliran menjadi satu panggilan (blok terakhir menang untuk item duplikat),
+  mencegah todo parsial.
+- **`cli/text_utils.py`** — deteksi *degenerate loop* memakai *run* baris identik
+  berurutan (`_longest_line_run`, `REPEAT_MAX_OCCUR`) alih-alih total kemunculan,
+  mengurangi salah positif pada output normal (mis. fence ```python berulang).
+- **`cli/agent_loop.py`** — jalur `[LOOP]`/`RepetitionLoopError` kini MENYUNTIKKAN
+  pesan koreksi ke percakapan sebelum retry, agar percobaan berikutnya tidak
+  mengirim konteks identik dan mengulang pola yang sama.
+- **`subagent_status.py`** — header paralel kini melaporkan progress berkala
+  (keepalive) sehingga tidak terlihat "menggantung".
+
+### Tests
+
+- `tests/test_todo_coalesce.py` (baru) — 10 test koalesensi `todo_write`,
+  termasuk end-to-end "semua todo tersimpan".
+- `tests/test_agent_loop_loop_correction.py` (baru) — memastikan koreksi `[LOOP]`
+  disuntikkan ke percakapan.
+- Repro/verifikasi tambahan: multi-blok tool_call, template-quote, guard git index,
+  matcher brace berimbang. `pytest -q` **exit 0** (0 regresi); pyflakes bersih.
+
+## [0.5.2] - 2026-09-09
 
 Fitur-fitur baru diambil dari Hermes Agent (nousresearch/hermes-agent) untuk
 memperkuat Garwa sebagai agentic runtime yang ringan, robust, dan berjalan

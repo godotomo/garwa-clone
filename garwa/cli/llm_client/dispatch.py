@@ -1,7 +1,9 @@
 """cli/llm_client/dispatch.py
 Dipecah lebih lanjut dari cli/llm_client.py.
 """
+import contextlib
 import sys
+import threading
 import time
 
 try:
@@ -132,6 +134,80 @@ def _countdown_sleep(seconds: float, label: str) -> None:
     time.sleep(seconds)
 
 
+# ---------------------------------------------------------------------------
+# Admission control (pembatas request LLM aktif)
+# ---------------------------------------------------------------------------
+# Server proxy sering hanya mengizinkan 1 request AKTIF (concurrent limit).
+# Tanpa koordinasi, sub-agent paralel (spawn_agents_parallel / team_run)
+# saling menabrak: masing-masing menembak request serentak, lalu semuanya
+# kena HTTP 429 "concurrent_limit" dan harus backoff 30-120 detik. Akibatnya
+# batch yang idealnya selesai <1 detik bisa membengkak jadi beberapa menit.
+#
+# Semaphore di bawah membuat semua pemanggil (loop induk + semua thread
+# sub-agent) BERBAGI satu kuota proses-wide. Slot diambil per PERCOBAAN
+# (bukan untuk seluruh loop retry) supaya saat satu pemanggil sedang tidur
+# backoff, pemanggil lain bisa memakai slot yang kosong.
+_ADMISSION_LOCK = threading.Lock()
+_ADMISSION_STATE = {"sem": None, "cap": None}
+
+
+def _admission_semaphore():
+    """Kembalikan (semaphore, kapasitas) atau (None, 0) bila admission mati.
+
+    Kapasitas dibaca ULANG setiap kali (bukan di-cache permanen) supaya test
+    atau kode yang mengubah `state.LLM_MAX_CONCURRENCY` saat runtime tetap
+    dihormati: kalau kapasitas berubah, semaphore dibangun ulang.
+    """
+    try:
+        cap = int(getattr(state, "LLM_MAX_CONCURRENCY", 0) or 0)
+    except (TypeError, ValueError):
+        cap = 0
+    if cap <= 0:
+        return None, 0
+    with _ADMISSION_LOCK:
+        if _ADMISSION_STATE["sem"] is None or _ADMISSION_STATE["cap"] != cap:
+            _ADMISSION_STATE["sem"] = threading.BoundedSemaphore(cap)
+            _ADMISSION_STATE["cap"] = cap
+        return _ADMISSION_STATE["sem"], cap
+
+
+@contextlib.contextmanager
+def _admission_slot():
+    """Ambil satu slot request LLM; lepaskan otomatis saat blok selesai.
+
+    Mengembalikan True bila slot benar-benar didapat. Kalau kapasitas <= 0
+    (admission dimatikan) atau slot tidak didapat dalam LLM_ADMISSION_WAIT_
+    SECONDS, hasilnya False: pemanggil tetap MENEMBAK request tanpa slot.
+    Ini disengaja -- lebih baik tetap mencoba (dan mengandalkan retry 429
+    yang sudah ada) daripada menggantung selamanya karena satu request lain
+    macet.
+    """
+    sem, _cap = _admission_semaphore()
+    if sem is None:
+        yield False
+        return
+    try:
+        wait = float(getattr(state, "LLM_ADMISSION_WAIT_SECONDS", 0) or 0)
+    except (TypeError, ValueError):
+        wait = 0.0
+    acquired = False
+    try:
+        if wait > 0:
+            acquired = bool(sem.acquire(timeout=wait))
+        else:
+            acquired = bool(sem.acquire(blocking=False))
+    except Exception:
+        acquired = False
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            try:
+                sem.release()
+            except Exception:
+                pass
+
+
 def call_llama_server(url: str, model: str, messages: list,
                       temperature: float = 0.2, stream: bool = True,
                       api_key: str = "", debug: bool = False) -> str:
@@ -172,14 +248,22 @@ def call_llama_server(url: str, model: str, messages: list,
     )
     for attempt in range(1, max_loop_attempts + 1):
         try:
-            if stream:
-                result = _call_llama_server_stream(url, model, messages, temperature,
-                                                    api_key=api_key,
-                                                    debug=debug)
-            else:
-                result = _call_llama_server_nonstream(url, model, messages, temperature,
-                                                       api_key=api_key,
-                                                       debug=debug)
+            # Admission control: ambil slot sebelum menembak request supaya
+            # sub-agent paralel tidak saling memicu 429 concurrent_limit.
+            # Slot dilepas begitu request selesai, SEBELUM tidur backoff,
+            # supaya thread lain bisa segera memakai slot yang bebas.
+            with _admission_slot() as _got_slot:
+                if not _got_slot and debug:
+                    print(c("  [admission] slot tidak didapat dalam batas waktu; "
+                            "mengirim request tanpa slot.", C.DIM), file=sys.stderr)
+                if stream:
+                    result = _call_llama_server_stream(url, model, messages, temperature,
+                                                        api_key=api_key,
+                                                        debug=debug)
+                else:
+                    result = _call_llama_server_nonstream(url, model, messages, temperature,
+                                                           api_key=api_key,
+                                                           debug=debug)
             return result
         except Exception as e:
             is_concurrent = _is_concurrent_limit_error(e)

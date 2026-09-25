@@ -188,13 +188,171 @@ def _repair_invalid_json_escapes(raw_json: str) -> str:
     return text
 
 
-def extract_tool_call(text: str):
-    match = state.TOOL_CALL_RE.search(text)
-    if not match:
-        return None, None
-    raw_json = match.group(1)
+def _find_json_object_end(text: str, start: int) -> int:
+    """Kembalikan indeks tepat SETELAH penutup `}` dari JSON object berimbang
+    yang dimulai di `start` (posisi karakter `{`), menghormati string
+    (double/single-quoted) dan backslash escape. Mengembalikan -1 bila tidak
+    ditemukan `{` pembuka atau object tidak berimbang.
 
+    Berbeda dari `json.JSONDecoder().raw_decode` yang menuntut JSON STANDAR,
+    matcher ini HANYA menghitung kedalaman kurung kurawal di luar string —
+    jadi tetap bisa menemukan batas blok untuk JSON yang TIDAK valid standar
+    (key tanpa kutip, tanda kutip tunggal, placeholder `...`, dll.) yang
+    nantinya akan diperbaiki `_parse_raw_json`. Pada saat yang sama ia tetap
+    menghormati `}` di dalam string dan object bersarang.
+    """
+    n = len(text)
+    i = start
+    while i < n and text[i] in " \t\r\n":
+        i += 1
+    if i >= n or text[i] != "{":
+        return -1
+    depth = 0
+    quote = None
+    while i < n:
+        ch = text[i]
+        if quote is not None:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch == '"' or ch == "'":
+            quote = ch
+            i += 1
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return -1
+
+
+def _iter_tool_call_blocks(text: str):
+    """Yield `(start, end, raw_json)` untuk SETIAP blok `<tool_call>...</tool_call>`.
+
+    Berbeda dari `state.TOOL_CALL_RE` (non-greedy ``{.*?}``), iterator ini
+    memakai brace-matcher berimbang (lihat `_find_json_object_end`): mulai
+    tepat setelah tag pembuka `<tool_call>`, lalu cari JSON object lengkap
+    dengan menghormati tanda kutip/escape di dalam string dan object bersarang.
+    Ini menutup tiga celah regex non-greedy:
+
+      - JSON yang memuat `}` di dalam string value TIDAK lagi terpotong.
+      - Fragmen prosa/kutipan yang kebetulan memuat `{...}` TIDAK disalahartikan
+        sebagai tool_call (matcher hanya aktif SETELAH tag pembuka).
+      - Tidak ada kebocoran blok mentah ke visible_text karena blok hanya
+        diakui bila diawali tag pembuka `<tool_call>` diikuti object berimbang.
+
+    `start` = posisi karakter `"<"` dari tag pembuka; `end` = posisi tepat
+    setelah tag penutup `</tool_call>` (bila ada) atau setelah akhir object
+    JSON (bila tag penutup tidak ada). Yield semua blok ber-object berimbang;
+    validitas isinya diserahkan ke `_parse_raw_json`.
+    """
+    idx = 0
+    n = len(text)
+    while True:
+        open_pos = text.find(state.TOOL_OPEN, idx)
+        if open_pos == -1:
+            return
+        # Mulai scan JSON tepat setelah tag pembuka; lewati whitespace.
+        json_start = open_pos + len(state.TOOL_OPEN)
+        while json_start < n and text[json_start] in " \t\r\n":
+            json_start += 1
+        if json_start >= n:
+            return
+        end = _find_json_object_end(text, json_start)
+        if end == -1:
+            # Tidak ada object berimbang setelah tag ini; maju melewati tag
+            # pembuka supaya blok berikutnya masih bisa ditemukan.
+            idx = json_start
+            continue
+        raw_json = text[json_start:end]
+        close_pos = text.find(state.TOOL_CLOSE, end)
+        block_end = close_pos + len(state.TOOL_CLOSE) if close_pos != -1 else end
+        yield open_pos, block_end, raw_json
+        idx = block_end
+
+
+def _iter_tool_call_json_blocks(text: str):
+    """Yield isi JSON (string) dari SETIAP blok `<tool_call>...</tool_call>`."""
+    for _open, _end, raw_json in _iter_tool_call_blocks(text):
+        yield raw_json
+
+
+def strip_tool_call_blocks(text: str) -> str:
+    """Hapus SEMUA blok `<tool_call>...</tool_call>` valid dari `text`.
+
+    Memakai matcher yang SAMA dengan `extract_tool_calls` (brace-matcher
+    berimbang), sehingga blok yang dihapus dari visible_text persis blok yang
+    dieksekusi — tidak lebih, tidak kurang. Blok yang JSON-nya tidak valid
+    TIDAK dihapus (biar tetap terlihat user sebagai bukti error, bukan
+    lenyap senyap).
+    """
+    spans = list(_iter_tool_call_blocks(text))
+    if not spans:
+        return text
+    out = text
+    for start, end, _raw in reversed(spans):
+        out = out[:start] + out[end:]
+    return out
+
+
+def extract_tool_calls(text: str):
+    """Ekstrak SEMUA tool_call valid dari `text` sebagai list `(name, arguments)`.
+
+    Setiap elemen memakai logika parse yang SAMA dengan `extract_tool_call`
+    (perbaikan escape/key/value/kutip tunggal + deteksi PARSE_ERROR), tapi
+    mencakup seluruh blok berurutan, bukan hanya yang pertama. Ini dasar untuk
+    memperbaiki bug P0: blok ke-2..n yang selama ini dibuang.
+
+    Elemen yang berupa placeholder `{...}` di-skip (konsisten dengan perilaku
+    `extract_tool_call` yang mengembalikan (None, None) untuk kasus itu);
+    blok yang gagal di-parse direpresentasikan sebagai ("PARSE_ERROR", msg).
+    """
+    results = []
+    for raw_json in _iter_tool_call_json_blocks(text):
+        name, arguments = _parse_raw_json(raw_json)
+        if name is None and arguments is None:
+            # placeholder {...} -> skip, bukan berhenti (bug lama)
+            continue
+        results.append((name, arguments))
+    return results
+
+
+def _parse_raw_json(raw_json: str):
+    """Parse satu blob JSON tool_call menjadi (name, arguments).
+
+    Logika yang sama persis dengan badan `extract_tool_call` (setelah
+    regex match), dipisah supaya `extract_tool_call` dan `extract_tool_calls`
+    tidak menduplikasi kode perbaikan JSON.
+    """
     if re.fullmatch(r"\s*\{\s*\.\.\.\s*\}\s*", raw_json):
+        return None, None
+    # Kutipan TEMPLATE/contoh dari system prompt BUKAN tool_call nyata.
+    #
+    # skills/system_prompt.py menampilkan contoh literal berisi nama placeholder
+    # bersudut (nama tool ditulis sebagai tag) plus isi field yang diganti
+    # tanda titik-titik. Model acap MENGUTIP contoh ini di prosa (saat
+    # menjelaskan aturan format, atau menyalin template sebelum tool_call
+    # aslinya). Tanpa guard ini, kutipan tsb ikut ter-parse, gagal
+    # (placeholder), lalu jadi PARSE_ERROR -> mengotori _error_history ->
+    # memicu intervensi ERROR-LOOP palsu dan pesan [LOOP]/[STOP] yang
+    # membingungkan, padahal tool_call asli di blok berikutnya VALID.
+    #
+    # Sinyal (sengaja konservatif, butuh KEDUANYA):
+    #   (a) ada nama bertanda sudut, mis. tag nama tool;
+    #   (b) ada tanda titik-titik sebagai placeholder isi field.
+    # Tool_call nyata tidak memakai nama bertanda sudut, jadi risiko menelan
+    # pemanggilan sungguhan sangat kecil. Kasus uji yang mengharapkan
+    # PARSE_ERROR (name="bash" dengan arguments placeholder) TIDAK terpengaruh
+    # karena tidak memuat nama bertanda sudut.
+    _ELLIPSIS = "." * 3
+    if _ELLIPSIS in raw_json and re.search(r'"<\s*[^">]*\s*>"', raw_json):
         return None, None
     try:
         obj = json.loads(raw_json)
@@ -240,7 +398,18 @@ def extract_tool_call(text: str):
             except json.JSONDecodeError:
                 continue
         if obj is None:
-            if "..." in raw_json:
+            # Klasifikasikan kegagalan berdasarkan pesan JSONDecodeError (e.msg)
+            # alih-alih menebak lewat substring di raw_json. Khususnya
+            # 'Unterminated string' menandakan string value tidak ditutup tanda
+            # kutip; sebelumnya dicek lewat '"..." in raw_json' yang memberi
+            # diagnosa keliru (placeholder) pada error string tak tertutup.
+            if e.msg and "Unterminated string" in e.msg:
+                return "PARSE_ERROR", (
+                    "tool_call mengandung string yang TIDAK ditutup tanda kutip "
+                    "(ada value string yang kurang penutup '\"'). Tutup semua "
+                    f"string dengan benar. detail={e} | raw_json={raw_json!r}"
+                )
+            if re.search(r'"[^"]*\.\.\.[^"]*"|\{\s*\.\.\.\s*\}', raw_json):
                 return "PARSE_ERROR", (
                     f"tool_call mengandung placeholder '...' (ellipsis): model "
                     f"menulis '...' sebagai pengganti isi field sehingga JSON "
@@ -267,3 +436,20 @@ def extract_tool_call(text: str):
     if not isinstance(arguments, dict):
         return "PARSE_ERROR", "arguments harus berupa objek JSON"
     return name, arguments
+
+
+def extract_tool_call(text: str):
+    """Ekstrak tool_call PERTAMA dari `text` (kontrak lama, tetap (name, arguments)).
+
+    Untuk kompatibilitas dengan pemanggil yang mem-monkeypatch fungsi ini dengan
+    `fake_extract(text) -> (name, args)` (tests/test_cli_utils.py), fungsi tetap
+    ber-signature `(text) -> (name, arguments)`. Implementasi kini didelegasikan
+    ke `extract_tool_calls` agar logika parse tidak terduplikasi.
+
+    Mengembalikan (None, None) bila tidak ada tool_call valid; placeholder
+    `{...}` juga dianggap (None, None) demi kompatibilitas perilaku lama.
+    """
+    calls = extract_tool_calls(text)
+    if not calls:
+        return None, None
+    return calls[0]

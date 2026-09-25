@@ -681,266 +681,69 @@ class TestLoopDetectionLogic:
 
 
 class TestDetectRepetition:
+    """Uji filter repetisi yang disederhanakan.
+
+    Satu-satunya sinyal: baris non-kosong yang persis sama muncul minimal
+    REPEAT_MAX_OCCUR (5) kali. Tidak ada tahap separator/fence/tabel,
+    tidak ada diversity n-gram, tidak ada deteksi kata berulang di dalam
+    satu baris.
+    """
+
     def test_repeated_line_detected(self):
         text = "line one\n" * state.REPEAT_MAX_OCCUR
+        assert text_utils._detect_repetition(text) is True
+
+    def test_below_threshold_not_detected(self):
+        text = "line one\n" * (state.REPEAT_MAX_OCCUR - 1)
+        assert text_utils._detect_repetition(text) is False
+
+    def test_exactly_threshold_detected(self):
+        text = "abc\n" * state.REPEAT_MAX_OCCUR
         assert text_utils._detect_repetition(text) is True
 
     def test_short_text_not_repetitive(self):
         assert text_utils._detect_repetition("just a short response") is False
 
-    def test_repeated_unit_detected(self):
-        unit = "x" * 100
-        text = unit * state.REPEAT_MAX_OCCUR
-        assert text_utils._detect_repetition(text) is True
-
-    # ------------------------------------------------------------------
-    # BUG FIX: Markdown normal yang memakai horizontal rule (---) untuk
-    # memisahkan section TERSebar di antara konten tidak boleh ditandai
-    # sebagai loop. Sebelumnya separator dihitung total di seluruh teks
-    # sehingga 3x "---" (markdown umum) memicu false positive.
-    # ------------------------------------------------------------------
-    def test_markdown_horizontal_rules_spread_not_detected(self):
-        text = (
-            "# Panduan Upgrade macOS\n"
-            "\n"
-            "Peringatan penting sebelum mulai.\n"
-            "\n"
-            "---\n"
-            "\n"
-            "Langkah 1 — Cek versi macOS.\n"
-            "\n"
-            "---\n"
-            "\n"
-            "Langkah 2 — Backup data.\n"
-            "\n"
-            "---\n"
-            "\n"
-            "Kesimpulan.\n"
-        )
-        assert text_utils._detect_repetition(text) is False
-
-    def test_many_markdown_horizontal_rules_spread_not_detected(self):
-        # 5x "---" tersebar di antara konten -- sebelumnya memicu LINE-REPEAT.
-        text = (
-            "Section A\n"
-            "\n"
-            "---\n"
-            "\n"
-            "Konten A.\n"
-            "\n"
-            "---\n"
-            "\n"
-            "Section B\n"
-            "\n"
-            "---\n"
-            "\n"
-            "Konten B.\n"
-            "\n"
-            "---\n"
-            "\n"
-            "Section C\n"
-            "\n"
-            "---\n"
-            "\n"
-            "Konten C.\n"
-        )
-        assert text_utils._detect_repetition(text) is False
-
-    def test_separator_stacked_detected(self):
-        # Separator bertumpuk tanpa konten = loop degenerate, harus terdeteksi.
-        assert text_utils._detect_repetition("---\n---\n---\n---\n---\n---\n") is True
-
-    def test_separator_stacked_with_blank_lines_detected(self):
-        # Baris kosong di antara separator tidak memutus run degenerate.
-        text = "---\n\n---\n\n---\n\n---\n\n"
-        assert text_utils._detect_repetition(text) is True
-
-    # ------------------------------------------------------------------
-    # BUG 1: N-gram hanya memeriksa blok yang aligned ke kelipatan ngram.
-    # Kalau repetisi dimulai dari offset ganjil (bukan kelipatan 40),
-    # blok-blok di offset 0, 40, 80 tidak akan identik satu sama lain
-    # sehingga repetisi TIDAK terdeteksi.
-    # ------------------------------------------------------------------
-    def test_ngram_missed_due_to_offset_misalignment(self):
-        """FIXED: multi-offset scanning menangkap repetisi meski offset tidak aligned.
-
-        Teks: 5 karakter prefix acak + blok 40-char yang diulang 6x.
-        Dulu: loop n-gram hanya dari offset 0 → blok pertama tercampur prefix.
-        Sekarang: scan dari offset 0..39 memastikan setidaknya satu offset
-        menghasilkan blok-blok aligned yang identik.
-        """
-        block = "A" * 100  # 100 'A'
-        prefix = "12345"  # 5 karakter offset
-        text = prefix + block * 6  # 6 blok
-        # Multi-offset scan: offset 5 menghasilkan blok-blok "AAAA..."
-        # yang aligned sempurna, 6 blok ≥ threshold → terdeteksi.
-        assert text_utils._detect_repetition(text) is True  # FIXED: multi-offset
-
-    # ------------------------------------------------------------------
-    # BUG 2: N-gram hanya menghitung blok identik yang KONSEKUTIF.
-    # Pola interleaved A, B, A, B, A tidak terdeteksi karena counter
-    # reset setiap kali ketemu blok yang berbeda.
-    # ------------------------------------------------------------------
-    def test_ngram_missed_non_consecutive_pattern(self):
-        """FIXED: pola interleaved A/B/A/B/A terdeteksi diversity check.
-
-        N-gram check tahap 3 hanya menghitung blok identik yang
-        berturut-turut, jadi count reset setiap ketemu B. Diversity check
-        (tahap 4) tidak punya asumsi alignment: rolling n-gram di teks ini
-        hanya menghasilkan ~0.195 n-gram unik, jauh di bawah threshold.
-        """
-        block_a = "A" * 100
-        block_b = "B" * 100
-        # A, B, A, B, A, B, A = 4x A, 3x B, total 7 blok
-        text = (block_a + block_b) * 3 + block_a
-        assert text_utils._detect_repetition(text) is True  # FIXED: diversity
-
-    # ------------------------------------------------------------------
-    # BUG 3: Baris pendek (< 3 karakter) diabaikan oleh line detection.
-    # "OK" atau "no" yang berulang 100x tidak terdeteksi di level baris.
-    # (Unit check mungkin menangkap kalau teks cukup panjang, tapi
-    # untuk teks pendek-moderat, ini bisa lolos.)
-    # ------------------------------------------------------------------
-    def test_short_lines_ignored_by_line_detection(self):
-        """FIXED: baris pendek (< 3 karakter) sekarang tetap diperiksa.
-
-        Line detection tidak lagi mengabaikan baris < 3 karakter.
-        "OK" yang berulang 15x sekarang terdeteksi sebagai repetisi.
-        """
-        # 15 baris "OK" — line check sekarang mendeteksi (len < 3 tetap dicek)
-        text = "OK\n" * 15  # 45 karakter, 15 baris
-        assert text_utils._detect_repetition(text) is True  # FIXED
-
-    # ------------------------------------------------------------------
-    # BUG 4: N-gram hanya memeriksa SATU ukuran (40 karakter).
-    # Repetisi dengan ukuran berbeda (mis. 20 karakter berulang 10x)
-    # tidak terdeteksi oleh n-gram check.
-    # ------------------------------------------------------------------
-    def test_ngram_single_scale_misses_other_sizes(self):
-        """FIXED: repetisi 13-char non-aligned terdeteksi diversity check.
-
-        Pola "Hello world! " lolos dari tahap 1-3 karena:
-        1. Unit check: unit = text[-100:] tidak aligned dengan pola 13-char
-           → hanya 2 kemunculan non-overlapping, < threshold 5.
-        2. N-gram check: blok di offset kelipatan 25/60/120 tidak match
-           karena pola 13-char tidak aligned dengan ukuran mana pun.
-        Diversity check bebas alignment: rasio n-gram unik ~0.055.
-        """
-        segment = "Hello world! "  # 13 karakter
-        text = segment * 20  # 260 karakter, 20x repetisi
-        assert text_utils._detect_repetition(text) is True  # FIXED: diversity
-
-    # ------------------------------------------------------------------
-    # BUG 5: Unit check (`text.count()`) menghitung NON-OVERLAPPING.
-    # Untuk teks yang sangat repetitif tapi unit overlap dengan dirinya
-    # sendiri, count bisa lebih rendah dari yang diharapkan.
-    # ------------------------------------------------------------------
-    def test_unit_count_non_overlapping_undercounts(self):
-        """BUG: text.count() non-overlapping bisa undercount.
-
-        Python str.count() menghitung kemunculan non-overlapping.
-        Untuk teks "aaaaa", "aa".count() = 2 (bukan 4).
-        """
-        # Buat teks di mana unit overlap dengan dirinya sendiri
-        unit = "abcabcabca"  # 10 karakter, pola berulang "abc"
-        text = unit * state.REPEAT_MAX_OCCUR  # 5x = 50 karakter
-        # text.count(unit) = 5 (non-overlapping), jadi terdeteksi.
-        # Tapi kalau kita buat lebih subtle:
-        # Teks: "x" * 39 + unit * 6 = 39 + 60 = 99 karakter
-        # unit = text[-40:] = "x" + unit[0:39] ... ini jadi tidak matching
-        # Lebih baik: buat teks di mana unit yang diambil dari akhir
-        # overlap dengan dirinya sendiri di tengah teks.
-        #
-        # Contoh konkret: teks = "ABABABAB..." pola AB berulang.
-        # unit = text[-40:] = "ABABAB...", text.count(unit) non-overlapping.
-        # Untuk teks 200 karakter "AB" berulang, unit 40-char "ABAB...",
-        # non-overlapping count = 200/40 = 5, tepat threshold.
-        # Tapi kalau teks 199 karakter, count = 4, < threshold.
-        # Bug: teks 199 karakter "AB" berulang seharusnya tetap repetitif.
-        # Teks: 199 karakter "AB" berulang
-        text = "AB" * 99 + "A"  # 199 karakter
-        # Unit = text[-100:], count non-overlapping < threshold 5 sehingga
-        # unit check meleset. Diversity check menangkapnya: hanya 2 n-gram
-        # unik dari 175 window → rasio 0.011.
-        assert text_utils._detect_repetition(text) is True  # FIXED: diversity
-
-    # ------------------------------------------------------------------
-    # BUG 6: N-gram comparison bersifat EXACT. Variasi kecil seperti
-    # whitespace atau punctuation yang berbeda tidak terdeteksi.
-    # ------------------------------------------------------------------
-    def test_ngram_exact_comparison_misses_near_duplicates(self):
-        """FIXED: near-duplicate whitespace terdeteksi diversity check.
-
-        Model mengulang kalimat sama dengan variasi whitespace. Line check
-        gagal (semua 1 baris), unit check gagal (text[-100:] tidak match
-        persis karena spasi ganda), n-gram exact juga gagal. Diversity check
-        menormalkan whitespace lebih dulu → rasio n-gram unik ~0.184.
-        """
-        base = "The quick brown fox jumps over the lazy dog. "  # 45 karakter
-        # Variasi: spasi ganda di beberapa tempat
-        text = base + base.replace(" ", "  ") + base + base.replace(" ", "  ") + base + base.replace(" ", "  ")
-        assert text_utils._detect_repetition(text) is True  # FIXED: diversity
-
-    # ------------------------------------------------------------------
-    # BUG 7: Deteksi hanya trigger kalau text SUDAH cukup panjang.
-    # Model bisa menghasilkan output repetitif pendek (tapi tetap
-    # degenerate) yang tidak terdeteksi karena belum mencapai batas
-    # minimal pengecekan.
-    # ------------------------------------------------------------------
-    def test_repetition_not_checked_for_short_text(self):
-        """FIXED: teks pendek sekarang diperiksa line-check.
-
-        Dulu: teks < 200 karakter tidak dicek n-gram sama sekali.
-        Sekarang: line check menangkap "OK" berulang 66x (66 baris identik
-        >= REPEAT_MAX_OCCUR), jauh di bawah batas minimal pengecekan lama.
-        """
-        # 198 karakter "OK\n" berulang = 66 baris "OK"
-        text = "OK\n" * 66  # 198 karakter
-        # Line check: mendeteksi 66 baris "OK" identik ≥ 5
-        assert text_utils._detect_repetition(text) is True  # FIXED
-
-    # ------------------------------------------------------------------
-    # Edge case: teks kosong
-    # ------------------------------------------------------------------
     def test_empty_text(self):
         assert text_utils._detect_repetition("") is False
 
-    # ------------------------------------------------------------------
-    # Edge case: blok panjang yang diulang-ulang
-    # ------------------------------------------------------------------
-    def test_large_repeated_block_detected(self):
-        """Blok panjang yang diulang-ulang terdeteksi sebagai repetisi."""
-        block = "A" * 100
-        text = block * 5  # 500 karakter
+    def test_only_blank_lines_not_detected(self):
+        assert text_utils._detect_repetition("\n\n\n\n\n\n") is False
+
+    def test_all_distinct_lines_not_detected(self):
+        text = "\n".join(f"baris unik nomor {i}" for i in range(20))
+        assert text_utils._detect_repetition(text) is False
+
+    def test_whitespace_variation_counted_as_same_line(self):
+        # Baris dibandingkan setelah strip, jadi indentasi beda tetap dihitung.
+        text = "\n".join(["    repeated line"] * state.REPEAT_MAX_OCCUR)
         assert text_utils._detect_repetition(text) is True
 
-    # ------------------------------------------------------------------
-    # Edge case: baris dengan tepat 3 karakter terdeteksi
-    # ------------------------------------------------------------------
-    def test_lines_exactly_three_chars_detected(self):
-        text = "abc\n" * state.REPEAT_MAX_OCCUR
-        assert text_utils._detect_repetition(text) is True
+    def test_single_line_multi_sentence_not_detected(self):
+        # Semua dalam SATU baris: filter sederhana ini sengaja TIDAK
+        # mendeteksi repetisi kalimat/kata di dalam satu baris (di luar
+        # cakupan "baris yang sama diulang").
+        text = "Kita perlu menambahkan fitur baru pada modul konfigurasi. " * 10
+        assert text_utils._detect_repetition(text) is False
 
-    # ------------------------------------------------------------------
-    # Edge case: unit check mendeteksi walau line & n-gram gagal
-    # ------------------------------------------------------------------
-    def test_unit_check_as_last_resort(self):
-        """Unit check harusnya menangkap repetisi yang lolos dari
-        line check dan n-gram check."""
-        # Teks dengan 1 baris panjang yang diulang-ulang
-        unit = "Z" * 100
-        text = unit * state.REPEAT_MAX_OCCUR
-        # Line check: hanya 1 baris, tidak ada duplikat
-        # Tapi ini memastikan unit check berfungsi sebagai last resort
-        assert text_utils._detect_repetition(text) is True
+    def test_separator_stacked_detected(self):
+        # 6 baris "---" identik -> line-repeat, terdeteksi.
+        assert text_utils._detect_repetition("---\n" * 6) is True
 
-    # ------------------------------------------------------------------
-    # BUG FIX: Fence markdown (```python, ~~~, ...) yang TERSebar di antara
-    # konten adalah sintaks sah untuk banyak blok kode pendek, bukan loop.
-    # Sebelumnya baris fence yang identik dihitung oleh LINE-REPEAT sehingga
-    # 5+ blok kode pendek memicu false positive.
-    # ------------------------------------------------------------------
-    def test_markdown_fence_spread_not_detected(self):
+    def test_separator_spread_below_threshold_not_detected(self):
+        # 3x "---" tersebar di antara konten: di bawah ambang 5, aman.
+        text = (
+            "Section A\n\n---\n\n"
+            "Konten A.\n\n---\n\n"
+            "Section B\n\n---\n\n"
+            "Konten B.\n"
+        )
+        assert text_utils._detect_repetition(text) is False
+
+    def test_fence_stacked_detected(self):
+        assert text_utils._detect_repetition("```python\n" * 6) is True
+
+    def test_fence_spread_not_detected(self):
         blocks = []
         for i in range(6):
             blocks.append(
@@ -951,135 +754,58 @@ class TestDetectRepetition:
         text = "\n".join(blocks)
         assert text_utils._detect_repetition(text) is False
 
-    def test_markdown_fence_spread_not_detected_reasoning(self):
-        # Sama seperti di atas, tapi lewat jalur reasoning (strict=False).
-        blocks = []
-        for i in range(6):
-            blocks.append(
-                f"```python\nx = {i}\n```\n\n"
-                f"Langkah {i}: inisialisasi variabel x dengan nilai {i} "
-                f"lalu lanjut ke tahap berikutnya dengan penjelasan unik."
-            )
-        text = "\n".join(blocks)
-        assert text_utils._detect_repetition(text, strict=False) is False
-
-    def test_markdown_fence_stacked_detected(self):
-        # Fence bertumpuk tanpa konten di antaranya = loop degenerate,
-        # harus tetap terdeteksi (mirip separator bertumpuk).
-        text = "```python\n" * 6
-        assert text_utils._detect_repetition(text) is True
-
-    def test_tilde_fence_spread_not_detected(self):
-        # Fence tilde (~~~) juga pola fence: yang tersebar di antara konten
-        # adalah markdown sah (banyak blok kode pendek), bukan loop.
-        blocks = []
-        for i in range(6):
-            blocks.append(
-                f"~~~python\nx = {i}\n~~~\n\n"
-                f"Langkah {i}: inisialisasi variabel x dengan nilai {i} "
-                f"lalu lanjut ke tahap berikutnya dengan penjelasan unik."
-            )
-        text = "\n".join(blocks)
-        assert text_utils._detect_repetition(text) is False
-
-    def test_tilde_fence_stacked_detected(self):
-        # Fence tilde bertumpuk tanpa konten = loop degenerate, terdeteksi.
-        text = "~~~\n" * 6
-        assert text_utils._detect_repetition(text) is True
-
-    def test_fence_and_separator_stacked_detected(self):
-        # Kombinasi fence (```) dan separator (---) yang bertumpuk tanpa
-        # konten di antaranya tetap loop degenerate dan harus terdeteksi,
-        # walau tiap jenis baris hanya muncul 3x (di bawah threshold masing-
-        # masing) -- gabungan run-nya yang membuatnya degenerate.
-        # Diulang cukup panjang supaya diversity/n-gram check menangkapnya.
-        text = "```\n---\n" * 40
-        assert text_utils._detect_repetition(text) is True
-
-    def test_fence_and_separator_spread_not_detected(self):
-        # Fence dan separator yang TERSebar di antara konten unik adalah
-        # markdown normal (blok kode pendek + horizontal rule), bukan loop.
-        blocks = []
-        for i in range(6):
-            blocks.append(
-                f"```python\nx = {i}\n```\n\n"
-                f"---\n\n"
-                f"Langkah {i}: inisialisasi variabel x dengan nilai {i} "
-                f"lalu lanjut ke tahap berikutnya dengan penjelasan unik."
-            )
-        text = "\n".join(blocks)
-        assert text_utils._detect_repetition(text) is False
-
-    # ------------------------------------------------------------------
-    # BUG FIX: Reasoning (chain of thought) memakai ambang longgar.
-    # Model secara natural menulis ulang rencana/konsep yang sama di dalam
-    # CoT, jadi deteksi yang terlalu agresif memicu false positive.
-    # strict=False menaikkan ambang LINE-REPEAT (5 -> 8) dan melonggarkan
-    # ambang diversity (0.35 -> 0.25).
-    # ------------------------------------------------------------------
-    def test_reasoning_line_repeat_less_strict(self):
-        # 6x baris identik + banyak konten acak (diversity tinggi).
-        # strict=True -> LINE-REPEAT (5x) True; strict=False -> threshold 8, lolos.
-        repeated = "Baris identik yang diulang untuk tes line repeat.\n" * 6
-        # Konten acak yang benar-benar beragam supaya diversity check tidak memicu.
-        words = (
-            "alpha bravo charlie delta echo foxtrot golf hotel india juliet "
-            "kilo lima mike november oscar papa quebec romeo sierra tango "
-            "uniform victor whiskey xray yankee zulu"
-        ).split()
-        random.seed(7)
-        random_words = " ".join(random.choice(words) for _ in range(4000))
-        text = repeated + random_words
-        assert text_utils._detect_repetition(text, strict=True) is True
-        assert text_utils._detect_repetition(text, strict=False) is False
-
-    def test_reasoning_still_detects_true_loop(self):
-        # Kalimat identik berulang 8x adalah loop sungguhan, harus tetap
-        # terdeteksi bahkan dengan ambang longgar (strict=False).
-        text = "Kita perlu menambahkan fitur baru pada modul konfigurasi. " * 8
-        assert text_utils._detect_repetition(text, strict=False) is True
-
-    # ------------------------------------------------------------------
-    # BUG FIX: Baris tabel markdown ("| Tool | Fungsi |") yang identik
-    # muncul di BANYAK tabel berbeda (header kolom yang sama) adalah
-    # markdown SAH, bukan loop degenerate. Sebelumnya LINE-REPEAT
-    # menghitung header "| Tool | Fungsi |" 5x (5 tabel) dan memicu
-    # false positive. Header tersebar tidak boleh ditandai sebagai loop.
-    # ------------------------------------------------------------------
-    def test_markdown_table_headers_spread_not_detected(self):
-        # 5 tabel berbeda, masing-masing dengan header "| Tool | Fungsi |"
-        # yang sama -- ini jawaban sah yang menyusun banyak tabel.
-        text = ""
-        for i in range(5):
-            text += f"{i}. Section {i}\n"
-            text += "| Tool | Fungsi |\n"
-            text += "|------|---------|\n"
-            text += "| ffuf | fuzzer  |\n"
-            text += "\n"
-        assert text_utils._detect_repetition(text) is False
-
-    def test_markdown_table_headers_many_spread_not_detected(self):
-        # 8 tabel berbeda (melebihi REPEAT_MAX_OCCUR=5) -- masih sah,
-        # header tersebar di antara konten tidak boleh jadi loop.
-        text = ""
-        for i in range(8):
-            text += f"Section {i}\n"
-            text += "| Tool | Fungsi |\n"
-            text += "|------|---------|\n"
-            text += "| nmap | scan   |\n"
-            text += "\n"
-        assert text_utils._detect_repetition(text) is False
-
-    # Loop degenerate tabel: baris tabel IDENTIK yang diulang BERURUTAN
-    # (tanpa konten lain) tetap harus terdeteksi sebagai loop.
     def test_table_row_run_stacked_detected(self):
-        text = "| Tool | Fungsi |\n" * state.SEPARATOR_REPEAT_THRESHOLD
-        assert text_utils._detect_repetition(text) is True
+        assert text_utils._detect_repetition("| Tool | Fungsi |\n" * 5) is True
 
-    def test_table_row_run_stacked_with_blank_lines_detected(self):
-        # Baris kosong di antara baris tabel tidak memutus run degenerate.
-        text = "| Tool | Fungsi |\n\n" * state.SEPARATOR_REPEAT_THRESHOLD
-        assert text_utils._detect_repetition(text) is True
+    def test_table_headers_spread_not_detected(self):
+        # 4 tabel berbeda (header sama) -> di bawah ambang 5.
+        text = ""
+        for i in range(4):
+            text += f"Section {i}\n| Tool | Fungsi |\n|------|---------|\n| nmap | scan |\n\n"
+        assert text_utils._detect_repetition(text) is False
+
+    def test_five_code_blocks_with_spread_fences_not_detected(self):
+        # REGRESI: jawaban wajar berisi 5 blok kode -> baris '```' dan
+        # '```python' TERSEBAR 5x, tetapi tidak berturut-turut. Dengan
+        # menghitung total kemunculan (perilaku lama), jawaban normal ini
+        # salah dianggap degenerate loop -> stream dipotong di tengah
+        # jawaban dan giliran berhenti sebelum tugas selesai.
+        blocks = []
+        for i in range(5):
+            blocks.append(
+                f"Contoh {i}:\n```python\nprint({i})\n```"
+            )
+        assert text_utils._detect_repetition("\n".join(blocks)) is False
+
+    def test_alternating_lines_not_detected(self):
+        # A/B/A/B/... tidak pernah membentuk run >= 5.
+        text = "\n".join("A" if i % 2 else "B" for i in range(12))
+        assert text_utils._detect_repetition(text) is False
+
+    def test_blank_line_breaks_run(self):
+        # 4 baris sama, lalu kosong, lalu 4 baris sama lagi: run terpanjang
+        # tetap 4 (< 5) sehingga tidak dianggap loop.
+        text = ("same\n" * 4) + "\n" + ("same\n" * 4)
+        assert text_utils._detect_repetition(text) is False
+
+    def test_consecutive_short_line_run_detected(self):
+        # Baris pendek yang sama BERTURUT-TURUT 5x tetap terdeteksi.
+        assert text_utils._detect_repetition("```\n" * 5) is True
+
+    # ------------------------------------------------------------------
+    # _find_repeated_text: sample untuk pesan [LOOP].
+    # ------------------------------------------------------------------
+    def test_find_repeated_text_reports_line(self):
+        text = "loop line\n" * 5
+        sample = text_utils._find_repeated_text(text)
+        assert "baris 5x" in sample
+
+    def test_find_repeated_text_empty_when_no_repeat(self):
+        text = "\n".join(f"unik {i}" for i in range(10))
+        assert text_utils._find_repeated_text(text) == ""
+
+    def test_find_repeated_text_empty_input(self):
+        assert text_utils._find_repeated_text("") == ""
 
 
 class TestTerminalWidth:

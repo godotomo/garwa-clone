@@ -97,10 +97,23 @@ def _imap_port() -> int:
 
 
 def _telegram_token() -> str:
+    # Prioritas: env proses GARWA_TELEGRAM_TOKEN (di-set per-turn bila perlu)
+    # > config_mod.TELEGRAM_TOKEN (resolve GARWA_/JOB_/TELEGRAM_ saat import).
+    env = os.environ.get("GARWA_TELEGRAM_TOKEN")
+    if env and env.strip():
+        return env.strip()
     return _get("TELEGRAM_TOKEN")
 
 
 def _telegram_chat_id() -> str:
+    # Prioritas: env per-turn GARWA_TELEGRAM_CHAT_ID (di-set telegram_gateway
+    # tiap giliran agar hasil agent terkirim balik ke chat asal) > config_mod.
+    # `_get("GARWA_TELEGRAM_CHAT_ID")` saja TIDAK cukup karena config_mod hanya
+    # punya atribut TELEGRAM_CHAT_ID (bukan GARWA_TELEGRAM_CHAT_ID), jadi bila
+    # env per-turn kosong, fallback config akan hilang.
+    env = os.environ.get("GARWA_TELEGRAM_CHAT_ID")
+    if env and env.strip():
+        return env.strip()
     return _get("TELEGRAM_CHAT_ID")
 
 

@@ -36,10 +36,32 @@ skills/job-tracker/scripts/jobbot/deliverables/
 inbox/
 logs/
 
-# Temporary verification scripts
+# Temporary verification scripts / diagnostics
 verify_build.py
 garwa_cli.py
 tmp_*.py
+tmp_cp_probe.sqlite
+_diag*.txt
+_scan*.txt
+_sec*.txt
+_chg*.txt
+_junk.txt
+_verify_fixes.txt
+cp_preview.txt
+cp_probe_result.txt
+cpdiag.txt
+cptest.txt
+dbdiag.txt
+etdiag.txt
+fence_case.txt
+fencediag.txt
+gitdiag*.txt
+pf.txt
+ptdiag.txt
+pytest_final_exit.txt
+pytest_p3_exit.txt
+*_exit.txt
+tmp_repro/
 
 # Local artifacts / clones (JANGAN commit)
 .audit_test/

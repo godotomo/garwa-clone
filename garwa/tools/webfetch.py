@@ -125,7 +125,8 @@ def _webfetch_is_private_host(host: str) -> bool:
 
 def _webfetch_html_to_text(html: str) -> str:
     """Ekstrak teks dari HTML, buang script/style/noscript/iframe/object/embed."""
-    if not _HAS_BS4:
+    BeautifulSoup = _get_bs4()
+    if BeautifulSoup is None:
         # Fallback tanpa bs4: buang tag dengan regex sederhana.
         text = re.sub(r"<(script|style|noscript|iframe|object|embed)[^>]*>.*?</\1>",
                       " ", html, flags=re.IGNORECASE | re.DOTALL)
@@ -144,7 +145,8 @@ def _webfetch_html_to_markdown(html: str) -> str:
     bold/italic, code, list, dan paragraf. Ini cukup untuk sebagian besar
     halaman dokumentasi/berita.
     """
-    if not _HAS_BS4:
+    BeautifulSoup = _get_bs4()
+    if BeautifulSoup is None:
         return _webfetch_html_to_text(html)
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "meta", "link"]):

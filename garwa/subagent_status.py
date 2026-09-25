@@ -103,6 +103,135 @@ def notify_done(rec_id: str, status: str, error: str = None) -> None:
     _emit(line)
 
 
+# ---------------------------------------------------------------------------
+# Keepalive batch paralel
+# ---------------------------------------------------------------------------
+# Masalah nyata: `spawn_agents_parallel` dijalankan SINKRON di loop utama, jadi
+# selama batch berjalan terminal tidak menampilkan apa pun setelah header.
+# Kalau server mengembalikan 429 concurrent_limit, backoff 30-120 detik membuat
+# batch "menggantung" tanpa jejak selama beberapa menit dan pengguna mengira
+# proses mati. Keepalive di bawah mencetak progres berkala ke stderr
+# (mis. "2/4 selesai, 2 berjalan, 1m05s") sampai batch selesai.
+#
+# Interval diatur env GARWA_SUBAGENT_KEEPALIVE (detik, default 15; 0 = mati).
+_BATCH_LOCK = threading.Lock()
+_BATCH = {
+    "active": False,
+    "total": 0,
+    "workers": 0,
+    "started": None,
+    "done": 0,
+    "ok": 0,
+    "err": 0,
+}
+_keepalive_stop = threading.Event()
+_keepalive_thread = None
+
+
+def _keepalive_interval() -> float:
+    try:
+        return float(os.environ.get("GARWA_SUBAGENT_KEEPALIVE", "15"))
+    except (TypeError, ValueError):
+        return 15.0
+
+
+def _keepalive_loop() -> None:
+    """Thread daemon: cetak progres batch berkala selagi batch masih aktif."""
+    while True:
+        iv = _keepalive_interval()
+        if iv <= 0:
+            return
+        if _keepalive_stop.wait(iv):
+            return
+        with _BATCH_LOCK:
+            if not _BATCH["active"]:
+                return
+            total = _BATCH["total"]
+            done = _BATCH["done"]
+            ok = _BATCH["ok"]
+            err = _BATCH["err"]
+            started = _BATCH["started"]
+        running = max(total - done, 0)
+        dur = _fmt_duration(time.time() - started) if started else "-"
+        _emit(
+            f"[sub-agent] … progres {done}/{total} selesai "
+            f"(✓{ok} ✗{err}), {running} berjalan, {dur} berlalu"
+        )
+
+
+def _ensure_keepalive() -> None:
+    """Nyalakan thread keepalive (satu thread saja, dipakai ulang)."""
+    global _keepalive_thread
+    if _keepalive_interval() <= 0:
+        return
+    with _BATCH_LOCK:
+        if _keepalive_thread is not None and _keepalive_thread.is_alive():
+            return
+        _keepalive_stop.clear()
+        t = threading.Thread(target=_keepalive_loop, daemon=True,
+                             name="subagent-keepalive")
+        _keepalive_thread = t
+    t.start()
+
+
 def notify_parallel_header(n: int, max_workers: int) -> None:
-    """Cetak header saat menjalankan beberapa sub-agent paralel."""
+    """Cetak header saat menjalankan beberapa sub-agent paralel + mulai keepalive."""
+    with _BATCH_LOCK:
+        _BATCH.update(active=True, total=max(0, int(n or 0)),
+                      workers=max(0, int(max_workers or 0)),
+                      started=time.time(), done=0, ok=0, err=0)
     _emit(f"[sub-agent] menjalankan {n} task paralel (max_workers={max_workers})")
+    _ensure_keepalive()
+
+
+def notify_batch_progress(ok: bool) -> None:
+    """Catat satu task batch selesai + cetak progres ke stderr.
+
+    Dipanggil dari thread utama (saat `as_completed` mengembalikan future),
+    jadi tidak perlu lock sendiri selain yang sudah ada di `_BATCH_LOCK`.
+    """
+    with _BATCH_LOCK:
+        if not _BATCH["active"]:
+            return
+        _BATCH["done"] += 1
+        if ok:
+            _BATCH["ok"] += 1
+        else:
+            _BATCH["err"] += 1
+        total = _BATCH["total"]
+        done = _BATCH["done"]
+        n_ok = _BATCH["ok"]
+        n_err = _BATCH["err"]
+        started = _BATCH["started"]
+    dur = _fmt_duration(time.time() - started) if started else "-"
+    _emit(
+        f"[sub-agent] selesai {done}/{total} task (✓{n_ok} ✗{n_err}) "
+        f"— {dur} berlalu, {max(total - done, 0)} masih berjalan"
+    )
+
+
+def notify_batch_done(note: str = "") -> None:
+    """Akhiri batch: matikan keepalive lalu cetak ringkasan sekali.
+
+    Aman dipanggil walau batch tidak pernah dimulai (mis. error sebelum
+    header) -- dalam kasus itu tidak mencetak apa pun.
+    """
+    global _keepalive_thread
+    with _BATCH_LOCK:
+        active = _BATCH["active"]
+        total = _BATCH["total"]
+        done = _BATCH["done"]
+        ok = _BATCH["ok"]
+        err = _BATCH["err"]
+        started = _BATCH["started"]
+        _BATCH["active"] = False
+        _keepalive_thread = None
+    _keepalive_stop.set()
+    if not active:
+        return
+    dur = _fmt_duration(time.time() - started) if started else "-"
+    line = (f"[sub-agent] batch selesai: {done}/{total} task "
+            f"(✓{ok} ✗{err}) dalam {dur}")
+    if note:
+        line += f"  — {_short(note, _MAX_ERR)}"
+    _emit(line)
