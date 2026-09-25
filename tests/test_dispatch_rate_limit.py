@@ -210,3 +210,102 @@ class TestTimeoutConstants:
         nonstream_call._call_llama_server_nonstream("http://x", "m", [])
         assert captured["timeout"] == state.NONSTREAM_TIMEOUT_SECONDS
         assert state.NONSTREAM_TIMEOUT_SECONDS < 300
+
+
+# ---------------------------------------------------------------------------
+# Connection error (koneksi terputus di tengah stream)
+# ---------------------------------------------------------------------------
+
+class TestConnectionErrorDetection:
+    def test_chunked_encoding_error_is_connection_error(self):
+        """ChunkedEncodingError BUKAN subclass ConnectionError (MRO-nya
+        ChunkedEncodingError -> RequestException -> OSError), jadi tidak boleh
+        lolos begitu saja -- harus terdeteksi sebagai error koneksi."""
+        e = requests.exceptions.ChunkedEncodingError(
+            "Connection broken: ConnectionAbortedError(103, 'Software caused "
+            "connection abort')"
+        )
+        assert not isinstance(e, requests.exceptions.ConnectionError)
+        assert dispatch._is_connection_error(e) is True
+
+    def test_connection_error_detected(self):
+        assert dispatch._is_connection_error(requests.exceptions.ConnectionError()) is True
+
+    def test_timeout_detected(self):
+        assert dispatch._is_connection_error(
+            requests.exceptions.ReadTimeout("read timed out")) is True
+
+    def test_http_400_not_retryable(self):
+        resp = requests.Response()
+        resp.status_code = 400
+        e = requests.exceptions.HTTPError(response=resp)
+        assert dispatch._is_connection_error(e) is False
+
+    def test_invalid_url_not_retryable(self):
+        """Salah konfigurasi URL (ValueError) tidak akan pulih dengan retry."""
+        assert dispatch._is_connection_error(requests.exceptions.InvalidURL()) is False
+        assert dispatch._is_connection_error(
+            requests.exceptions.MissingSchema()) is False
+
+
+class TestCallLlamaServerConnectionRetry:
+    def test_chunked_encoding_error_retried_with_short_backoff(self, monkeypatch):
+        backoffs = []
+        calls = []
+
+        def fake_stream(*a, **k):
+            calls.append(1)
+            raise requests.exceptions.ChunkedEncodingError(
+                "Connection broken: ConnectionAbortedError(103, 'Software "
+                "caused connection abort')"
+            )
+
+        monkeypatch.setattr(dispatch, "_call_llama_server_stream", fake_stream)
+        monkeypatch.setattr(dispatch, "_countdown_sleep",
+                            lambda sec, label: backoffs.append(sec))
+
+        with pytest.raises(requests.exceptions.ChunkedEncodingError):
+            dispatch.call_llama_server("http://x", "m", [])
+
+        expected_attempts = state.CONNECTION_RETRY_ATTEMPTS
+        assert len(calls) == expected_attempts
+        assert backoffs == state.CONNECTION_BACKOFF_SECONDS[:expected_attempts - 1]
+        assert backoffs == [3, 3, 3]
+        assert sum(backoffs) == 9  # ~9 detik total sebelum kembali ke prompt
+
+    def test_connection_recovers_on_retry(self, monkeypatch):
+        """Kalau percobaan kedua berhasil, hasilnya dikembalikan tanpa error."""
+        calls = []
+        backoffs = []
+
+        def fake_stream(*a, **k):
+            calls.append(1)
+            if len(calls) == 1:
+                raise requests.exceptions.ChunkedEncodingError("broken")
+            return {"content": "ok", "tool_calls": None}
+
+        monkeypatch.setattr(dispatch, "_call_llama_server_stream", fake_stream)
+        monkeypatch.setattr(dispatch, "_countdown_sleep",
+                            lambda sec, label: backoffs.append(sec))
+
+        result = dispatch.call_llama_server("http://x", "m", [])
+        assert result == {"content": "ok", "tool_calls": None}
+        assert len(calls) == 2
+        assert backoffs == [3]
+
+    def test_invalid_url_raises_immediately(self, monkeypatch):
+        monkeypatch.setattr(dispatch, "_call_llama_server_stream",
+                            lambda *a, **k: (_ for _ in ()).throw(
+                                requests.exceptions.InvalidURL()))
+        monkeypatch.setattr(dispatch, "_countdown_sleep",
+                            lambda sec, label: pytest.fail("tidak boleh sleep"))
+
+        with pytest.raises(requests.exceptions.InvalidURL):
+            dispatch.call_llama_server("http://x", "m", [])
+
+
+class TestConnectionConstants:
+    def test_defaults_are_four_attempts_three_seconds(self):
+        assert state.CONNECTION_RETRY_ATTEMPTS == 4
+        assert state.CONNECTION_BACKOFF_SECONDS == [3, 3, 3]
+        assert len(state.CONNECTION_BACKOFF_SECONDS) == state.CONNECTION_RETRY_ATTEMPTS - 1

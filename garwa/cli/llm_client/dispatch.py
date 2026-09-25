@@ -117,6 +117,46 @@ def _is_server_error(e: Exception) -> bool:
     return False
 
 
+def _is_connection_error(e: Exception) -> bool:
+    """Deteksi kegagalan level-TRANSPORT (bukan HTTP error): koneksi ke server
+    model terputus/gagal di tengah jalan.
+
+    Kasus nyata yang dilaporkan pengguna:
+
+        requests.exceptions.ChunkedEncodingError(
+            'Connection broken: ConnectionAbortedError(103,
+             "Software caused connection abort")')
+
+    Ini terjadi ketika server model di balik tunnel/proxy (mis. Kaggle +
+    Cloudflare Tunnel) memutus koneksi di tengah SSE -- client sudah menerima
+    sebagian chunk, lalu pembacaan chunk berikutnya gagal. Jenis kegagalan ini
+    umumnya SEMENTARA, jadi layak dicoba ulang.
+
+    PENTING: ChunkedEncodingError adalah subclass RequestException tapi BUKAN
+    subclass ConnectionError (MRO-nya: ChunkedEncodingError -> RequestException
+    -> OSError). Karena itu pemeriksaan tidak boleh memakai ConnectionError
+    saja -- akibatnya dulu ChunkedEncodingError lolos tanpa retry dan seluruh
+    giliran langsung dimatikan.
+
+    Return True untuk RequestException non-HTTPError (connection reset/timeout
+    /chunked encoding error). HTTPError TIDAK dihitung di sini karena sudah
+    ditangani _is_rate_limit_error()/_is_server_error(); 4xx lain (400/401/403)
+    juga bukan error koneksi dan tetap harus langsung dilempar.
+
+    Error KONFIGURASI juga dikecualikan: requests.exceptions.InvalidURL,
+    MissingSchema, InvalidSchema, InvalidHeader semuanya subclass ValueError
+    -- URL yang salah tidak akan berubah karena di-retry, jadi langsung
+    dilempar supaya kesalahan konfigurasi terlihat cepat, bukan tertutup
+    3x jeda 3 detik.
+    """
+    req = _get_requests()
+    if isinstance(e, req.exceptions.HTTPError):
+        return False
+    if isinstance(e, ValueError):  # InvalidURL, MissingSchema, InvalidSchema, ...
+        return False
+    return isinstance(e, req.exceptions.RequestException)
+
+
 def _countdown_sleep(seconds: float, label: str) -> None:
     """Tidur `seconds` detik sambil menampilkan pesan hitung mundur.
 
@@ -245,6 +285,7 @@ def call_llama_server(url: str, model: str, messages: list,
         state.RATE_LIMIT_RETRY_ATTEMPTS,
         state.CONCURRENT_LIMIT_RETRY_ATTEMPTS,
         state.SERVER_ERROR_RETRY_ATTEMPTS,
+        state.CONNECTION_RETRY_ATTEMPTS,
     )
     for attempt in range(1, max_loop_attempts + 1):
         try:
@@ -269,14 +310,17 @@ def call_llama_server(url: str, model: str, messages: list,
             is_concurrent = _is_concurrent_limit_error(e)
             is_rate_limit = _is_rate_limit_error(e)
             is_server_error = _is_server_error(e)
-            if not (is_concurrent or is_rate_limit or is_server_error):
+            is_connection = _is_connection_error(e)
+            if not (is_concurrent or is_rate_limit or is_server_error or is_connection):
                 raise
             if is_concurrent:
                 max_attempts = state.CONCURRENT_LIMIT_RETRY_ATTEMPTS
             elif is_rate_limit:
                 max_attempts = state.RATE_LIMIT_RETRY_ATTEMPTS
-            else:
+            elif is_server_error:
                 max_attempts = state.SERVER_ERROR_RETRY_ATTEMPTS
+            else:
+                max_attempts = state.CONNECTION_RETRY_ATTEMPTS
             if attempt >= max_attempts:
 
                 if is_concurrent:
@@ -291,10 +335,18 @@ def call_llama_server(url: str, model: str, messages: list,
                         f"{max_attempts} percobaan. Coba lagi nanti.",
                         C.RED,
                     ))
-                else:
+                elif is_server_error:
                     print(c(
                         f"[ERROR] Error server (HTTP {e.response.status_code if e.response is not None else '5xx'}) "
                         f"masih berlanjut setelah {max_attempts} percobaan. Coba lagi nanti.",
+                        C.RED,
+                    ))
+                else:
+                    print(c(
+                        f"[ERROR] Koneksi ke server model masih gagal setelah "
+                        f"{max_attempts} percobaan ({type(e).__name__}: {e}). "
+                        f"Sesi tetap jalan -- coba kirim pesan lagi, atau periksa "
+                        f"apakah server model masih hidup.",
                         C.RED,
                     ))
                 raise
@@ -302,8 +354,10 @@ def call_llama_server(url: str, model: str, messages: list,
                 backoff = state.CONCURRENT_LIMIT_BACKOFF_SECONDS
             elif is_rate_limit:
                 backoff = state.RATE_LIMIT_BACKOFF_SECONDS
-            else:
+            elif is_server_error:
                 backoff = state.SERVER_ERROR_BACKOFF_SECONDS
+            else:
+                backoff = state.CONNECTION_BACKOFF_SECONDS
             sleep_sec = backoff[attempt - 1]
             if is_concurrent:
                 print(c(
@@ -319,12 +373,20 @@ def call_llama_server(url: str, model: str, messages: list,
                     f"(percobaan {attempt + 1}/{max_attempts})...",
                     C.YELLOW,
                 ))
-            else:
+            elif is_server_error:
                 status = e.response.status_code if e.response is not None else "5xx"
                 print(c(
                     f"[SERVER-ERROR] Server membalas HTTP {status} (server error). "
                     f"Menunggu {sleep_sec} detik lalu mencoba ulang "
                     f"(percobaan {attempt + 1}/{max_attempts})...",
+                    C.YELLOW,
+                ))
+            else:
+                print(c(
+                    f"[CONNECTION-ERROR] Koneksi ke server model terputus "
+                    f"({type(e).__name__}: {e}). Menunggu {sleep_sec} detik lalu "
+                    f"mencoba ulang (percobaan {attempt + 1}/{max_attempts} dari "
+                    f"total {max_attempts})...",
                     C.YELLOW,
                 ))
             _countdown_sleep(sleep_sec, f"percobaan {attempt + 1}/{max_attempts}")

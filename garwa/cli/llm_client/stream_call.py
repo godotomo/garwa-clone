@@ -322,7 +322,21 @@ def _call_llama_server_stream(url: str, model: str, messages: list,
         if reasoning_preview is not None:
             reasoning_preview.close()
         visible_state["renderer"].abort()
-        print(c(f"[ERROR] Streaming terputus/gagal: {type(e).__name__}: {e}", C.RED))
+        # Koneksi putus di tengah stream (mis. ChunkedEncodingError /
+        # ConnectionAbortedError 103 dari tunnel yang menutup koneksi lebih
+        # dulu) BUKAN akhir dari giliran: call_llama_server() di dispatch.py
+        # akan mencoba ulang CONNECTION_RETRY_ATTEMPTS kali dengan jeda singkat.
+        # Karena itu pesannya dibuat netral (tidak bilang "gagal" seolah final)
+        # supaya tidak menyesatkan saat retry berikutnya justru berhasil.
+        # Catatan keamanan retry: teks parsial dari percobaan ini sudah
+        # ditutup oleh renderer.abort() dan native_tool_call_state hanya
+        # digabungkan ke `content` SETELAH stream tuntas, jadi percobaan gagal
+        # tidak pernah mengeksekusi tool apa pun.
+        print(c(
+            f"[STREAM] Koneksi terputus di tengah stream "
+            f"({type(e).__name__}: {e}).",
+            C.YELLOW,
+        ))
         raise
     except KeyboardInterrupt:
 

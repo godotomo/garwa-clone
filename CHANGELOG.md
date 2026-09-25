@@ -5,6 +5,23 @@ Semua perubahan penting pada proyek ini akan dicatat di file ini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/1.1.0/),
 dan versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`dispatch.py` / `stream_call.py` — koneksi terputus di tengah stream
+  langsung mematikan seluruh giliran.** `ChunkedEncodingError` (mis.
+  `Connection broken: ConnectionAbortedError(103, 'Software caused connection
+  abort')` dari server model di balik tunnel) adalah subclass
+  `RequestException` tetapi **bukan** subclass `ConnectionError`, sehingga lolos
+  dari semua pemeriksaan retry yang ada (yang hanya menangani 429 dan 5xx).
+  **Fix:** fungsi baru `_is_connection_error()` + 4 percobaan total (1 awal +
+  3× retry, jeda 3 detik) via env `GARWA_CONNECTION_RETRY`. Pesan di
+  `stream_call.py` diubah jadi netral (`[STREAM] Koneksi terputus...`) supaya
+  tidak berbunyi seperti kegagalan final padahal retry berikutnya bisa
+  berhasil. Error konfigurasi (`InvalidURL`/`MissingSchema`, subclass
+  `ValueError`) tetap dilempar segera — retry tidak akan menolongnya.
+
 ## [0.5.3] - 2026-09-25
 
 Rilis perbaikan bug hasil audit menyeluruh (P0–P3). Fokus: integritas git index,

@@ -403,6 +403,21 @@ NONSTREAM_TIMEOUT_SECONDS = _env_int("GARWA_NONSTREAM_TIMEOUT", 45)
 # giliran karena server kebetulan lagi sibuk/error sesaat.
 SERVER_ERROR_RETRY_ATTEMPTS = 3
 SERVER_ERROR_BACKOFF_SECONDS = [30, 30, 30]
+# Kegagalan koneksi/streaming level-transport (BUKAN HTTP error): koneksi
+# terputus di tengah respons. Kasus nyata yang dilaporkan:
+#   ChunkedEncodingError("Connection broken: ConnectionAbortedError(103,
+#   'Software caused connection abort')")
+# Ini khas server model di balik tunnel/proxy (Kaggle + Cloudflare Tunnel)
+# yang memutus koneksi di tengah SSE -- sering hanya gangguan sesaat.
+# ChunkedEncodingError adalah subclass RequestException (bukan ConnectionError),
+# lihat _is_connection_error() di dispatch.py.
+#
+# Total 4 percobaan = 1 percobaan awal + 3x retry, masing-masing jeda 3 detik
+# (jadi backoff hanya butuh attempts-1 = 3 elemen; loop di dispatch.py memakai
+# backoff[attempt-1]). Jeda sengaja pendek supaya saat tunnel sekadar putus
+# sesaat, giliran pulih cepat alih-alih menunggu lama lalu balik ke prompt.
+CONNECTION_RETRY_ATTEMPTS = _env_int("GARWA_CONNECTION_RETRY", 4)
+CONNECTION_BACKOFF_SECONDS = [3, 3, 3]
 # ---------------------------------------------------------------------------
 # Admission control untuk pemanggilan LLM
 # ---------------------------------------------------------------------------
