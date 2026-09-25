@@ -137,8 +137,21 @@ pun** (workdir otomatis = folder tempat Anda memanggilnya).
 ./install.sh                 # instal dengan pengaturan default
 ./install.sh --prefix DIR    # pasang launcher ke DIR (default ~/.local/bin)
 ./install.sh --no-venv       # pakai Python sistem, tanpa virtualenv
+./install.sh --skip-ts-pack  # lewati tree-sitter-language-pack (tanpa build Rust)
 ./install.sh --help          # lihat semua opsi
 ```
+
+> **Catatan `tree-sitter-language-pack` di Termux:** paket ini dipasang
+> **terpisah** dari `pip install -r requirements.txt` dan bersifat
+> **non-fatal**. Di Termux/Android tidak ada wheel-nya, sehingga pip harus
+> membangun maturin dari source Rust — installer otomatis menjalankan
+> `pkg upgrade -y rust-std-aarch64-linux-android` lalu
+> `pkg install -y rust-std-aarch64-linux-android` agar `cargo build` tidak
+> gagal `code 101`. Kalau tetap gagal, instalasi Garwa lanjut dan loader
+> otomatis memakai grammar native Termux
+> (`bash scripts/build_ts_grammars.sh`). Untuk melewatinya sepenuhnya
+> (mis. karena panic `rustls-platform-verifier` di atas), pakai
+> `./install.sh --skip-ts-pack`.
 
 Installer kini **otomatis menambahkan folder launcher ke `PATH`** secara
 persisten (mendeteksi shell profile aktif — `.zshrc`, `.bash_profile`/`.bashrc`,
@@ -949,6 +962,14 @@ endpoint (`/api-url`) juga tersimpan lintas sesi di file yang sama.
 Jalankan `garwa --bot --forever` (lihat [Mode Telegram Gateway](#mode-telegram-gateway)).
 Pastikan `TELEGRAM_TOKEN` dan `TELEGRAM_ADMIN_ID` diset, lalu buka bot Anda
 di Telegram dan kirim perintah. Bot membalas hasil agent ke chat asal.
+
+**Instalasi gagal dengan `cargo build ... failed with code 101` / `Failed building wheel for maturin`?**
+Khas Termux/Android saat pip membangun `tree-sitter-language-pack` dari source.
+Installer `install.sh` sudah menangani ini (menjalankan
+`pkg upgrade -y rust-std-aarch64-linux-android` + `pkg install -y ...` lalu
+memasang paket itu terpisah dan non-fatal). Jika masih gagal, jalankan manual
+`pkg install rust-std-aarch64-linux-android`, lalu `./install.sh --skip-ts-pack`
+(grammar native Termux via `bash scripts/build_ts_grammars.sh` tetap dipakai).
 
 **Kenapa bot tidak merespons pesan saya?**
 Kemungkinan: (1) `TELEGRAM_TOKEN` belum diset, (2) chat Anda bukan

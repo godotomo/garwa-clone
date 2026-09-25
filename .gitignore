@@ -9,6 +9,7 @@ env/
 
 # Build artifacts / logs
 *.log
+.requirements.no-ts-pack.txt
 pynacl_build.log
 .ts-wheels/
 pytest_out.txt

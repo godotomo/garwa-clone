@@ -25,6 +25,14 @@
 set -euo pipefail
 
 # --- Lokasi repo (folder tempat install.sh berada) ---------------------------
+# File requirements sementara (dibuat di Termux, lihat bagian venv) dibersihkan
+# otomatis saat skrip selesai/gagal.
+REQ_TMP=""
+cleanup() {
+    [[ -n "$REQ_TMP" && -f "$REQ_TMP" ]] && rm -f "$REQ_TMP"
+    return 0
+}
+trap cleanup EXIT
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR"
 PYTHON_BIN="${PYTHON:-python3}"
@@ -35,6 +43,7 @@ USE_VENV=1
 UNINSTALL=0
 PURGE=0
 SKIP_SYSTEM_DEPS=0
+SKIP_TS_PACK=0
 
 usage() {
     # Tampilkan blok komentar header (baris yang diawali '#') dari file ini,
@@ -45,6 +54,7 @@ usage() {
     echo "  --prefix DIR    folder tempat launcher 'garwa' dibuat (default: ~/.local/bin)"
     echo "  --no-venv       jangan buat venv; pakai python3 sistem"
     echo "  --skip-system-deps   lewati instalasi pustaka sistem (Termux: pkg install)"
+    echo "  --skip-ts-pack  lewati tree-sitter-language-pack (butuh build Rust/maturin)"
     echo "  --uninstall     hapus launcher 'garwa' saja"
     echo "  --purge         hapus launcher 'garwa' + folder venv"
     echo "  -h, --help      tampilkan bantuan ini"
@@ -59,6 +69,8 @@ while [[ $# -gt 0 ]]; do
             USE_VENV=0; shift;;
         --skip-system-deps)
             SKIP_SYSTEM_DEPS=1; shift;;
+        --skip-ts-pack)
+            SKIP_TS_PACK=1; shift;;
         --uninstall)
             UNINSTALL=1; shift;;
         --purge)
@@ -148,11 +160,71 @@ if [[ "$IS_TERMUX" == "1" && "$SKIP_SYSTEM_DEPS" == "0" ]]; then
         tree-sitter-c tree-sitter-java tree-sitter-json tree-sitter-yaml \
         tree-sitter-html tree-sitter-css tree-sitter-bash \
         || echo "  [..] Sebagian paket sistem gagal diinstall (tidak fatal; lanjut)."
+
+    # rust-std untuk target Android: WAJIB kalau ada wheel Rust yang harus dibangun
+    # dari source (mis. maturin -> tree-sitter-language-pack). Tanpa std target,
+    # `cargo build` gagal dengan code 101: "can't find crate for `core`".
+    # Paket ini sering tertinggal versi saat `rust` di-upgrade, maka `pkg upgrade`
+    # dulu (sesuai gejalanya) baru install.
+    "$PKG" upgrade -y rust-std-aarch64-linux-android \
+        || echo "  [..] pkg upgrade rust-std gagal (tidak fatal; lanjut)."
+    "$PKG" install -y rust-std-aarch64-linux-android \
+        || echo "  [..] rust-std-aarch64-linux-android gagal diinstall (tidak fatal; lanjut)."
     echo "  [ok] Pustaka sistem Termux siap."
 else
     echo "  [..] Bukan Termux (atau --skip-system-deps): lewati instalasi pustaka sistem."
     echo "       Di Linux/macOS, pastikan libexpat & toolchain tersedia di sistem."
 fi
+
+# --- Instal dependency Python -------------------------------------------------
+REQ_FILE="$REPO_ROOT/requirements.txt"
+TS_PACK_SPEC="tree-sitter-language-pack>=0.2"
+
+# Instal tree-sitter-language-pack SECARA TERPISAH (khususnya di Termux).
+# Di Termux/Android paket ini tidak punya wheel -> pip harus membangun maturin
+# dari source Rust, yang butuh target std Android (rust-std-aarch64-linux-android).
+# Tanpa itu `cargo build` gagal code 101 dan SELURUH `pip install -r` ikut batal.
+# Karena language-pack hanya tier #1 (ada fallback grammar native Termux), gagal
+# di sini TIDAK boleh menggagalkan instalasi Garwa.
+# $@ = perintah pip, mis. ("$VENV_PIP") atau ("$PYTHON_BIN" -m pip)
+install_ts_pack() {
+    local pip=("$@")
+    if [[ "$SKIP_TS_PACK" == "1" ]]; then
+        echo "  [..] tree-sitter-language-pack dilewati (--skip-ts-pack)."
+        return 0
+    fi
+    echo "  [..] Memasang tree-sitter-language-pack (di Termux butuh build Rust/maturin)..."
+    if "${pip[@]}" install "$TS_PACK_SPEC" 2>/dev/null; then
+        echo "  [ok] tree-sitter-language-pack terinstall."
+        return 0
+    fi
+    # Percobaan kedua: maturin lokal (kalau instance build terisolasi yang gagal).
+    if "${pip[@]}" install maturin 2>/dev/null && \
+       "${pip[@]}" install --no-build-isolation "$TS_PACK_SPEC" 2>/dev/null; then
+        echo "  [ok] tree-sitter-language-pack terinstall (maturin lokal)."
+        return 0
+    fi
+    echo "  [..] tree-sitter-language-pack gagal dibangun (maturin/cargo). TIDAK fatal:"
+    echo "       loader repo_map otomatis fallback ke grammar native Termux"
+    echo "       (pkg install tree-sitter-<lang>) -> lihat skills/tree-sitter-termux-guide.md"
+    return 0
+}
+
+# Pasang seluruh requirements. Di Termux, language-pack dikeluarkan dari daftar
+# dulu supaya kegagalannya tidak membatalkan dependency lain.
+# $@ = perintah pip (lihat install_ts_pack).
+install_requirements() {
+    local pip=("$@")
+    if [[ "$IS_TERMUX" == "1" ]]; then
+        REQ_TMP="$REPO_ROOT/.requirements.no-ts-pack.txt"
+        grep -vE '^[[:space:]]*tree-sitter-language-pack' "$REQ_FILE" > "$REQ_TMP"
+        "${pip[@]}" install -r "$REQ_TMP"
+        rm -f "$REQ_TMP"; REQ_TMP=""
+        install_ts_pack "${pip[@]}"
+    else
+        "${pip[@]}" install -r "$REQ_FILE"
+    fi
+}
 
 # --- Siapkan folder launcher --------------------------------------------------
 if [[ ! -d "$PREFIX" ]]; then
@@ -173,10 +245,12 @@ if [[ "$USE_VENV" == "1" ]]; then
     fi
     echo "==> Menginstal dependency ke venv"
     "$VENV_PIP" install --upgrade pip >/dev/null
-    "$VENV_PIP" install -r "$REPO_ROOT/requirements.txt"
+    install_requirements "$VENV_PIP"
     RUNNER="$VENV_PYTHON"
 else
     echo "==> Mode --no-venv: memakai $PYTHON_BIN sistem"
+    echo "    (mode ini TIDAK menginstal dependency; kalau perlu, pasang manual:)"
+    echo "      $PYTHON_BIN -m pip install -r \"$REQ_FILE\""
     RUNNER="$PYTHON_BIN"
 fi
 
