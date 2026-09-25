@@ -62,6 +62,7 @@ COMMANDS = {
     "reserve": "Token cadangan untuk respons (token): /reserve <angka>",
     "summarize-threshold": "Rasio ambang ringkasan (0.0-1.0): /summarize-threshold <rasio>",
     "keep-tail": "Jumlah pesan terakhir yang dipertahankan saat ringkas: /keep-tail <angka>",
+    "max-tool-iters": "Batas pemanggilan tool per giliran: /max-tool-iters <angka> (0 = kembali ke default, bawaan 500)",
     "github-token": "Ganti token GitHub: /github-token <token> (kosongkan untuk menghapus)",
     "github-max": "Batas konten file yang dibaca GitHub (karakter): /github-max <angka>",
     "firecrawl-key": "Ganti API key Firecrawl: /firecrawl-key <token> (kosongkan untuk menghapus)",
@@ -100,6 +101,7 @@ COMMANDS = {
     "git-stash": "Stash: /git-stash [list|push|pop|drop] [pesan]",
     "git-log-graph": "Log commit dengan grafik branch: /git-log-graph [n]",
     "auto-commit": "Aktifkan/nonaktifkan commit otomatis setelah edit: /auto-commit on|off",
+    "autopilot": "Aktifkan/nonaktifkan autopilot: /autopilot on|off (lanjut otomatis selama masih ada todo pending; berhenti sendiri saat semua todo done)",
     "undo": "Batalkan giliran terakhir (hapus pesan user + semua balasan model/tool dari DB)",
     "retry": "Ulangi giliran terakhir: kirim ulang pesan user terakhir ke model",
     "search": "Cari pesan lintas sesi (cross-session memory): /search <query>",
@@ -108,7 +110,7 @@ COMMANDS = {
 }
 
 # Command yang butuh argumen tambahan.
-_COMMANDS_WITH_ARGS = {"resume", "api-model", "api-url", "api-key", "ctx", "reserve", "summarize-threshold", "keep-tail", "github-token", "github-max", "firecrawl-key", "news-lang", "pin", "unpin", "model", "memory", "git", "git-diff", "git-log", "git-add", "git-commit", "git-branch", "git-blame", "git-show", "git-reset", "git-stash", "git-log-graph"}
+_COMMANDS_WITH_ARGS = {"resume", "api-model", "api-url", "api-key", "ctx", "reserve", "summarize-threshold", "keep-tail", "max-tool-iters", "github-token", "github-max", "firecrawl-key", "news-lang", "pin", "unpin", "model", "memory", "git", "git-diff", "git-log", "git-add", "git-commit", "git-branch", "git-blame", "git-show", "git-reset", "git-stash", "git-log-graph"}
 
 
 def _print_help() -> None:
@@ -882,6 +884,50 @@ def _handle_auto_commit(args, arg: str) -> None:
         print(c("[auto-commit] setiap edit yang sukses akan di-commit otomatis dengan pesan AI.", C.DIM))
 
 
+def _handle_autopilot(args, arg: str, session_id: str) -> None:
+    """Tangani /autopilot on|off [catatan reviewer]."""
+    from . import autopilot as autopilot_mod
+
+    enabled, note = autopilot_mod.parse_toggle(arg)
+    if enabled is None:
+        print(c("[autopilot] gunakan: /autopilot on|off [catatan hasil analisa "
+                "agen reviewer]", C.YELLOW))
+        print(c(f"[autopilot] status sekarang: "
+                f"{'AKTIF' if state.get_autopilot(session_id) else 'nonaktif'}", C.DIM))
+        return
+
+    state.set_autopilot(enabled, session_id)
+    if not enabled:
+        print(c("[autopilot] NONAKTIF -- giliran berhenti normal saat tidak ada "
+                "tool_call.", C.GREEN))
+        return
+
+    # Saat mengaktifkan: laporkan berapa todo yang masih tertunda, karena itulah
+    # yang membuat autopilot berguna.
+    workdir = getattr(args, "workdir", None) or getattr(state, "WORKDIR", None)
+    db_path = getattr(args, "db_path", None)
+    pending = autopilot_mod.get_pending_todos(db_path, workdir) if db_path else []
+    if note:
+        # Catatan ad-hoc dari user (mis. hasil analisa agen reviewer) disimpan
+        # sebagai catatan proyek supaya ikut terkirim pada setiap suntikan.
+        try:
+            dbmod.set_note(db_path, workdir, autopilot_mod.REVIEWER_NOTE_KEY, note)
+            print(c("[autopilot] catatan reviewer disimpan dan akan disertakan "
+                    "pada pesan lanjutan.", C.DIM))
+        except Exception as e:  # noqa: BLE001 - catatan opsional
+            print(c(f"[autopilot] gagal menyimpan catatan reviewer: {e}", C.YELLOW))
+    print(c("[autopilot] AKTIF -- selama masih ada todo pending/in_progress, "
+            "giliran TIDAK berhenti saat model tidak memanggil tool; klien akan "
+            "menyuntikkan pesan lanjutan.", C.BOLD_GREEN))
+    if pending:
+        print(c(f"[autopilot] todo belum selesai saat ini: {len(pending)} item.", C.DIM))
+    else:
+        print(c("[autopilot] tidak ada todo pending saat ini -- autopilot akan "
+                "berhenti sendiri pada giliran berikutnya kalau memang tidak ada "
+                "yang tersisa.", C.DIM))
+    print(c("[autopilot] matikan kapan saja dengan /autopilot off.", C.DIM))
+
+
 def handle_slash_command(cmd_line: str, args, session_id: str, system_content: str) -> dict:
     """Proses satu baris slash-command.
 
@@ -1041,6 +1087,31 @@ def handle_slash_command(cmd_line: str, args, session_id: str, system_content: s
         config.save_user_config(keep_tail_messages=n)
         print(c(f"[keep-tail] jumlah pesan ekor diubah ke: {n}", C.GREEN))
         print(c(f"[keep-tail] tersimpan di {config.USER_CONFIG_PATH} (lintas sesi).", C.DIM))
+        return {"action": "skip"}
+
+    if name == "max-tool-iters":
+        if not arg:
+            print(c(f"[max-tool-iters] batas pemanggilan tool per giliran: {args.max_tool_iters}", C.DIM))
+            print(c("Gunakan: /max-tool-iters <angka> untuk mengubahnya, "
+                    "atau /max-tool-iters 0 untuk kembali ke default.", C.DIM))
+            return {"action": "skip"}
+        n = _parse_int_arg(arg)
+        if n is None or n < 0:
+            print(c(f"[max-tool-iters] nilai tidak valid: '{arg}'. Gunakan angka >= 0.", C.RED))
+            return {"action": "skip"}
+        if n == 0:
+            # 0 = kembali ke default dari config (env GARWA_MAX_TOOL_ITERS >
+            # file config > bawaan config.DEFAULT_MAX_TOOL_ITERS).
+            args.max_tool_iters = config.MAX_TOOL_ITERS
+            config.save_user_config(max_tool_iters=config.MAX_TOOL_ITERS)
+            print(c(f"[max-tool-iters] kembali ke default: {args.max_tool_iters} "
+                    "pemanggilan tool per giliran", C.GREEN))
+            print(c(f"[max-tool-iters] tersimpan di {config.USER_CONFIG_PATH} (lintas sesi).", C.DIM))
+            return {"action": "skip"}
+        args.max_tool_iters = n
+        config.save_user_config(max_tool_iters=n)
+        print(c(f"[max-tool-iters] batas pemanggilan tool diubah ke: {n}", C.GREEN))
+        print(c(f"[max-tool-iters] tersimpan di {config.USER_CONFIG_PATH} (lintas sesi).", C.DIM))
         return {"action": "skip"}
 
     if name == "github-token":
@@ -1258,6 +1329,10 @@ def handle_slash_command(cmd_line: str, args, session_id: str, system_content: s
 
     if name == "auto-commit":
         _handle_auto_commit(args, arg)
+        return {"action": "skip"}
+
+    if name == "autopilot":
+        _handle_autopilot(args, arg, session_id)
         return {"action": "skip"}
 
     if name == "plan":

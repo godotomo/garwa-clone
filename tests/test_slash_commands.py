@@ -210,3 +210,28 @@ def test_keep_tail_invalid_rejected(tmp_path, capsys):
     assert res["action"] == "skip"
     out = capsys.readouterr().out
     assert "tidak valid" in out
+
+
+def test_max_tool_iters_mutates_and_persists(tmp_path):
+    config.USER_CONFIG_PATH = str(tmp_path / "cfg")
+    res, args = _run_with_args("/max-tool-iters 250", max_tool_iters=500)
+    assert res["action"] == "skip"
+    assert args.max_tool_iters == 250
+    cfg = config.load_user_config()
+    assert cfg["max_tool_iters"] == "250"
+
+
+def test_max_tool_iters_zero_resets_to_default(tmp_path):
+    config.USER_CONFIG_PATH = str(tmp_path / "cfg")
+    res, args = _run_with_args("/max-tool-iters 0", max_tool_iters=42)
+    assert res["action"] == "skip"
+    assert args.max_tool_iters == config.MAX_TOOL_ITERS
+
+
+def test_max_tool_iters_invalid_rejected(tmp_path, capsys):
+    config.USER_CONFIG_PATH = str(tmp_path / "cfg")
+    res, args = _run_with_args("/max-tool-iters -3", max_tool_iters=500)
+    assert res["action"] == "skip"
+    assert args.max_tool_iters == 500  # tidak berubah
+    out = capsys.readouterr().out
+    assert "tidak valid" in out

@@ -306,7 +306,8 @@ garwa [opsi]
                           (default: folder saat dipanggil)
   --no-sandbox            Izinkan tool file/bash akses path di luar --workdir
   --auto-approve          Lewati konfirmasi aksi destruktif
-  --max-tool-iters N      Batas pemanggilan tool per giliran (default: 100)
+  --max-tool-iters N      Batas pemanggilan tool per giliran (default: 500;
+                          0 = pakai default dari config/env)
   --max-image-mb FLOAT    Batas ukuran gambar vision (MB, default: 8)
   --context-window N      Ukuran context window server (token, default: 131072)
   --reserve-for-response N  Token cadangan untuk respons (default: 2048)
@@ -370,6 +371,17 @@ Beberapa perilaku khusus di input:
   - `/reserve <angka>` — token cadangan untuk respons.
   - `/summarize-threshold <rasio>` — rasio ambang ringkasan (0.0–1.0).
   - `/keep-tail <angka>` — jumlah pesan akhir yang dipertahankan saat ringkas.
+  - `/max-tool-iters <angka>` — batas pemanggilan tool per giliran
+    (bawaan 500; `0` mengembalikan ke default dari config/env).
+- **Autopilot** — `/autopilot on|off` (tanpa argumen = lihat status).
+  Saat aktif, giliran tidak berhenti hanya karena model berhenti mengirim
+  `tool_call` selama masih ada todo `pending`/`in_progress`: klien menyuntikkan
+  pesan lanjutan berisi daftar todo yang belum selesai supaya model melanjutkan
+  sendiri. Bisa disertai catatan analisa reviewer — `/autopilot on <catatan>`
+  (sekali) atau catatan proyek kunci `reviewer` (selalu ikut). Autopilot
+  **mematikan dirinya sendiri** begitu semua todo selesai dan model tetap tidak
+  memanggil tool. Pengaman jumlah suntikan per giliran:
+  env `GARWA_AUTOPILOT_MAX` (bawaan 20).
 - **Slash command pin pesan** — kunci pesan penting agar tidak ikut diringkas:
   - `/messages` — tampilkan daftar pesan beserta ID-nya.
   - `/pin <id> [<id> ...]` — pin pesan; `/unpin <id> [...]` — lepas pin;
@@ -798,6 +810,8 @@ Semua variabel dibaca dari environment (lihat `garwa/config.py`):
 | `GARWA_RESERVE_FOR_RESPONSE` | `2048` | Token cadangan untuk respons |
 | `GARWA_SUMMARIZE_THRESHOLD_RATIO` | `0.2` | Rasio ambang ringkasan (0.0–1.0) |
 | `GARWA_KEEP_TAIL_MESSAGES` | `8` | Jumlah pesan akhir yang dipertahankan saat ringkas |
+| `GARWA_MAX_TOOL_ITERS` | `500` | Batas pemanggilan tool per giliran |
+| `GARWA_AUTOPILOT_MAX` | `20` | Batas jumlah suntikan pesan lanjutan autopilot per giliran |
 | `TELEGRAM_TOKEN` | *(kosong)* | Token bot Telegram (dari @BotFather); gateway `--bot` |
 | `TELEGRAM_ADMIN_ID` | *(kosong)* | ID akun (chat_id) yang boleh memerintah bot; kosong = tolak semua |
 | `GARWA_TELEGRAM_ALLOW_ALL` | *(kosong)* | `true` = izinkan SEMUA user memerintah bot (dev only) |
@@ -806,7 +820,8 @@ Semua variabel dibaca dari environment (lihat `garwa/config.py`):
 > **Prioritas nilai:** environment variable > file config pengguna
 > (`~/.config/garwa/config`, diatur lewat slash-command `/api-model`, `/api-url`,
 > `/api-key`, `/ctx`, `/reserve`, `/summarize-threshold`, `/keep-tail`,
-> `/github-token`, `/github-max`, `/news-lang`, `/firecrawl-key`) > default
+> `/github-token`, `/github-max`, `/news-lang`, `/firecrawl-key`,
+> `/max-tool-iters`) > default
 > bawaan. Nilai yang tidak valid (mis. diedit manual) jatuh ke default tanpa
 > membuat proses crash.
 
@@ -950,8 +965,8 @@ file log dan opsi checklist/`--repeat-until-done`.
 Lewat flag CLI (`--context-window`, `--reserve-for-response`,
 `--summarize-threshold-ratio`, `--keep-tail-messages`), env variable
 (`GARWA_*`), atau slash-command saat runtime (`/ctx`, `/reserve`,
-`/summarize-threshold`, `/keep-tail`) yang tersimpan lintas sesi. Prioritas:
-env > config pengguna > default.
+`/summarize-threshold`, `/keep-tail`, `/max-tool-iters`) yang tersimpan lintas
+sesi. Prioritas: env > config pengguna > default.
 
 **Bagaimana cara menyimpan / menghapus API key secara persisten?**
 Gunakan `/api-key <kunci>` untuk menyimpan, atau `/api-key` tanpa argumen

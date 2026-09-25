@@ -180,8 +180,11 @@ def main():
                               "Hati-hati -- ini membuka akses baca/tulis/eksekusi ke seluruh sistem.")
     parser.add_argument("--auto-approve", action="store_true",
                          help="Lewati konfirmasi untuk aksi destruktif (bash/write_file/edit_file)")
-    parser.add_argument("--max-tool-iters", type=int, default=100,
-                         help="Batas jumlah pemanggilan tool berturut-turut per giliran user")
+    parser.add_argument("--max-tool-iters", type=int, default=config.MAX_TOOL_ITERS,
+                         help="Batas jumlah pemanggilan tool berturut-turut per giliran user "
+                              "(default dari config.MAX_TOOL_ITERS / env GARWA_MAX_TOOL_ITERS, "
+                              "bawaan 500). Bisa diubah saat runtime via /max-tool-iters <angka>, "
+                              "atau 0 untuk memakai default.")
     parser.add_argument("--max-image-mb", type=float, default=8.0,
                          help="Batas ukuran (MB, sebelum base64) untuk gambar yang di-drop "
                               "yang mau dikirim sebagai vision input ke model. Gambar di atas "
@@ -313,6 +316,13 @@ def main():
         print(c("[ERROR] --max-image-mb harus lebih besar dari 0.", C.RED))
         sys.exit(2)
     state.MAX_VISION_IMAGE_BYTES = int(args.max_image_mb * 1024 * 1024)
+
+    # Batas pemanggilan tool per giliran: nilai <= 0 berarti "pakai default
+    # dari config" (env GARWA_MAX_TOOL_ITERS > file config > bawaan 500).
+    # Ditulis eksplisit supaya `--max-tool-iters 0` tidak membuat loop for
+    # range(0) -- yang akan menghentikan giliran sebelum satu tool pun jalan.
+    if getattr(args, "max_tool_iters", 0) <= 0:
+        args.max_tool_iters = config.MAX_TOOL_ITERS
 
     if (args.auto or args.overnight or args.bot) and not args.auto_approve:
         print(c(

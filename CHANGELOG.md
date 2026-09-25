@@ -7,6 +7,31 @@ dan versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Autopilot sisi klien (`/autopilot on|off`)** — saat aktif, giliran tidak
+  berhenti hanya karena model berhenti mengirim `tool_call` selama masih ada
+  todo berstatus `pending`/`in_progress`. Klien menyuntikkan pesan lanjutan
+  berisi daftar todo yang belum selesai (opsional plus catatan reviewer dari
+  `/autopilot on <catatan>` atau catatan proyek kunci `reviewer`). Autopilot
+  mematikan dirinya sendiri begitu tidak ada todo tersisa dan model tetap tidak
+  memanggil tool; ada juga pengaman `GARWA_AUTOPILOT_MAX` (bawaan 20) supaya
+  tidak menjadi loop tak berujung. Flag disimpan per-sesi di memori
+  (`garwa/cli/_state.py`), logika murni di `garwa/cli/autopilot.py`, titik
+  suntik di `garwa/cli/agent_loop.py`.
+- **`/max-tool-iters <angka>`** — mengubah batas pemanggilan tool per giliran
+  saat runtime (tanpa argumen = tampilkan nilai berlaku; `0` = kembali ke
+  default dari `config.MAX_TOOL_ITERS`/env `GARWA_MAX_TOOL_ITERS`). Nilai
+  dipersistenkan ke `~/.config/garwa/config`.
+
+### Changed
+
+- **Batas default pemanggilan tool per giliran dinaikkan 100 → 500**
+  (`config.MAX_TOOL_ITERS`). Autopilot menyuntikkan pesan lanjutan, jadi batas
+  lama membuat rencana panjang kena potong di tengah. Nilai `0` pada
+  `--max-tool-iters`/`AgentConfig.max_tool_iters` kini berarti "pakai default",
+  bukan benar-benar nol iterasi.
+
 ### Fixed
 
 - **`dispatch.py` / `stream_call.py` — koneksi terputus di tengah stream

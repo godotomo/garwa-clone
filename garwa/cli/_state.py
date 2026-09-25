@@ -81,6 +81,31 @@ def set_mode(mode: str) -> str:
     return mode
 
 
+# Flag autopilot per-session (module-level dict, sama seperti _INTERRUPT_FLAGS).
+#
+# Alasan TIDAK memakai ContextVar: agent turn bisa berjalan di thread worker
+# (gateway Telegram) sementara /autopilot di-set dari thread utama, dan context
+# ContextVar tidak menular antar thread. Dict module-level aman lintas thread.
+# Key = session_id; nilai = bool.
+_AUTOPILOT_FLAGS: dict = {}
+
+
+def get_autopilot(session_id: str = None) -> bool:
+    """True kalau autopilot aktif untuk `session_id` (default: sesi context ini)."""
+    if session_id is None:
+        session_id = get_session_state().get("session_id")
+    return bool(session_id and _AUTOPILOT_FLAGS.get(session_id, False))
+
+
+def set_autopilot(enabled: bool, session_id: str = None) -> bool:
+    """Set flag autopilot untuk `session_id` (default: sesi context ini)."""
+    if session_id is None:
+        session_id = get_session_state().get("session_id")
+    if session_id:
+        _AUTOPILOT_FLAGS[session_id] = bool(enabled)
+    return bool(enabled)
+
+
 def get_session_state() -> dict:
     """Ambil dict state sesi aktif untuk context saat ini.
 
@@ -208,6 +233,11 @@ ERROR_REPEAT_THRESHOLD = 2
 REPEAT_MAX_OCCUR = 5
 REPEAT_CHECK_EVERY = 200
 LOOP_SIMILARITY_THRESHOLD = 0.95
+# Batas jumlah suntikan pesan lanjutan oleh autopilot dalam SATU giliran.
+# Pengaman supaya tidak jadi loop tak berujung kalau model tidak pernah menutup
+# todo (mis. model rusak / todo mustahil diselesaikan). Bisa di-override via
+# GARWA_AUTOPILOT_MAX.
+AUTOPILOT_MAX_CONTINUES = _env_int("GARWA_AUTOPILOT_MAX", 20)
 PASTE_PREVIEW_CHARS = 10
 IMAGE_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg",

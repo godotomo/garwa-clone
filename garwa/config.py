@@ -85,6 +85,7 @@ _USER_CONFIG_KEYS = (
     "reserve_for_response",
     "summarize_threshold_ratio",
     "keep_tail_messages",
+    "max_tool_iters",
     "auto_commit",
     "auto_commit_author",
     "personality",
@@ -103,6 +104,7 @@ def save_user_config(
     reserve_for_response: int | None = None,
     summarize_threshold_ratio: float | None = None,
     keep_tail_messages: int | None = None,
+    max_tool_iters: int | None = None,
     auto_commit: bool | None = None,
     auto_commit_author: str | None = None,
     personality: str | None = None,
@@ -135,6 +137,8 @@ def save_user_config(
         cfg["summarize_threshold_ratio"] = str(float(summarize_threshold_ratio))
     if keep_tail_messages is not None:
         cfg["keep_tail_messages"] = str(int(keep_tail_messages))
+    if max_tool_iters is not None:
+        cfg["max_tool_iters"] = str(int(max_tool_iters))
     if auto_commit is not None:
         cfg["auto_commit"] = "1" if auto_commit else "0"
     if auto_commit_author is not None:
@@ -211,6 +215,11 @@ DEFAULT_CONTEXT_WINDOW = 131072
 DEFAULT_RESERVE_FOR_RESPONSE = 2048
 DEFAULT_SUMMARIZE_THRESHOLD_RATIO = 0.2
 DEFAULT_KEEP_TAIL_MESSAGES = 8
+# Batas pemanggilan tool per giliran. Dinaikkan dari 100 ke 500 supaya
+# autopilot (yang menyuntikkan pesan lanjutan) tidak cepat kena batas
+# giliran saat rencana panjang dikerjakan berturut-turut. Bisa diubah via
+# --max-tool-iters, env GARWA_MAX_TOOL_ITERS, atau /max-tool-iters.
+DEFAULT_MAX_TOOL_ITERS = 500
 
 
 def _reload_values() -> None:
@@ -224,7 +233,7 @@ def _reload_values() -> None:
     global GITHUB_MAX_CONTENT, LLAMA_URL, LLAMA_API_KEY, LLAMA_MODEL
     global FIRECRAWL_API_KEY, FIRECRAWL_API_URL
     global CONTEXT_WINDOW, RESERVE_FOR_RESPONSE
-    global SUMMARIZE_THRESHOLD_RATIO, KEEP_TAIL_MESSAGES
+    global SUMMARIZE_THRESHOLD_RATIO, KEEP_TAIL_MESSAGES, MAX_TOOL_ITERS
     global AUTO_COMMIT, AUTO_COMMIT_AUTHOR
     global EMAIL_USER, EMAIL_PASS, EMAIL_RECIPIENT
     global EMAIL_SMTP_HOST, EMAIL_SMTP_PORT, EMAIL_IMAP_HOST, EMAIL_IMAP_PORT
@@ -285,6 +294,10 @@ def _reload_values() -> None:
     KEEP_TAIL_MESSAGES = _read_int_env_or_cfg(
         "GARWA_KEEP_TAIL_MESSAGES", _USER_CFG.get("keep_tail_messages"),
         DEFAULT_KEEP_TAIL_MESSAGES,
+    )
+    MAX_TOOL_ITERS = _read_int_env_or_cfg(
+        "GARWA_MAX_TOOL_ITERS", _USER_CFG.get("max_tool_iters"),
+        DEFAULT_MAX_TOOL_ITERS,
     )
 
     # Auto-commit: default OFF. Diaktifkan via /auto-commit on|off.

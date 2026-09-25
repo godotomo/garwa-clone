@@ -53,7 +53,12 @@ class AgentConfig:
     workdir: str = ""
     no_sandbox: bool = False
     auto_approve: bool = False
-    max_tool_iters: int = 100
+    # 0 = "belum diset" -> diisi di __post_init__ dari config.MAX_TOOL_ITERS
+    # (env GARWA_MAX_TOOL_ITERS > file config > bawaan 500). Sengaja 0, bukan
+    # angka literal, supaya tidak ada default kedua yang bisa menyimpang dari
+    # config; sekaligus mencegah range(0) yang menghentikan giliran sebelum
+    # satu tool pun jalan.
+    max_tool_iters: int = 0
     max_image_mb: float = 8.0
 
     # --- Context management ---
@@ -132,6 +137,12 @@ class AgentConfig:
             self.summarize_threshold_ratio = _env_float("GARWA_SUMMARIZE_THRESHOLD_RATIO", 0.75)
         if not self.keep_tail_messages:
             self.keep_tail_messages = _env_int("GARWA_KEEP_TAIL_MESSAGES", 12)
+        if not self.max_tool_iters:
+            # Import di dalam fungsi: hindari siklus impor (config -> cli.*).
+            # 0 = "belum diset", jadi diisi dari config.MAX_TOOL_ITERS
+            # (env GARWA_MAX_TOOL_ITERS > file config > bawaan 500).
+            from .. import config as _config
+            self.max_tool_iters = _config.MAX_TOOL_ITERS
 
     # --- Konversi ---
 

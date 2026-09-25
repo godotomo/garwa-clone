@@ -16,6 +16,7 @@ except ImportError:
 from .. import context_manager
 from .. import db as dbmod
 from . import _state as state
+from . import autopilot as autopilot_mod
 from .agent_config import coerce_agent_config
 from .colors import C
 from .colors import c
@@ -96,6 +97,11 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
     # batas supaya tidak menjadi loop tak berujung.
     _malformed_count = 0
     _MAX_MALFORMED_RETRIES = 2
+
+    # /autopilot: berapa kali kita sudah menyuntikkan pesan lanjutan pada giliran
+    # ini. Dibatasi AUTOPILOT_MAX_CONTINUES supaya tidak jadi loop tak berujung
+    # kalau model tidak pernah menutup todo.
+    _autopilot_count = 0
 
     _t_start = time.monotonic()          # awal giliran (untuk durasi total)
     _iteration_count = 0                 # jumlah iterasi loop (putaran model)
@@ -583,6 +589,55 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                     "percobaan diulang dengan instruksi koreksi."
                 )
                 continue
+            # /autopilot: model berhenti tanpa tool_call. Kalau autopilot aktif
+            # DAN masih ada todo pending, jangan berhenti -- suntikkan pesan
+            # lanjutan supaya model melanjutkan pekerjaan. Kalau sudah tidak ada
+            # todo pending (pekerjaan selesai) atau batas tercapai, autopilot
+            # mematikan dirinya sendiri lalu giliran berhenti normal.
+            if state.get_autopilot(session_id):
+                _pending = autopilot_mod.get_pending_todos(
+                    args.db_path, args.workdir
+                )
+                if _pending and _autopilot_count < state.AUTOPILOT_MAX_CONTINUES:
+                    _autopilot_count += 1
+                    print(c(
+                        f"  [AUTOPILOT] model berhenti tanpa tool_call; masih ada "
+                        f"{len(_pending)} todo pending -- menyuntikkan pesan "
+                        f"lanjutan ({_autopilot_count}/"
+                        f"{state.AUTOPILOT_MAX_CONTINUES})...",
+                        C.YELLOW,
+                    ))
+                    dbmod.add_message(
+                        args.db_path,
+                        session_id,
+                        "user",
+                        autopilot_mod.build_continue_message(
+                            args.db_path, args.workdir
+                        ),
+                        kind="tool_result",
+                    )
+                    last_visible = (
+                        "[AUTOPILOT] Giliran dilanjutkan otomatis karena masih "
+                        "ada todo pending."
+                    )
+                    continue
+                # Tidak ada alasan melanjutkan -> matikan autopilot supaya giliran
+                # berikutnya berhenti normal (tidak menyuntik pesan lagi).
+                state.set_autopilot(False, session_id)
+                if _pending:
+                    print(c(
+                        f"  [AUTOPILOT] batas pesan lanjutan "
+                        f"({state.AUTOPILOT_MAX_CONTINUES}) tercapai -- autopilot "
+                        f"dimatikan, todo tersisa: {len(_pending)}.",
+                        C.YELLOW,
+                    ))
+                else:
+                    print(c(
+                        "  [AUTOPILOT] tidak ada todo pending lagi -- pekerjaan "
+                        "dianggap selesai, autopilot dimatikan.",
+                        C.DIM,
+                    ))
+
             # P0: jangan berhenti senyap. Emit pesan eksplisit sebelum summary
             # agar user/model tahu giliran berhenti karena TIDAK ADA tool_call
             # valid (bukan karena batas iterasi atau crash tersembunyi).
