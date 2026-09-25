@@ -19,6 +19,16 @@ dan versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tidak menjadi loop tak berujung. Flag disimpan per-sesi di memori
   (`garwa/cli/_state.py`), logika murni di `garwa/cli/autopilot.py`, titik
   suntik di `garwa/cli/agent_loop.py`.
+- **Pewarnaan diff pada output tool** — hasil `edit_file`/`write_file`
+  (dan `/git-diff`) kini diwarnai bila stdout adalah TTY: header diff
+  (`---`/`+++`/`@@`/`diff --git`) sian, baris `+` hijau, baris `-` merah,
+  baris `\ No newline` kuning, konteks diredupkan (dim). Bila output bukan diff
+  (mis. pesan biasa) atau stdout bukan TTY (pipe/redirect), teks dikembalikan
+  apa adanya tanpa kode ANSI. Helper: `garwa/cli/colors.py::colorize_diff` +
+  `looks_like_diff`; seam `_stdout_is_tty()` dipakai agar mudah diuji.
+  Integrasi: `garwa/cli/agent_loop.py` (hasil tool) dan
+  `garwa/cli/slash_commands.py` (`/git-diff`). Tes:
+  `tests/test_diff_color.py` (14 tes).
 - **`/max-tool-iters <angka>`** — mengubah batas pemanggilan tool per giliran
   saat runtime (tanpa argumen = tampilkan nilai berlaku; `0` = kembali ke
   default dari `config.MAX_TOOL_ITERS`/env `GARWA_MAX_TOOL_ITERS`). Nilai

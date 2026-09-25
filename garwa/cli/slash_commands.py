@@ -47,6 +47,7 @@ from ..tools.git_tools import (
 )
 from .colors import C
 from .colors import c
+from .colors import colorize_diff
 from .skills import build_system_prompt
 
 
@@ -796,7 +797,10 @@ def _handle_git_diff(args, arg: str) -> None:
     staged = "--staged" in arg or "--cached" in arg
     stat = "--stat" in arg
     try:
-        print(git_diff(staged=staged, stat=stat))
+        # require_diff=False: keluaran git_diff() memang diff unified (atau
+        # pesan "(tidak ada perubahan...)"), jadi pewarnaan tidak perlu
+        # penjagaan looks_like_diff.
+        print(colorize_diff(git_diff(staged=staged, stat=stat), require_diff=False))
     except GitError as e:
         print(c(f"[git-diff] {e}", C.RED))
 

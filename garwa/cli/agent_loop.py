@@ -20,6 +20,7 @@ from . import autopilot as autopilot_mod
 from .agent_config import coerce_agent_config
 from .colors import C
 from .colors import c
+from .colors import colorize_diff
 from .json_repair import extract_tool_call, extract_tool_calls, strip_tool_call_blocks
 from .llm_client import call_llama_server
 from .ndjson import emit as ndjson_emit
@@ -907,7 +908,10 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
             ))
             print(c("  ← hasil:", C.MAGENTA))
             preview = result if len(result) < 1500 else result[:1500] + "\n...(dipotong)"
-            print(c(preview, C.DIM))
+            # Diff hasil edit file (baris '+' hijau, '-' merah). Kalau preview
+            # ternyata BUKAN diff, colorize_diff jatuh ke perilaku lama (redup)
+            # sehingga output tool biasa tampilannya tidak berubah.
+            print(colorize_diff(preview))
 
             _is_error = result.strip().startswith("[ERROR]") or result.strip().startswith("[DITOLAK]")
             ndjson_emit("tool_result", name=name, ok=not _is_error, result=result)
