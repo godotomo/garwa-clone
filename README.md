@@ -7,7 +7,7 @@ mesin Anda, menjalankan perintah shell, mencari di GitHub, mencari berita,
 menjalankan audit keamanan, dan banyak lagi — semuanya lewat percakapan
 natural atau mode otomatis (auto / overnight) tanpa pengawasan.
 
-> Versi saat ini: **0.5.1**
+> Versi saat ini: **0.5.3**
 
 ![Garwa CLI](screenshot/sceenshot.png)
 
@@ -42,8 +42,9 @@ natural atau mode otomatis (auto / overnight) tanpa pengawasan.
 
 - **Coding agent interaktif** — percakapan natural untuk membaca/menulis
   file, menjalankan bash, commit git, dan lain-lain.
-- **20+ tool bawaan** terintegrasi (file, bash, web, GitHub, keamanan,
-  session, dll.) — lihat tabel lengkap di [Tool yang Tersedia](#tool-yang-tersedia).
+- **53 tool bawaan** terintegrasi (file, bash, web, GitHub, keamanan,
+  git, sub-agent, email/Telegram, cron, dll.) — lihat tabel lengkap di
+  [Tool yang Tersedia](#tool-yang-tersedia).
 - **Sandbox path** — secara default tool file/bash hanya boleh mengakses
   path di dalam `--workdir`. Bisa dinonaktifkan dengan `--no-sandbox`.
 - **Mode auto** — jalankan satu task non-interaktif lalu keluar.
@@ -387,7 +388,24 @@ Beberapa perilaku khusus di input:
   - `/pin <id> [<id> ...]` — pin pesan; `/unpin <id> [...]` — lepas pin;
     `/pinned` — lihat pesan yang sedang di-pin.
 - **Slash command lain** — `/new` (sesi baru), `/resume`, `/clear`, `/todos`,
-  `/tools`, `/approve` (toggle auto-approve).
+  `/tools`, `/approve` (toggle auto-approve), `/status` (info sesi: model,
+  context, token, workdir), `/sessions` (daftar sesi tersimpan untuk workdir
+  ini), `/memory` (`list` / `show <key>` / `forget <key>`), `/cost` (token &
+  estimasi biaya sesi ini), `/summary` (ringkasan percakapan terakhir),
+  `/compact` (ringkas riwayat secara manual), `/export` (ekspor riwayat sesi ke
+  Markdown), `/auto-commit on|off` (commit otomatis setelah edit).
+- **Slash command git** — memakai implementasi tool git yang sama, jadi
+  perilakunya konsisten (perintah berbahaya seperti force-push / `reset --hard`
+  / `clean -f` ditolak):
+  - `/git-status`, `/git-diff [--staged] [--stat]`, `/git-log [n]`,
+    `/git-log-graph [n]`, `/git-show [ref] [--stat]`, `/git-blame <path> [line]`.
+  - `/git-add [path...]`, `/git-commit <pesan>` (atau
+    `/git-commit --all <pesan>`), `/git-undo`, `/git-reset [soft|mixed] [ref]`.
+  - `/git-branch [create <nama>|delete <nama>|switch <nama>]`,
+    `/git-stash [list|push|pop|drop] [pesan]`, `/git <perintah>` (perintah git
+    arbitrer yang aman).
+- **Slash command sub-agent** — `/agents [clear]` menampilkan sub-agent yang
+  sedang berjalan / sudah selesai (`clear` membuang riwayat yang selesai).
 - **Slash command MCP** — kelola server MCP langsung dari prompt:
   - `/mcp-server list` — tampilkan server yang terdaftar.
   - `/mcp-server add <nama> <cmd> [args...]` — daftarkan server stdio.
@@ -651,7 +669,7 @@ Tool terkait (dipanggil model): `schedule_task`, `list_schedules`,
 
 ## Tool yang Tersedia
 
-Garwa mendaftarkan **23 tool bawaan** yang bisa dipanggil model (plus tool
+Garwa mendaftarkan **53 tool bawaan** yang bisa dipanggil model (plus tool
 dinamis dari MCP server eksternal jika diaktifkan). Ringkasan:
 
 | Tool | Deskripsi | Destruktif? |
@@ -679,6 +697,51 @@ dinamis dari MCP server eksternal jika diaktifkan). Ringkasan:
 | `firecrawl_search` | Cari di web via Firecrawl (butuh API key Firecrawl) | Tidak |
 | `firecrawl_crawl` | Crawl satu situs via Firecrawl (butuh API key Firecrawl) | Tidak |
 | `webfetch` | Fetch konten dari URL (text/markdown/html) | Tidak |
+| `check` | Jalankan compiler cepat untuk satu file, kembalikan error terstruktur + snippet | Tidak |
+| `snippet` | Ambil konteks AST di sekitar baris tertentu pada sebuah file | Tidak |
+
+**Sub-agent & tim** — jalankan pekerjaan terfokus di sesi terpisah:
+
+| Tool | Deskripsi | Destruktif? |
+|------|-----------|-------------|
+| `spawn_agent` | Jalankan satu sub-agent in-process (context window sendiri); role `general`/`explore` | Tidak |
+| `spawn_agents_parallel` | Jalankan beberapa sub-agent sekaligus (thread pool) | Tidak |
+| `team_run` | Koordinator Agent Teams: beberapa anggota dengan rolePrompt kustom, jalan paralel | Tidak |
+
+**Git** — operasi git tanpa keluar dari agent:
+
+| Tool | Deskripsi | Destruktif? |
+|------|-----------|-------------|
+| `git_status` | Branch, commit HEAD, file staged/modified/untracked | Tidak |
+| `git_diff` | Diff working tree / staged / ringkasan statistik | Tidak |
+| `git_log` | Riwayat commit terakhir (hash, tanggal, author, pesan) | Tidak |
+| `git_log_graph` | Log commit dengan grafik branch (`--graph --oneline --decorate`) | Tidak |
+| `git_show` | Isi/perubahan sebuah commit atau path | Tidak |
+| `git_blame` | Siapa menulis tiap baris & di commit mana | Tidak |
+| `git_branch` | Kelola branch: list / create / delete / switch | Tidak |
+| `git_add` | Stage file ke index (tanpa argumen = `git add -A`) | Tidak |
+| `git_commit` | Commit perubahan yang sudah di-stage | Tidak |
+| `git_undo` | Batalkan commit terakhir (soft reset `HEAD~1`; menolak bila sudah di-push) | Tidak |
+| `git_reset` | Reset HEAD ke ref (mode `soft`/`mixed`; `--hard` ditolak) | ✅ Ya |
+| `git_stash` | Stash: push / list / pop / drop | Tidak |
+| `git_run` | Perintah git arbitrer (perintah berbahaya ditolak) | Tidak |
+
+**Komunikasi & penjadwalan** — email, Telegram, TTS, cron:
+
+| Tool | Deskripsi | Destruktif? |
+|------|-----------|-------------|
+| `send_email` | Kirim email via SMTP (Gmail STARTTLS; butuh `GARWA_EMAIL_*`) | ✅ Ya |
+| `read_inbox` | Baca email masuk (belum dibaca) via IMAP | Tidak |
+| `read_email` | Baca isi lengkap satu email masuk | Tidak |
+| `reply_email` | Balas email masuk (baca IMAP, kirim SMTP) | ✅ Ya |
+| `send_telegram` | Kirim pesan teks ke Telegram via Bot API | ✅ Ya |
+| `send_document` | Kirim satu file ke Telegram sebagai attachment | ✅ Ya |
+| `text_to_speech` | Sintesis teks jadi audio (TTS) lalu kirim ke Telegram | ✅ Ya |
+| `schedule_task` | Daftarkan jadwal cron berulang (action: `send_email`/`send_telegram`/`bash`) | Tidak |
+| `list_schedules` | Tampilkan semua jadwal cron terdaftar | Tidak |
+| `remove_schedule` | Hapus jadwal cron berdasarkan nama | ✅ Ya |
+| `enable_schedule` | Aktifkan kembali jadwal cron yang nonaktif | Tidak |
+| `disable_schedule` | Nonaktifkan sementara jadwal cron (tanpa menghapus) | Tidak |
 
 > **Destruktif** = tool yang bisa mengubah/menghapus data. Aksi destruktif
 > meminta konfirmasi interaktif, kecuali `--auto-approve` diaktifkan.
@@ -739,7 +802,9 @@ Ganti lokasi default dengan `--skills-dir /path/lain` saat menjalankan.
 
 ### Skill bawaan yang disertakan
 
-Repositori ini sudah membawa beberapa skill siap pakai:
+Repositori ini sudah membawa **21 skill** siap pakai (folder `skills/`, plus
+dua panduan lepas `skills/termux-test-environment-guide.md` dan
+`skills/tree-sitter-termux-guide.md`):
 
 - `browser-automation` — automasi browser (Playwright/CDP) untuk registrasi, form filling, OTP
 - `captcha-solver` — penanganan CAPTCHA (reCAPTCHA/hCaptcha/Turnstile/image)
@@ -753,7 +818,9 @@ Repositori ini sudah membawa beberapa skill siap pakai:
 - `document-rag-compliance` — analisis dokumen RAG & compliance
 - `docx` — buat/edit dokumen Word (.docx)
 - `frontend-design` — panduan UI/frontend production-grade
+- `google-workspace` — akses Gmail/Calendar/Drive/Docs/Sheets via `gws` CLI
 - `hukum-indonesia` — riset & jawaban hukum Indonesia
+- `job-tracker` — scraping & pelaporan lowongan freelance luar (bayar USD)
 - `pdf` — buat/edit PDF
 - `pentest-security-audit` — perencanaan audit keamanan
 - `pptx` — buat/edit presentasi PowerPoint
@@ -812,10 +879,41 @@ Semua variabel dibaca dari environment (lihat `garwa/config.py`):
 | `GARWA_KEEP_TAIL_MESSAGES` | `8` | Jumlah pesan akhir yang dipertahankan saat ringkas |
 | `GARWA_MAX_TOOL_ITERS` | `500` | Batas pemanggilan tool per giliran |
 | `GARWA_AUTOPILOT_MAX` | `20` | Batas jumlah suntikan pesan lanjutan autopilot per giliran |
+| `GARWA_STREAM_TIMEOUT` | `45` | Timeout baca stream (detik); sengaja < idle timeout tunnel |
+| `GARWA_NONSTREAM_TIMEOUT` | `45` | Timeout request non-stream (detik) |
+| `GARWA_CONNECTION_RETRY` | `4` | Jumlah percobaan saat koneksi putus di tengah stream (1 awal + 3 retry, jeda 3 s) |
+| `GARWA_RATE_LIMIT_RETRY` | `5` | Jumlah percobaan saat HTTP 429 (jeda 3 s) |
+| `GARWA_CONCURRENT_RETRY` | `5` | Jumlah percobaan saat server sibuk/slot penuh (backoff 30–120 s) |
+| `GARWA_LLM_MAX_CONCURRENCY` | `1` | Admission control proses-wide ke server model (`0` = nonaktif) |
+| `GARWA_LLM_ADMISSION_WAIT` | `90` | Batas tunggu slot concurrency sebelum menyerah (detik) |
+| `GARWA_LOOP_BREAK_COOLDOWN` | `3` | Jeda (detik) setelah deteksi loop berulang |
+| `GARWA_SUBAGENT_MAX_DEPTH` | `2` | Kedalaman maksimum sub-agent berjenjang (`<=0` = tanpa sub-agent) |
+| `GARWA_SUBAGENT_TIMEOUT` | `900` | Timeout per task sub-agent (detik) |
+| `GARWA_SUBAGENT_STATUS` | `1` | `0` = matikan baris status sub-agent di terminal |
+| `GARWA_SUBAGENT_KEEPALIVE` | `15` | Interval baris keepalive status sub-agent (detik; `0` = mati) |
+| `GARWA_SUBAGENT_STALL` | `60` | Ambang detik tanpa kabar sebelum sub-agent ditandai MACET (`0` = watchdog mati) |
+| `GARWA_AUTO_COMMIT` | `0` | Auto-commit perubahan tiap giliran (`1`/`true`/`on`); juga `/auto-commit on` |
+| `GARWA_AUTO_COMMIT_AUTHOR` | *(kosong)* | Author commit yang dipakai auto-commit |
+| `GARWA_TIKTOKEN_ENCODING` | `cl100k_base` | Nama encoding tiktoken untuk estimasi token |
+| `GARWA_DEBUG_VISION` | *(kosong)* | Isi apa pun = cetak debug jalur vision/gambar |
+| `GARWA_DB_PATH` | `~/.garwa/garwa.db` | Lokasi database SQLite |
+| `GARWA_WORKDIR` | cwd saat start | Working directory sesi (di-set otomatis oleh CLI/`--workdir`) |
+| `GARWA_SESSION_ID` | *(kosong)* | ID sesi aktif (di-set otomatis oleh CLI/gateway) |
+| `GARWA_EMAIL_USER` / `_PASS` / `_RECIPIENT` | *(kosong)* | Kredensial SMTP/IMAP email (`send_email`, `read_inbox`) |
+| `GARWA_EMAIL_SMTP` / `_SMTP_PORT` | `smtp.gmail.com` / `587` | Host & port SMTP |
+| `GARWA_EMAIL_IMAP` / `_IMAP_PORT` | `imap.gmail.com` / `993` | Host & port IMAP |
 | `TELEGRAM_TOKEN` | *(kosong)* | Token bot Telegram (dari @BotFather); gateway `--bot` |
 | `TELEGRAM_ADMIN_ID` | *(kosong)* | ID akun (chat_id) yang boleh memerintah bot; kosong = tolak semua |
 | `GARWA_TELEGRAM_ALLOW_ALL` | *(kosong)* | `true` = izinkan SEMUA user memerintah bot (dev only) |
 | `GARWA_TELEGRAM_OFFSET_FILE` | `~/.garwa/telegram_offset.txt` | File penanda offset polling (hindari duplikasi update) |
+
+> **Alias yang diterima** (untuk kompatibilitas dengan konfigurasi lama):
+> `GARWA_TELEGRAM_TOKEN` / `JOB_TELEGRAM_TOKEN` untuk Telegram,
+> `GARWA_TELEGRAM_CHAT_ID` / `GARWA_TELEGRAM_CHANNEL_ID` /
+> `JOB_TELEGRAM_CHANNEL_ID` / `TELEGRAM_CHANNEL_ID` untuk chat tujuan, serta
+> prefiks `GARWA_EMAIL_*` / `JOB_EMAIL_*` / `EMAIL_*` untuk email. Variabel
+> `GARWA_MODEL_URL` / `GARWA_API_KEY` / `GARWA_MODEL` **tidak** dipakai —
+> gunakan `LLAMA_URL` / `LLAMA_API_KEY` / `LLAMA_MODEL`.
 
 > **Prioritas nilai:** environment variable > file config pengguna
 > (`~/.config/garwa/config`, diatur lewat slash-command `/api-model`, `/api-url`,
@@ -852,12 +950,18 @@ garwa/
   token_utils.py             estimasi token
   context_manager.py         manajemen konteks
   repo_map.py                peta struktur repo (PageRank)
+  checkpoints.py             checkpoint git per giliran (guard index git)
+  hooks.py                   hook pra/pasca tool (PreToolUse/PostToolUse)
+  subagent_registry.py       registry sub-agent yang berjalan
+  subagent_status.py         tampilan status sub-agent (keepalive progress)
+  telegram_gateway.py        gateway bot Telegram (long polling)
 
   security/                  audit keamanan (SAST/dependency/secrets/IaC/DAST)
     scanners/                satu file per scanner (semgrep, osv, pip_audit, dll.)
 
+  mcp/                       MCP client (stdio / streamable HTTP)
   tool_runtime/              runtime eksekusi tool
-  tools/                     definisi & implementasi 23 tool
+  tools/                     definisi & implementasi 53 tool
   cli/                       logika CLI
     markdown_render/         render markdown (latex, inline, tables, dll.)
     tool_schema/             skema tool (native calls, alt syntax)
@@ -876,9 +980,10 @@ skills/                      folder skill
 tests/                       test suite (pytest)
 ```
 
-**Total ~93 file `.py`.** File yang masih besar secara struktural adalah
-satu fungsi tunggal (`cli/agent_loop.py` — `run_agent_loop`, `cli/main.py` —
-`main`), yang tidak dipecah agar tidak mengubah perilaku.
+**Total 163 file `.py`** di dalam `garwa/` dan `tests/` (115 di antaranya di
+`garwa/`). File yang masih besar secara struktural adalah satu fungsi tunggal
+(`cli/agent_loop.py` — `run_agent_loop`, `cli/main.py` — `main`), yang tidak
+dipecah agar tidak mengubah perilaku.
 
 ---
 

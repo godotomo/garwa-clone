@@ -171,6 +171,38 @@ loop* yang salah positif, dan sejumlah bug fungsional di tools.
 
 ## [0.5.2] - 2026-09-09
 
+Penyempurnaan system prompt agar lebih general & adaptif (tidak hanya coding
+CLI), diadaptasi dari prinsip behavior-spec Hermes Agent tanpa mengadopsi
+penuh konsepnya.
+
+### Changed
+- **Identity lebih general & adaptif**: baris "asisten coding CLI" diganti
+  menjadi "asisten AI yang adaptif" — apa pun yang diminta user (coding,
+  riset, menulis, analisis data, desain, atau tugas umum) dikerjakan dengan
+  tool yang tersedia, bukan terpaku pada satu jenis tugas.
+- **Blok `CARANYA BERPERILAKU` baru**: sizing reply (panjang jawaban sesuai
+  bobot permintaan), tanpa filler/restate/narrate, klaim polos, depth earned
+  (bukan default) — diadaptasi dari `DEFAULT_AGENT_IDENTITY` hermes-agent.
+- **Blok `BAHASA RESPONS` baru**: ikuti bahasa yang dipakai user (Indonesia/
+  Inggris), tanpa mencampur tanpa alasan.
+- **Blok `ATURAN TAMBAHAN` baru**:
+  - Tanya dulu (1 pertanyaan singkat) saat permintaan ambigu, kecuali konteks jelas.
+  - Konfirmasi ke user sebelum perintah destruktif (hapus file, force-push, dsb).
+  - Jangan memanggil tool berlebihan; jawab langsung kalau sudah jelas.
+  - Laporkan error tool apa adanya, jangan menebak/mengarang hasil.
+
+### Internal
+- `system_prompt.py`: struktur prompt ditata ulang menjadi identity →
+  workdir → personality → tools → skills → env hint → perilaku → bahasa →
+  aturan tambahan → format tool call.
+
+### Tests
+- Suite total: **682 passed, 1 skipped** (0 regresi).
+
+---
+
+## [0.5.1] - 2026-09-09
+
 Fitur-fitur baru diambil dari Hermes Agent (nousresearch/hermes-agent) untuk
 memperkuat Garwa sebagai agentic runtime yang ringan, robust, dan berjalan
 di Termux. Semua fitur tetap memakai dependensi yang sudah ada (SQLite stdlib,
@@ -204,38 +236,6 @@ config) — tidak ada dependensi baru.
   command `/undo` `/retry` `/search` `/personality` `/usage`, dan injeksi
   persona ke system prompt.
 - Suite total: **683 passed, 1 skipped** (0 regresi).
-
----
-
-## [0.5.2] - 2026-09-09
-
-Penyempurnaan system prompt agar lebih general & adaptif (tidak hanya coding
-CLI), diadaptasi dari prinsip behavior-spec Hermes Agent tanpa mengadopsi
-penuh konsepnya.
-
-### Changed
-- **Identity lebih general & adaptif**: baris "asisten coding CLI" diganti
-  menjadi "asisten AI yang adaptif" — apa pun yang diminta user (coding,
-  riset, menulis, analisis data, desain, atau tugas umum) dikerjakan dengan
-  tool yang tersedia, bukan terpaku pada satu jenis tugas.
-- **Blok `CARANYA BERPERILAKU` baru**: sizing reply (panjang jawaban sesuai
-  bobot permintaan), tanpa filler/restate/narrate, klaim polos, depth earned
-  (bukan default) — diadaptasi dari `DEFAULT_AGENT_IDENTITY` hermes-agent.
-- **Blok `BAHASA RESPONS` baru**: ikuti bahasa yang dipakai user (Indonesia/
-  Inggris), tanpa mencampur tanpa alasan.
-- **Blok `ATURAN TAMBAHAN` baru**:
-  - Tanya dulu (1 pertanyaan singkat) saat permintaan ambigu, kecuali konteks jelas.
-  - Konfirmasi ke user sebelum perintah destruktif (hapus file, force-push, dsb).
-  - Jangan memanggil tool berlebihan; jawab langsung kalau sudah jelas.
-  - Laporkan error tool apa adanya, jangan menebak/mengarang hasil.
-
-### Internal
-- `system_prompt.py`: struktur prompt ditata ulang menjadi identity →
-  workdir → personality → tools → skills → env hint → perilaku → bahasa →
-  aturan tambahan → format tool call.
-
-### Tests
-- Suite total: **682 passed, 1 skipped** (0 regresi).
 
 ---
 
