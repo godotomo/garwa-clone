@@ -34,6 +34,21 @@ dan versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`subagent_status.py` — watchdog sub-agent bisa mati diam-diam (race
+  keepalive).** State keepalive dulu global dan tidak bergenerasi: ketika
+  sub-agent pertama selesai, `notify_done()` men-set `_keepalive_stop` milik
+  generasi berjalan; sub-agent kedua yang dipanggil setelah itu menemukan
+  thread watchdog lama masih `is_alive()` (belum sempat unwind) sehingga
+  `_ensure_keepalive()` *early-return* tanpa menyalakan watchdog baru — begitu
+  thread lama keluar, sub-agent kedua berjalan **tanpa satu pun baris status**
+  (`masih berjalan`/`MACET`). **Fix:** state watchdog dibuat per-generasi
+  (`_keepalive_stop` baru + `_keepalive_gen` + `_keepalive_alive` tiap spawn),
+  `_ensure_keepalive()` memeriksa flag `_keepalive_alive` alih-alih
+  `is_alive()`, penambahan `_request_keepalive_stop()` (yang juga mengecek ulang
+  `_any_running()` di dalam lock agar tidak mematikan watchdog generasi baru)
+  dan `_mark_keepalive_exit(gen)` (generasi usang yang telat bangun tidak
+  meng-clobber generasi baru). Regresi ditutup 4 test baru di
+  `tests/test_sub_agent_safety.py`.
 - **`dispatch.py` / `stream_call.py` — koneksi terputus di tengah stream
   langsung mematikan seluruh giliran.** `ChunkedEncodingError` (mis.
   `Connection broken: ConnectionAbortedError(103, 'Software caused connection

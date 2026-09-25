@@ -10,6 +10,8 @@ oleh loop di main.py, sehingga alur kontrol tetap satu tempat.
 from .. import config
 from .. import context_manager
 from .. import db as dbmod
+from .. import subagent_registry as subregistry
+from .. import subagent_status as substatus
 from .. import tools as tools_module
 from . import _state as state
 from ..mcp import (
@@ -107,10 +109,11 @@ COMMANDS = {
     "search": "Cari pesan lintas sesi (cross-session memory): /search <query>",
     "personality": "Set persona lintas sesi: /personality <deskripsi> (kosongkan untuk hapus)",
     "usage": "Tampilkan pemakaian token lintas sesi (aggregate)",
+    "agents": "Tampilkan sub-agent yang berjalan/selesai: /agents [clear] (clear = buang riwayat yang sudah selesai)",
 }
 
 # Command yang butuh argumen tambahan.
-_COMMANDS_WITH_ARGS = {"resume", "api-model", "api-url", "api-key", "ctx", "reserve", "summarize-threshold", "keep-tail", "max-tool-iters", "github-token", "github-max", "firecrawl-key", "news-lang", "pin", "unpin", "model", "memory", "git", "git-diff", "git-log", "git-add", "git-commit", "git-branch", "git-blame", "git-show", "git-reset", "git-stash", "git-log-graph"}
+_COMMANDS_WITH_ARGS = {"resume", "api-model", "api-url", "api-key", "ctx", "reserve", "summarize-threshold", "keep-tail", "max-tool-iters", "github-token", "github-max", "firecrawl-key", "news-lang", "pin", "unpin", "model", "memory", "git", "git-diff", "git-log", "git-add", "git-commit", "git-branch", "git-blame", "git-show", "git-reset", "git-stash", "git-log-graph", "agents"}
 
 
 def _print_help() -> None:
@@ -289,6 +292,95 @@ def _handle_status(args, session_id: str) -> None:
         import time as _time
         elapsed = _time.time() - start_time
         print(c(f"  durasi sesi  : {elapsed:.0f}s", C.DIM))
+
+
+def _handle_agents(arg: str) -> None:
+    """Tampilkan sub-agent yang berjalan/selesai (registry in-memory).
+
+    Sub-agent berjalan in-process (thread), jadi daftar ini hanya mencakup
+    sub-agent pada proses CLI ini -- bukan dari proses lain, dan tidak
+    tersimpan setelah CLI ditutup.
+
+    `/agents`        -> daftar semua record (running dulu, lalu terbaru).
+    `/agents clear`  -> buang record yang SUDAH SELESAI (yang masih running
+                        dipertahankan supaya tidak menghilang dari pandangan).
+    """
+    sub = (arg or "").strip().lower()
+
+    if sub == "clear":
+        records = subregistry.list_records()
+        running = [r for r in records if r["status"] == subregistry.STATUS_RUNNING]
+        if not running:
+            subregistry.clear()
+            print(c("[agents] riwayat sub-agent dibersihkan.", C.GREEN))
+            return
+        # Bersihkan hanya yang selesai: registry tidak menyediakan API hapus
+        # per-record, jadi dipakai trik clear + daftar ulang untuk running.
+        subregistry.clear()
+        for r in running:
+            rid = subregistry.register_start(r.get("role"), r.get("task"),
+                                             r.get("parent_session"))
+            subregistry.update(
+                rid,
+                session_id=r.get("session_id"),
+                status=r["status"],
+                started_at=r.get("started_at"),
+                finished_at=r.get("finished_at"),
+            )
+        print(c(f"[agents] riwayat record selesai dibuang "
+                f"({len(running)} sub-agent masih berjalan dipertahankan).",
+                C.GREEN))
+        return
+
+    records = subregistry.list_records()
+    if not records:
+        print(c("(belum ada sub-agent di proses ini)", C.DIM))
+        return
+
+    import time as _time
+    now = _time.time()
+    running = [r for r in records if r["status"] == subregistry.STATUS_RUNNING]
+    finished = [r for r in records if r["status"] != subregistry.STATUS_RUNNING]
+    # Urutkan yang selesai dari yang paling baru.
+    finished.sort(key=lambda r: r.get("finished_at") or 0, reverse=True)
+
+    print(c(f"[agents] {len(running)} berjalan, {len(finished)} selesai "
+            f"(total {len(records)} record di proses ini):", C.BOLD))
+
+    marks = {
+        subregistry.STATUS_RUNNING: ("…", C.YELLOW),
+        subregistry.STATUS_SUCCESS: ("✓", C.GREEN),
+        subregistry.STATUS_ERROR: ("✗", C.RED),
+        subregistry.STATUS_INTERRUPTED: ("⊘", C.DIM),
+    }
+    stall_after = substatus._stall_after()
+
+    for r in running + finished:
+        status = r["status"]
+        mark, color = marks.get(status, ("?", C.DIM))
+        started = r.get("started_at")
+        if status == subregistry.STATUS_RUNNING:
+            dur = f"{now - started:.0f}s" if started else "-"
+        else:
+            fin = r.get("finished_at") or now
+            dur = f"{fin - started:.0f}s" if started else "-"
+        role = r.get("role") or "?"
+        rid = r.get("id")
+        sid = r.get("session_id") or "-"
+        task = (r.get("task") or "").replace("\n", " ")[:60]
+        line = f"  {mark} {role:<12} {rid}  {dur:>7}  {sid}  {task}"
+        # Tandai record RUNNING yang tampak macet (tidak ada kabar > ambang).
+        if status == subregistry.STATUS_RUNNING and stall_after > 0 and started \
+                and (now - started) >= stall_after:
+            line += "  ⚠ MACET?"
+        print(c(line, color))
+        if status == subregistry.STATUS_ERROR and r.get("error"):
+            print(c(f"      └─ {str(r['error']).splitlines()[0][:100]}", C.DIM))
+
+    if running:
+        print(c("Sub-agent berjalan in-process di thread yang sama dengan "
+                "proses ini; CLI tidak bisa menerima input baru sampai "
+                "semuanya selesai.", C.DIM))
 
 
 def _handle_memory(args, arg: str) -> None:
@@ -972,6 +1064,10 @@ def handle_slash_command(cmd_line: str, args, session_id: str, system_content: s
 
     if name == "tools":
         _print_tools()
+        return {"action": "skip"}
+
+    if name == "agents":
+        _handle_agents(arg)
         return {"action": "skip"}
 
     if name == "approve":

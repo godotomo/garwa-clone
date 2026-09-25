@@ -54,10 +54,12 @@ def _run_team_member_one(idx: int, agent_id: str, role_prompt: str,
         result = ctx.run(_run)
     except BaseException as e:  # noqa: BLE001 -- isolasi wajib, jangan bocor
         return {"idx": idx, "agent_id": agent_id, "ok": False,
+                "sid": ctx.get(state.LAST_SUBAGENT_SID_VAR, None),
                 "report": f"[ERROR] thread anggota tim gagal: {type(e).__name__}: {e}",
                 "log": capture.getvalue()}
-    return {"idx": idx, "agent_id": agent_id, "ok": True, "report": result,
-            "log": capture.getvalue()}
+    return {"idx": idx, "agent_id": agent_id, "ok": True,
+            "sid": ctx.get(state.LAST_SUBAGENT_SID_VAR, None),
+            "report": result, "log": capture.getvalue()}
 
 
 def tool_team_run(members: list, objective: str = "",
@@ -119,6 +121,7 @@ def tool_team_run(members: list, objective: str = "",
                 # anggota itu saja -- anggota lain tetap dilaporkan.
                 results.append({
                     "idx": p["idx"], "agent_id": p["agent_id"], "ok": False,
+                    "sid": None,
                     "report": f"[ERROR] anggota tim gagal di level thread pool: "
                               f"{type(e).__name__}: {e}",
                     "log": "",
@@ -133,7 +136,9 @@ def tool_team_run(members: list, objective: str = "",
     lines = [header]
     for r in results:
         status = "OK" if r["ok"] else "GAGAL"
-        lines.append(f"\n=== Anggota: {r['agent_id']} [{status}] ===")
+        sid = r.get("sid")
+        sid_txt = f" session={sid}" if sid else ""
+        lines.append(f"\n=== Anggota: {r['agent_id']} [{status}]{sid_txt} ===")
         lines.append(r["report"])
         if r.get("log"):
             lines.append(f"\n--- log stdout {r['agent_id']} ---")

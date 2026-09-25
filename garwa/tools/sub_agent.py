@@ -144,6 +144,29 @@ def _resolve_role(role: str) -> str:
     return ROLE_PROMPTS.get(r, ROLE_PROMPTS["general"])
 
 
+# Batas kedalaman rekursi sub-agent. Kedalaman 0 = agen utama; 1 = sub-agent
+# tingkat pertama; dst. Tanpa batas ini, sub-agent yang (karena prompt/task-nya)
+# memanggil `spawn_agent` lagi akan memicu rekursi tak berujung: tiap tingkat
+# memakai satu thread + satu sesi DB + token LLM, sampai proses kehabisan
+# resource dan giliran utama terblokir selamanya.
+#
+# Env `GARWA_SUBAGENT_MAX_DEPTH` (default 2 = sampai sub-sub-agent); nilai <= 0
+# berarti TANPA BATAS (guard dimatikan) -- jangan dipakai kecuali benar-benar
+# butuh, karena itu membuka kembali risiko rekursi tak terbatas.
+SUBAGENT_MAX_DEPTH_DEFAULT = 2
+
+
+def _max_subagent_depth() -> int:
+    """Batas kedalaman sub-agent dari env (default 2; <=0 = tanpa batas)."""
+    raw = os.environ.get("GARWA_SUBAGENT_MAX_DEPTH")
+    if raw is None or str(raw).strip() == "":
+        return SUBAGENT_MAX_DEPTH_DEFAULT
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return SUBAGENT_MAX_DEPTH_DEFAULT
+
+
 def _make_sub_config() -> "object":
     """Buat `AgentConfig` untuk sub-agent dengan menyalin nilai dari state
     tools aktif (WORKDIR, DB_PATH, dll). Lazy-import `AgentConfig` di dalam
@@ -203,6 +226,19 @@ def _run_sub_agent_with_system(task: str, system_content: str,
     if not task:
         return "[ERROR] Argumen 'task' wajib diisi dan tidak boleh kosong."
 
+    # Guard kedalaman rekursi: cegah sub-agent memanggil sub-agent tanpa batas.
+    # Dicek SEBELUM membuat sesi/thread apa pun supaya penolakan murah (tidak
+    # ada record registry, sub-session DB, atau token yang terpakai).
+    depth = state.get_subagent_depth()
+    max_depth = _max_subagent_depth()
+    if max_depth > 0 and depth >= max_depth:
+        return (
+            f"[ERROR] Kedalaman sub-agent melebihi batas (depth={depth}, "
+            f"maks={max_depth}). Sub-agent tidak boleh memanggil sub-agent "
+            f"lebih dalam lagi; selesaikan task ini langsung di tingkat ini. "
+            f"(Atur GARWA_SUBAGENT_MAX_DEPTH untuk mengubah batas.)"
+        )
+
     db_path = getattr(state, "DB_PATH", None) or ""
     workdir = getattr(state, "WORKDIR", None) or os.getcwd()
 
@@ -261,6 +297,19 @@ def _run_sub_agent_with_system(task: str, system_content: str,
     # Memakai set_session_id/get_session_id (ContextVar) supaya isolasi
     # per-thread/context berfungsi saat sub-agent dijalankan paralel.
     prev_session = state.get_session_id()
+    # Catat sub_sid di context ini supaya PEMANGGIL (mis. _run_sub_agent_one /
+    # _run_team_member_one) bisa mengisi field `sid` pada hasilnya walau
+    # `_run_sub_agent_with_system` sendiri hanya mengembalikan string.
+    # SENGAJA tidak dipulihkan di `finally`: nilainya adalah "sid sub-agent
+    # terakhir di context ini" yang memang perlu tetap terbaca oleh pemanggil
+    # SETELAH fungsi ini kembali (dipakai untuk mengisi field `sid` hasil).
+    # Aman karena satu thread/context hanya menjalankan satu sub-agent.
+    state.set_last_subagent_sid(sub_sid)
+    # Naikkan kedalaman rekursi HANYA selama loop sub-agent berjalan. Anak
+    # sub-agent yang dipanggil dari dalam loop ini akan melihat kedalaman +1
+    # (ContextVar mengalir lewat jalur panggilan tool yang sama), sehingga guard
+    # di atas menghentikan rekursi tak berujung.
+    prev_depth = state.set_subagent_depth(state.get_subagent_depth() + 1)
     try:
         state.set_session_id(sub_sid)
         final_report = run_agent_loop(cfg, sub_sid, system_content)
@@ -278,6 +327,7 @@ def _run_sub_agent_with_system(task: str, system_content: str,
         else:
             _finish(registry.STATUS_SUCCESS)
     finally:
+        state.set_subagent_depth(prev_depth)
         state.set_session_id(prev_session)
 
     try:
@@ -336,11 +386,12 @@ def _run_sub_agent_one(idx: int, task: str, role: str, max_iters: int) -> dict:
     try:
         result = ctx.run(_run)
     except BaseException as e:  # noqa: BLE001 -- isolasi wajib, jangan bocor
-        return {"idx": idx, "sid": None, "role": role, "ok": False,
+        return {"idx": idx, "sid": ctx.get(state.LAST_SUBAGENT_SID_VAR, None), "role": role,
+                "ok": False,
                 "report": f"[ERROR] thread sub-agent gagal: {type(e).__name__}: {e}",
                 "log": capture.getvalue()}
-    return {"idx": idx, "sid": None, "role": role, "ok": True, "report": result,
-            "log": capture.getvalue()}
+    return {"idx": idx, "sid": ctx.get(state.LAST_SUBAGENT_SID_VAR, None), "role": role,
+            "ok": True, "report": result, "log": capture.getvalue()}
 
 
 def tool_spawn_agents_parallel(tasks: list, role: str = "general",
@@ -459,7 +510,9 @@ def tool_spawn_agents_parallel(tasks: list, role: str = "general",
     for r in results:
         n = r["idx"] + 1
         status = "OK" if r["ok"] else "GAGAL"
-        lines.append(f"\n=== Task #{n} ({r['role']}) [{status}] ===")
+        sid = r.get("sid")
+        sid_txt = f" session={sid}" if sid else ""
+        lines.append(f"\n=== Task #{n} ({r['role']}) [{status}]{sid_txt} ===")
         lines.append(r["report"])
         if r.get("log"):
             lines.append(f"\n--- log stdout task #{n} ---")

@@ -44,6 +44,31 @@ DB_PATH = os.environ.get("GARWA_DB_PATH", dbmod.DEFAULT_DB_PATH)
 _SESSION_ID_VAR: contextvars.ContextVar = contextvars.ContextVar(
     "tools_session_id", default=os.environ.get("GARWA_SESSION_ID")
 )
+# Kedalaman rekursi sub-agent (0 = agen utama). Dipakai `tools/sub_agent.py`
+# untuk mencegah sub-agent memanggil sub-agent TANPA BATAS (rekursi tak
+# berhingga -> thread/CPU/token habis, dan loop induk terblokir selamanya).
+#
+# ContextVar (bukan dict module-level) dipilih justru karena sifatnya:
+#   - sub-agent PARALEL berjalan di thread dengan `copy_context()` sendiri,
+#     jadi kedalaman satu task tidak terlihat/diubah task lain;
+#   - sub-agent BERSARANG berjalan di konteks yang sama (panggilan tool
+#     rekursif di thread itu), sehingga kenaikan kedalaman ikut menurun ke
+#     anak -- persis yang dibutuhkan penjaga rekursi.
+_SUBAGENT_DEPTH_VAR: contextvars.ContextVar = contextvars.ContextVar(
+    "tools_subagent_depth", default=0
+)
+# Session id sub-agent TERAKHIR yang dibuat pada context/thread saat ini.
+# Dipakai `tools/sub_agent.py` & `tools/team_agent.py` untuk mengisi field
+# `sid` pada hasil sub-agent (sebelumnya selalu None, sehingga pengguna tidak
+# bisa menelusuri/melanjutkan sesi sub-agent tertentu lewat `/resume`).
+# ContextVar (bukan global) supaya sub-agent PARALEL tidak saling menimpa:
+# tiap task berjalan di `copy_context()` sendiri, jadi nilainya terisolasi.
+_LAST_SUBAGENT_SID_VAR: contextvars.ContextVar = contextvars.ContextVar(
+    "tools_last_subagent_sid", default=None
+)
+# Alias publik: pemanggil yang memakai `copy_context()` perlu objek ContextVar
+# langsung (`ctx.get(VAR)`), bukan lewat aksesor modul.
+LAST_SUBAGENT_SID_VAR = _LAST_SUBAGENT_SID_VAR
 _RECENTLY_TOUCHED = []
 _MAX_RECENT = 20
 _RECENTLY_TOUCHED_LOCK = threading.Lock()
@@ -109,6 +134,38 @@ def set_session_id(sid):
     """Set SESSION_ID untuk context/thread saat ini. Mengembalikan nilai lama."""
     old = _SESSION_ID_VAR.get()
     _SESSION_ID_VAR.set(sid)
+    return old
+
+
+def get_subagent_depth():
+    """Kedalaman rekursi sub-agent pada context/thread saat ini.
+
+    0 = agen utama (giliran normal). 1 = sub-agent tingkat pertama, dst.
+    Lihat `_SUBAGENT_DEPTH_VAR` untuk alasan pemakaian ContextVar.
+    """
+    return _SUBAGENT_DEPTH_VAR.get()
+
+
+def set_subagent_depth(depth):
+    """Set kedalaman rekursi sub-agent; mengembalikan nilai lama (untuk restore)."""
+    old = _SUBAGENT_DEPTH_VAR.get()
+    _SUBAGENT_DEPTH_VAR.set(int(depth))
+    return old
+
+
+def get_last_subagent_sid():
+    """Session id sub-agent terakhir yang dibuat pada context/thread ini.
+
+    None bila belum ada sub-agent dijalankan pada context ini. Dipakai untuk
+    mengisi field `sid` pada hasil sub-agent paralel/team.
+    """
+    return _LAST_SUBAGENT_SID_VAR.get()
+
+
+def set_last_subagent_sid(sid):
+    """Set session id sub-agent terakhir; mengembalikan nilai lama (untuk restore)."""
+    old = _LAST_SUBAGENT_SID_VAR.get()
+    _LAST_SUBAGENT_SID_VAR.set(sid)
     return old
 
 
