@@ -514,3 +514,140 @@ def test_project_notes_section_uses_summary_when_available(db_path, session_id):
     assert "RINGKASAN LLM" in section
     # ringkasan LLM dipakai, bukan trim (tidak ada penanda pemangkasan)
     assert "…sisa dipangkas…" not in section
+
+
+# ------------------------------------- berbagi state baca per-giliran (P4)
+#
+# Satu giliran dulu membaca state yang PERSIS SAMA dua kali: sekali di
+# maybe_summarize(), sekali di build_context_messages(). Dengan `state`, giliran
+# yang tidak meringkas apa pun hanya membaca DB sekali. State HARUS diabaikan
+# kalau ditandai stale (summary baru ditulis) supaya tidak memakai data basi.
+
+def test_build_context_messages_uses_passed_state(db_path, session_id):
+    dbmod.add_message(db_path, session_id, "user", "dari state")
+    state = {
+        "notes_block": "\n<notes>N</notes>",
+        "summary": None,
+        "rows": [{"id": 1, "role": "user", "content": "dari state"}],
+        "pinned": [],
+        "stale": False,
+    }
+    msgs = cm.build_context_messages(db_path, session_id, "SYS", state=state)
+    assert msgs[0]["content"].startswith("SYS")
+    assert "<notes>" in msgs[0]["content"]
+    assert msgs[1] == {"role": "user", "content": "dari state"}
+
+
+def test_build_context_messages_ignores_stale_state(db_path, session_id):
+    dbmod.add_message(db_path, session_id, "user", "dari DB")
+    stale = {
+        "notes_block": "\n<notes>BASIS</notes>",
+        "summary": None,
+        "rows": [{"id": 1, "role": "user", "content": "dari state basi"}],
+        "pinned": [],
+        "stale": True,
+    }
+    msgs = cm.build_context_messages(db_path, session_id, "SYS", state=stale)
+    # state basi diabaikan: isi diambil ulang dari DB, tanpa notes basi.
+    assert msgs[1] == {"role": "user", "content": "dari DB"}
+    assert "<notes>" not in msgs[0]["content"]
+
+
+def test_prepare_context_messages_reuses_state_and_closes_scope(db_path, session_id, monkeypatch):
+    """Dalam satu giliran, build_context_messages() TIDAK membuka koneksi DB
+    sendiri: ia memakai state baca yang sudah dikumpulkan maybe_summarize().
+
+    Sebelum P4 satu giliran membuka 4 koneksi (2 untuk pembacaan catatan di
+    _ensure_note_summaries, 1 untuk maybe_summarize, 1 lagi untuk
+    build_context_messages). Setelah P4 tinggal 3: build memakai state. Dua
+    koneksi pertama (jalur ringkas catatan) SENGAJA tidak digabung ke scope
+    yang sama karena jalur itu bisa memanggil LLM -- koneksi tidak boleh
+    ditahan selama panggilan jaringan (lihat catatan di maybe_summarize).
+    """
+    dbmod.add_message(db_path, session_id, "user", "halo")
+
+    opens = []
+    real = dbmod._open_conn
+
+    def counting(db_path_, *a, **kw):
+        opens.append(db_path_)
+        return real(db_path_, *a, **kw)
+
+    monkeypatch.setattr(dbmod, "_open_conn", counting)
+
+    real_build = cm.build_context_messages
+    builds = []
+
+    def spy_build(*args, **kwargs):
+        before = len(opens)
+        out = real_build(*args, **kwargs)
+        builds.append(len(opens) - before)
+        return out
+
+    monkeypatch.setattr(cm, "build_context_messages", spy_build)
+    msgs = cm.prepare_context_messages(
+        db_path, session_id, "SYS", "http://x", "model", context_window_tokens=100000
+    )
+    assert msgs[0]["role"] == "system"
+    assert len(builds) == 1, "build_context_messages harus dipanggil tepat sekali"
+    # inti optimasi P4: build tidak menambah koneksi sama sekali
+    assert builds[0] == 0
+    assert len(opens) <= 3
+
+
+def test_prepare_context_messages_invalidates_state_after_summary(db_path, session_id, monkeypatch):
+    """Kalau maybe_summarize menulis summary baru, state ditandai stale sehingga
+    build_context_messages membaca ulang dari DB (ringkasan harus yang baru,
+    rows harus pesan setelah upto_id -- bukan data basi)."""
+    for i in range(50):
+        dbmod.add_message(db_path, session_id, "user", "kata " * 100)
+
+    seen = {}
+
+    def fake_summarize(url, model, text, api_key="", progress=None):
+        return {"narasi": "RINGKASAN-BARU", "instruksi_aktif": []}
+
+    monkeypatch.setattr(cm, "_summarize_text", fake_summarize)
+
+    real_build = cm.build_context_messages
+
+    def spy_build(*args, **kwargs):
+        state = kwargs.get("state")
+        seen["state"] = dict(state) if state else None
+        return real_build(*args, **kwargs)
+
+    monkeypatch.setattr(cm, "build_context_messages", spy_build)
+    msgs = cm.prepare_context_messages(
+        db_path, session_id, "SYS", "http://x", "model", context_window_tokens=3000
+    )
+    # summary tersimpan -> state yang diteruskan harus sudah stale
+    assert dbmod.get_latest_summary(db_path, session_id)["summary_text"] == "RINGKASAN-BARU"
+    assert seen["state"]["stale"] is True
+    # dan hasil build memakai ringkasan BARU (bukan state basi sebelum summary)
+    assert "RINGKASAN-BARU" in msgs[1]["content"]
+
+
+def test_no_connection_held_during_summarize_llm_call(db_path, session_id, monkeypatch):
+    """Tidak boleh ada koneksi DB yang ditahan selama panggilan LLM.
+
+    SQLite mengunci penulisan pada level database; menahan koneksi (apalagi
+    transaksi tulis) selama panggilan jaringan bisa memblokir proses lain
+    (mis. gateway Telegram, sub-agent paralel) sampai detik-detik timeout.
+    Jadi scope baca di maybe_summarize() harus SUDAH ditutup saat
+    _summarize_text dipanggil.
+    """
+    for _ in range(60):
+        dbmod.add_message(db_path, session_id, "user", "kata " * 80)
+
+    held = {}
+
+    def fake(url, model, text, api_key="", progress=None):
+        held["n"] = len(dbmod._scope_map())
+        return {"narasi": "RINGKASAN", "instruksi_aktif": []}
+
+    monkeypatch.setattr(cm, "_summarize_text", fake)
+    cm.prepare_context_messages(
+        db_path, session_id, "SYS", "http://x", "model", context_window_tokens=4000
+    )
+    assert held["n"] == 0
+    assert dbmod.get_latest_summary(db_path, session_id) is not None

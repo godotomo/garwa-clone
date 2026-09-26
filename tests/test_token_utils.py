@@ -160,3 +160,54 @@ def test_fast_path_thread_safe_and_consistent():
     for t in threads:
         t.join()
     assert results == [expected] * len(results)
+
+# ------------------------------------------- cache teks per-konten (optimasi P4)
+#
+# count_tokens() dipanggil berulang pada teks yang identik antar giliran
+# (notes_block, prior summary). Terukur ~37 ms + ~33 ms per sesi hampir
+# seluruhnya terbuang. Cache di bawah mememo hasilnya per hash KONTEN
+# (+ nama encoding). Nilai token TIDAK boleh berubah -- cache hanya mememo.
+
+def test_count_tokens_cache_returns_identical_value():
+    text = "kalimat uji caching token " * 20
+    first = token_utils.count_tokens(text)
+    second = token_utils.count_tokens(text)
+    assert first == second
+    # dan sama dengan tokenisasi langsung
+    token_utils._load_encoding()
+    if token_utils._ENC is not None:
+        assert first == len(token_utils._ENC.encode(text, disallowed_special=()))
+
+
+def test_count_tokens_cache_distinguishes_distinct_texts():
+    a = token_utils.count_tokens("teks A " * 30)
+    b = token_utils.count_tokens("teks B " * 31)
+    assert a != b
+    # ulangan tetap konsisten (tidak tertukar kunci)
+    assert token_utils.count_tokens("teks A " * 30) == a
+    assert token_utils.count_tokens("teks B " * 31) == b
+
+
+def test_count_tokens_cache_key_includes_encoding(monkeypatch):
+    text = "teks untuk kunci encoding " * 10
+    baseline = token_utils.count_tokens(text)
+    monkeypatch.setenv("GARWA_TIKTOKEN_ENCODING", "encoding-palsu-x")
+    # encoding berbeda -> kunci berbeda, jadi tidak boleh memakai hasil lama
+    key_fake = ("encoding-palsu-x", __import__("hashlib").md5(
+        text.encode("utf-8", "surrogatepass")).hexdigest())
+    assert key_fake not in token_utils._TEXT_TOKENS_CACHE
+    got = token_utils.count_tokens(text)
+    assert key_fake in token_utils._TEXT_TOKENS_CACHE
+    monkeypatch.delenv("GARWA_TIKTOKEN_ENCODING")
+    assert token_utils.count_tokens(text) == baseline
+
+
+def test_count_tokens_cache_is_bounded():
+    for i in range(token_utils._TEXT_TOKENS_CACHE_MAX + 50):
+        token_utils.count_tokens(f"teks unik {i}")
+    assert len(token_utils._TEXT_TOKENS_CACHE) <= token_utils._TEXT_TOKENS_CACHE_MAX
+
+
+def test_count_tokens_empty_not_cached():
+    assert token_utils.count_tokens("") == 0
+    assert token_utils.count_tokens(None) == 0

@@ -92,20 +92,55 @@ def _fallback_count_tokens(text: str) -> int:
     return max(1, int(n_chars / ratio))
 
 
+# Cache token untuk TEKS UTUH (bukan per-item payload JSON).
+#
+# Masalah: dalam satu giliran, string besar yang SAMA di-tokenisasi berulang
+# kali -- system prompt + notes_block dan prior_summary dihitung di
+# maybe_summarize(), lalu notes_block/summary juga ikut dihitung lagi saat
+# giliran berikutnya (notes_block hanya berubah kalau catatan berubah).
+# Terukur ~37 ms untuk system+notes dan ~33 ms untuk prior_summary per sesi;
+# hampir semuanya terbuang karena isinya identik antar giliran.
+#
+# Solusi: simpan hasil tokenisasi per hash KONTEN (+ nama encoding, karena
+# encoding berbeda = tokenisasi berbeda). Kunci memakai hash konten, BUKAN
+# id(objek) -- id() tidak aman karena GC bisa me-reuse id untuk objek baru
+# (lihat catatan yang sama di cache per-item di bawah).
+#
+# Nilai TIDAK berubah: cache hanya mememo hasil tokenisasi yang sama persis,
+# jadi keputusan budget tetap identik dengan tanpa cache.
+_TEXT_TOKENS_CACHE: dict = {}
+_TEXT_TOKENS_LOCK = threading.Lock()
+_TEXT_TOKENS_CACHE_MAX = 8192
+
+
 def count_tokens(text: str) -> int:
     """Hitung jumlah token untuk satu string teks.
 
     Memakai tiktoken bila tersedia (wajib), fallback ke heuristik dinamis.
+    Hasil di-cache per hash konten supaya teks yang sama (mis. notes_block,
+    prior summary) tidak di-tokenisasi ulang setiap giliran.
     """
     if not text:
         return 0
     _load_encoding()
+    key = (os.environ.get("GARWA_TIKTOKEN_ENCODING", "cl100k_base"),
+           hashlib.md5(text.encode("utf-8", "surrogatepass")).hexdigest())
+    with _TEXT_TOKENS_LOCK:
+        cached = _TEXT_TOKENS_CACHE.get(key)
+    if cached is not None:
+        return cached
     if _ENC is not None:
         try:
-            return len(_ENC.encode(text, disallowed_special=()))
+            n = len(_ENC.encode(text, disallowed_special=()))
         except Exception:
-            pass
-    return _fallback_count_tokens(text)
+            n = _fallback_count_tokens(text)
+    else:
+        n = _fallback_count_tokens(text)
+    with _TEXT_TOKENS_LOCK:
+        if len(_TEXT_TOKENS_CACHE) >= _TEXT_TOKENS_CACHE_MAX:
+            _TEXT_TOKENS_CACHE.clear()
+        _TEXT_TOKENS_CACHE[key] = n
+    return n
 
 
 def count_json_tokens(obj) -> int:

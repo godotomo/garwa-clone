@@ -835,10 +835,30 @@ def _read_context_state(db_path: str, session_id: str):
     return notes_block, summary, rows, pinned
 
 
-def build_context_messages(db_path: str, session_id: str, system_prompt: str) -> list:
+def build_context_messages(db_path: str, session_id: str, system_prompt: str,
+                           state: dict = None) -> list:
     """Bangun ulang list `messages` (format OpenAI chat: role/content) dari DB:
-    system prompt + ringkasan terakhir (kalau ada) + pesan mentah setelah itu."""
-    notes_block, summary, rows, pinned = _read_context_state(db_path, session_id)
+    system prompt + ringkasan terakhir (kalau ada) + pesan mentah setelah itu.
+
+    `state` (opsional, internal): hasil baca yang SUDAH dilakukan
+    `maybe_summarize()` pada giliran yang sama (lihat `state_out` di sana).
+    Dalam satu giliran, `prepare_context_messages` memanggil maybe_summarize()
+    lalu build_context_messages() -- keduanya membaca state yang PERSIS SAMA
+    (session/notes/last-user-message, latest summary, pesan setelah summary,
+    pesan pinned). Terukur 2x pembacaan penuh per giliran; dengan berbagi
+    state, giliran yang TIDAK meringkas apa pun hanya membaca DB sekali.
+
+    Hanya dipakai bila `state` ditandai masih segar (`stale` False). Kalau
+    maybe_summarize() menulis summary baru, state ditandai stale dan di sini
+    dibaca ulang dari DB -- jadi hasilnya tidak pernah memakai data basi.
+    """
+    if state and not state.get("stale"):
+        notes_block = state["notes_block"]
+        summary = state["summary"]
+        rows = state["rows"]
+        pinned = state["pinned"]
+    else:
+        notes_block, summary, rows, pinned = _read_context_state(db_path, session_id)
     system_prompt = system_prompt + notes_block
     out = [{"role": "system", "content": system_prompt}]
 
@@ -1045,7 +1065,8 @@ def maybe_summarize(db_path: str, session_id: str, url: str, model: str,
                      tools_payload=None, system_prompt: str = "",
                      reserve_for_response: int = RESERVE_FOR_RESPONSE,
                      summarize_threshold_ratio: float = SUMMARIZE_THRESHOLD_RATIO,
-                     keep_tail_messages: int = KEEP_TAIL_MESSAGES) -> bool:
+                     keep_tail_messages: int = KEEP_TAIL_MESSAGES,
+                     state_out: dict = None) -> bool:
     """Cek apakah riwayat mentah (yang belum tercakup summary) sudah melewati
     threshold token. Kalau iya, ringkas semua pesan lama (kecuali
     KEEP_TAIL_MESSAGES terakhir) jadi satu summary baru dan simpan ke DB.
@@ -1089,6 +1110,21 @@ def maybe_summarize(db_path: str, session_id: str, url: str, model: str,
         # dikirim utuh oleh build_context_messages, jadi sertakan token-nya agar
         # budget konsisten dengan request sungguhan.
         pinned_extra = dbmod.get_pinned_messages(db_path, session_id)
+
+    # Hasil baca di atas dipakai ULANG oleh build_context_messages() pada
+    # giliran yang sama (lihat parameter `state` di sana) -- keduanya memang
+    # membaca state yang persis sama, jadi membacanya dua kali hanya membuang
+    # I/O. Hanya dianggap segar selama fungsi ini TIDAK menulis summary baru;
+    # kalau menulis, ditandai stale supaya build membaca ulang dari DB.
+    if state_out is not None:
+        state_out.update({
+            "notes_block": notes_block,
+            "summary": summary,
+            "rows": rows,
+            "pinned": pinned_extra,
+            "stale": False,
+        })
+
     total_tokens = token_utils.count_tokens(system_prompt + notes_block)
     total_tokens += token_utils.count_messages_tokens(
         [{"content": r["content"]} for r in rows]
@@ -1179,6 +1215,12 @@ def maybe_summarize(db_path: str, session_id: str, url: str, model: str,
             new_summary.get("narasi", ""),
             active_instructions=active_instructions,
         )
+        # Summary baru sudah ditulis -> `rows`/`summary` yang dibaca di atas
+        # SUDAH BASI (rows harus dipotong ke pesan setelah upto_id, summary
+        # harus yang baru). Tandai stale supaya build_context_messages()
+        # membaca ulang dari DB dan TIDAK memakai state basi ini.
+        if state_out is not None:
+            state_out["stale"] = True
         _print_summary_result(new_summary.get("narasi", ""))
     except Exception:
 
@@ -1253,6 +1295,12 @@ def prepare_context_messages(
     # yang dipakai build_context_messages). Return value (apakah summarize
     # terjadi) tidak lagi dibutuhkan -- sejak keputusan desain "tanpa trim",
     # kita selalu mengirim pesan apa adanya, tidak memotong tail.
+    # State baca dibagikan dari maybe_summarize() ke build_context_messages():
+    # keduanya membaca state yang persis sama (session/notes/pesan terakhir,
+    # summary terakhir, pesan setelah summary, pesan pinned), jadi membacanya
+    # dua kali hanya membuang I/O. maybe_summarize() menandai state stale kalau
+    # ia menulis summary baru, sehingga build di bawah otomatis membaca ulang.
+    shared_state = {}
     maybe_summarize(
         db_path=db_path,
         session_id=session_id,
@@ -1265,12 +1313,14 @@ def prepare_context_messages(
         reserve_for_response=reserve_for_response,
         summarize_threshold_ratio=summarize_threshold_ratio,
         keep_tail_messages=keep_tail_messages,
+        state_out=shared_state,
     )
 
     messages = build_context_messages(
         db_path=db_path,
         session_id=session_id,
         system_prompt=system_prompt,
+        state=shared_state,
     )
 
     # CATATAN PERFORMA: di sini SEBELUMNYA dihitung
