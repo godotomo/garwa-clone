@@ -340,35 +340,105 @@ def _longest_line_run(text: str) -> tuple[str, int]:
     return best_line, best_run
 
 
+# Periode maksimum siklus baris yang diperiksa _longest_line_cycle. Pola
+# degenerate yang terverifikasi di produksi (mis. spam tag penutup tool_call
+# bergantian) berperiode 4; 8 memberi margin untuk varian serupa tanpa
+# membuka celah false-positive pada struktur markdown wajar (blok kode/tabel)
+# yang periodenya biasanya jauh lebih besar.
+_CYCLE_MAX_PERIOD = 8
+
+
+def _longest_line_cycle(text: str):
+    """Cari siklus baris berulang: blok `p` baris non-kosong yang identik
+    BERTURUT-TURUT minimal REPEAT_MAX_OCCUR kali, untuk p >= 2.
+
+    Melengkapi _longest_line_run (yang hanya menangani p == 1, yaitu baris
+    yang sama persis berulang). Loop degenerate nyata sering berbentuk SIKLUS
+    periodik, bukan baris tunggal berulang: mis. model memuntahkan tag penutup
+    tool_call secara bergantian (tag A, tag B, tag C, tag B, lalu terulang).
+    Di sini TIDAK ada baris yang berulang berturut-turut (run maksimum = 1),
+    sehingga _longest_line_run melaporkan "tidak ada repetisi" padahal jelas
+    degenerate. Siklus berperiode 4 inilah yang ditangkap fungsi ini.
+
+    Baris kosong memutus siklus (konsisten dengan _longest_line_run): jawaban
+    wajar memakai baris kosong sebagai pemisah antar-seksi, jadi blok yang
+    memuat baris kosong sengaja TIDAK dianggap siklus.
+
+    Mengembalikan (period, repeat_count, sample_block) atau (0, 0, []) bila
+    tidak ada siklus yang mencapai ambang.
+    """
+    if not text:
+        return 0, 0, []
+
+    lines = [ln.strip() for ln in text.split("\n")]
+    n = len(lines)
+    best = (0, 0, [])
+    for p in range(2, _CYCLE_MAX_PERIOD + 1):
+        i = 0
+        while i + p <= n:
+            block = lines[i:i + p]
+            if any(not x for x in block):
+                # Baris kosong di dalam blok -> bukan siklus; maju satu baris.
+                i += 1
+                continue
+            reps = 1
+            j = i + p
+            while j + p <= n and lines[j:j + p] == block:
+                reps += 1
+                j += p
+            if reps >= state.REPEAT_MAX_OCCUR and reps * p > best[1] * best[0]:
+                best = (p, reps, block)
+            # Lewati seluruh run yang baru ditemukan supaya tidak dihitung
+            # ulang dari posisi bergeser (mis. siklus p=2 juga terlihat sebagai
+            # p=4 dengan setengah repetisi).
+            i = j if reps > 1 else i + 1
+    return best
+
+
 def _find_repeated_text(text: str, max_sample: int = 160) -> str:
-    """Ambil contoh baris yang paling sering diulang berturut-turut.
+    """Ambil contoh baris/siklus yang paling sering diulang berturut-turut.
 
     Mengembalikan string pendek (<= max_sample karakter) berisi sample +
-    jumlah kemunculan, atau "" kalau tidak ada baris yang terulang.
-    Memakai definisi run yang sama dengan _detect_repetition supaya pesan
-    [LOOP] selalu konsisten dengan keputusan deteksinya.
+    jumlah kemunculan, atau "" kalau tidak ada yang terulang.
+    Memakai definisi run/siklus yang sama dengan _detect_repetition supaya
+    pesan [LOOP] selalu konsisten dengan keputusan deteksinya.
     """
     if not text:
         return ""
 
     most_line, line_n = _longest_line_run(text)
+    period, reps, block = _longest_line_cycle(text)
+    # Pilih sinyal yang mencakup lebih banyak baris (run p=1 vs siklus p>=2).
+    if period and reps * period > line_n:
+        sample = " | ".join(block)
+        return f"siklus {period} baris x {reps}: {sample[:max_sample]!r}"
     if line_n < 2:
         return ""
     return f"baris {line_n}x: {most_line[:max_sample]!r}"
 
 
 def _detect_repetition(text: str) -> bool:
-    """Deteksi degenerate loop: baris sama berulang >= REPEAT_MAX_OCCUR.
+    """Deteksi degenerate loop pada teks SATU respon.
 
-    Satu sinyal saja (sengaja sesederhana mungkin): baris non-kosong yang
-    persis sama muncul minimal REPEAT_MAX_OCCUR kali SECARA BERTURUT-TURUT.
-    Lihat _longest_line_run untuk alasan memakai run, bukan total kemunculan.
+    Dua sinyal (keduanya menuntut pengulangan BERTURUT-TURUT, bukan total
+    kemunculan tersebar -- lihat _longest_line_run untuk alasannya):
+
+      1. Baris non-kosong yang persis sama muncul minimal REPEAT_MAX_OCCUR
+         kali berturut-turut (p == 1).
+      2. SIKLUS periodik: blok p baris (2 <= p <= _CYCLE_MAX_PERIOD) yang
+         identik berulang minimal REPEAT_MAX_OCCUR kali berturut-turut.
+         Menangkap pola seperti spam tag bergantian yang lolos dari sinyal 1
+         karena tidak ada baris yang berulang berurutan.
     """
     if not text:
         return False
 
     _, line_n = _longest_line_run(text)
-    return line_n >= state.REPEAT_MAX_OCCUR
+    if line_n >= state.REPEAT_MAX_OCCUR:
+        return True
+
+    _period, reps, _block = _longest_line_cycle(text)
+    return reps >= state.REPEAT_MAX_OCCUR
 
 
 def _terminal_width(text: str) -> int:

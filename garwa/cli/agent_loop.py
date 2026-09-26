@@ -23,6 +23,7 @@ from .colors import C
 from .colors import c
 from .colors import colorize_diff
 from .json_repair import extract_tool_call, extract_tool_calls, strip_tool_call_blocks
+from .json_repair import has_unfenced_tool_call_open
 from .llm_client import call_llama_server
 from .ndjson import emit as ndjson_emit
 from .llm_errors import ContextExceededError
@@ -586,7 +587,7 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
             # tag rusak. Sebelum perbaikan: giliran langsung [STOP] senyap dan
             # user harus memaksa lanjut manual. Sekarang suntikkan koreksi lalu
             # coba lagi, dibatasi supaya tidak jadi loop tak berujung.
-            if "<tool_call" in assistant_text and _malformed_count < _MAX_MALFORMED_RETRIES:
+            if has_unfenced_tool_call_open(assistant_text) and _malformed_count < _MAX_MALFORMED_RETRIES:
                 _malformed_count += 1
                 print(c(
                     f"  [MALFORMED] Blok <tool_call> ada tapi JSON-nya tidak "

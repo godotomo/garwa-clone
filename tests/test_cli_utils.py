@@ -844,10 +844,31 @@ class TestDetectRepetition:
             )
         assert text_utils._detect_repetition("\n".join(blocks)) is False
 
-    def test_alternating_lines_not_detected(self):
-        # A/B/A/B/... tidak pernah membentuk run >= 5.
+    def test_alternating_lines_cycle_detected(self):
+        # A/B/A/B/... TIDAK membentuk run p=1 >= 5 (tidak ada baris yang
+        # berulang berturut-turut), tetapi membentuk SIKLUS periodik p=2
+        # sebanyak 6 kali. Loop degenerate nyata (mis. spam tag penutup
+        # tool_call bergantian) berbentuk siklus seperti ini, jadi harus
+        # terdeteksi oleh sinyal siklus.
         text = "\n".join("A" if i % 2 else "B" for i in range(12))
+        assert text_utils._detect_repetition(text) is True
+
+    def test_alternating_lines_below_cycle_threshold_not_detected(self):
+        # A/B/A/B hanya 4 siklus (< REPEAT_MAX_OCCUR=5) -> tetap aman,
+        # tidak dianggap loop. Menjaga agar siklus pendek tidak over-detect.
+        text = "\n".join("A" if i % 2 else "B" for i in range(8))
         assert text_utils._detect_repetition(text) is False
+
+    def test_tool_close_tag_spam_cycle_detected(self):
+        # REGRESI: pola spam tag penutup tool_call yang bergantian (siklus
+        # 4-baris, TIDAK ada baris yang berulang berturut-turut) sebelumnya
+        # lolos dari deteksi repetisi. Sekarang harus tertangkap.
+        spam = "\n".join(
+            ["</call>", "</invoke>", "</tool_call>", "</invoke>"] * 20
+        )
+        assert text_utils._detect_repetition(spam) is True
+        sample = text_utils._find_repeated_text(spam)
+        assert "siklus" in sample
 
     def test_blank_line_breaks_run(self):
         # 4 baris sama, lalu kosong, lalu 4 baris sama lagi: run terpanjang

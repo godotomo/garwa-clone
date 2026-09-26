@@ -335,6 +335,33 @@ def _iter_tool_call_json_blocks(text: str):
         yield raw_json
 
 
+def has_unfenced_tool_call_open(text: str) -> bool:
+    """True bila ada tag pembuka `<tool_call` di LUAR code fence markdown tertutup.
+
+    Dipakai oleh guard [MALFORMED] di agent_loop supaya konsisten dengan parser
+    sungguhan (`_iter_tool_call_blocks`), yang SUDAH mengabaikan `<tool_call>`
+    di dalam ``` ... ``` tertutup (contoh/dokumentasi). Sebelumnya guard memakai
+    cek substring MENTAH `"<tool_call" in assistant_text`, sehingga setiap kali
+    model/asisten MENJELASKAN format tool_call (menulis tag itu di prosa atau di
+    dalam fence) Garwa salah mengira ada pemanggilan gagal -> menyuntikkan
+    koreksi [MALFORMED] palsu dan mengulang giliran tanpa perlu.
+
+    Sengaja HANYA mencari tag PEMBUKA (bukan blok berimbang): guard ini dipakai
+    justru ketika JSON-nya rusak/terpotong sehingga blok berimbang tidak ada,
+    tapi niat memanggil tool tetap terlihat dari tag pembuka.
+    """
+    open_prefix = state.TOOL_OPEN.rstrip(">")  # "<tool_call" (tanpa '>')
+    fenced = _fenced_code_spans(text)
+    idx = 0
+    while True:
+        pos = text.find(open_prefix, idx)
+        if pos == -1:
+            return False
+        if not any(s <= pos < e for s, e in fenced):
+            return True
+        idx = pos + len(open_prefix)
+
+
 def strip_tool_call_blocks(text: str) -> str:
     """Hapus SEMUA blok `<tool_call>...</tool_call>` valid dari `text`.
 

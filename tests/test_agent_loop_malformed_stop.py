@@ -143,3 +143,51 @@ def test_malformed_correction_message_mentions_truncation(env, monkeypatch):
     combined = "\n".join(m.get("content", "") for m in msgs)
     assert "TERPOTONG" in combined
     assert "PECAH" in combined
+
+
+# Teks yang MENYEBUT literal tag pembuka di dalam code fence TERTUTUP --
+# mis. asisten mendokumentasikan format tool_call. Parser (extract_tool_calls)
+# menolak blok di dalam fence, jadi ini BUKAN tool_call rusak.
+_FENCED_LITERAL = (
+    "Format tool_call yang benar:\n\n"
+    "```\n"
+    "<tool_call>\n"
+    '{"name": "bash", "arguments": {"command": "ls"}}\n'
+    "</tool_call>\n"
+    "```\n\n"
+    "Itu contohnya."
+)
+
+
+class _FencedThenFinal:
+    """Percobaan 1 -> sebut tag di dalam fence; percobaan 2 -> jawaban final."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, *a, **kw):
+        self.calls += 1
+        if self.calls == 1:
+            return _FENCED_LITERAL
+        return "Selesai."
+
+
+def test_fenced_literal_tool_call_not_flagged_malformed(env, monkeypatch):
+    """REGRESI false-positive: tag di dalam fence tertutup BUKAN tool_call
+    rusak, jadi TIDAK boleh memicu koreksi [MALFORMED].
+
+    Guard lama memakai cek substring mentah `"<tool_call" in assistant_text`
+    yang tidak menghormati code fence, sehingga jawaban wajar yang
+    mendokumentasikan format tool_call berulang kali salah ditandai rusak.
+    """
+    args, db_path, sid = env
+    fake = _FencedThenFinal()
+    monkeypatch.setattr("garwa.cli.agent_loop.call_llama_server", fake)
+
+    al.run_agent_loop(args, sid, "test system")
+
+    msgs = dbmod.get_all_messages(db_path, sid)
+    combined = "\n".join(m.get("content", "") for m in msgs)
+    assert "[MALFORMED]" not in combined, (
+        "tag di dalam code fence tertutup tidak boleh dianggap tool_call rusak"
+    )
