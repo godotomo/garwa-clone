@@ -231,6 +231,53 @@ TOOL_CALL_PACING_SECONDS = 0
 ERROR_REPEAT_WINDOW = 4
 ERROR_REPEAT_THRESHOLD = 2
 REPEAT_MAX_OCCUR = 5
+# --- Deteksi POLA (pattern), bukan isi kata -------------------------------
+# Sinyal di atas (REPEAT_MAX_OCCUR) menuntut baris yang isinya SAMA PERSIS
+# berulang BERTURUT-TURUT, dan baris kosong memutus run/siklus. Akibatnya pola
+# degenerate yang sangat umum -- paragraf pendek dipisah baris kosong lalu
+# diulang, mis. "Ok." / "Baik saya tulis." bergantian -- lolos total: tidak
+# ada baris yang berulang berturut-turut, dan setiap blok memuat baris kosong
+# sehingga dilewati deteksi siklus. Tiga konstanta di bawah mengatur sinyal
+# tambahan yang memperlakukan baris kosong sebagai BAGIAN dari pola.
+#
+# Ambang pengulangan lebih rendah dari REPEAT_MAX_OCCUR karena pola pendek
+# berulang 3x sudah jelas degenerate, sementara run baris tunggal butuh 5 agar
+# struktur markdown wajar (fence, separator, header tabel) tidak salah tuduh.
+PATTERN_CYCLE_MIN_REPS = 3
+# Periode maksimum siklus pola. 4 cukup untuk pola paragraf-pendek yang
+# terverifikasi (baris isi + baris kosong -> p=2 atau p=4); periode 5-8 terlalu
+# mudah terbentuk dari struktur markdown wajar (mis. tabel berulang) sehingga
+# sengaja tidak dipakai di sinyal pola.
+PATTERN_SHAPE_MAX_PERIOD = 4
+# Panjang maksimum baris yang dianggap "pendek" saat membandingkan BENTUK baris
+# (mode shape). Baris lebih panjang diberi token unik sehingga tidak pernah
+# cocok -- mencegah jawaban wajar berisi paragraf panjang berstruktur sama
+# (mis. 5 blok kode dengan bentuk identik) salah dianggap pola degenerate.
+PATTERN_SHORT_LINE_MAX = 24
+# Ambang untuk sinyal pola LUNAK (fuzzy): unit yang sama kembali berulang
+# walau kalimatnya sedikit berbeda antar-iterasi (mis. "Baik saya tulis."
+# menjadi "Baik, akan saya tulis."). Sengaja lebih tinggi dari
+# PATTERN_CYCLE_MIN_REPS karena pencocokan lunak mengabaikan sebagian isi,
+# sehingga dokumen wajar yang kebetulan mirip antar-seksi bisa ikut terbentuk.
+# Ambang 5 menuntut pengulangan yang sudah tidak wajar bagi dokumen normal.
+PATTERN_SHAPE_MIN_REPS = 5
+# Ambang kemiripan dua baris pada pencocokan lunak: rasio token yang sama
+# (irisan / jumlah token terbanyak). 0.75 dipilih supaya penambahan/penggantian
+# satu kata pada baris pendek masih dianggap "unit yang sama", tetapi daftar
+# berbutir yang butirnya berbeda isi ("- Item satu" vs "- Item dua" = 0.67)
+# TIDAK ikut cocok -- kalau ambang ini diturunkan, daftar berbutir biasa akan
+# salah dianggap pola degenerate.
+PATTERN_LINE_SIMILARITY = 0.75
+# Panjang maksimum baris yang dianggap "sangat pendek" (tiny). Baris sependek
+# ini tidak punya cukup sinyal ISI untuk dibandingkan ("Ok." vs "Oke." vs
+# "Ok ya." tidak berbagi satu token pun), jadi pada sinyal pola LUNAK baris
+# sangat pendek dibandingkan berdasarkan BENTUK saja: dua-duanya pendek ->
+# dianggap bagian dari pola yang sama. Ini yang membuat loop "acknowledgement
+# pendek" dengan kata yang diganti-ganti tetap tertangkap tanpa menghardcode
+# satu frasa pun. Baris ber-penanda markdown (butir daftar, heading, tabel)
+# dan baris yang berbeda hanya pada penomoran/kata urut DIKECUALIKAN -- itu
+# enumerasi wajar, bukan pengulangan.
+PATTERN_TINY_LINE_MAX = 12
 REPEAT_CHECK_EVERY = 200
 LOOP_SIMILARITY_THRESHOLD = 0.95
 # Batas jumlah suntikan pesan lanjutan oleh autopilot dalam SATU giliran.
