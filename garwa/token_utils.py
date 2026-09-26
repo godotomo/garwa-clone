@@ -166,6 +166,42 @@ _FAST_CORRECTION = None
 _FAST_CORRECTION_LOCK = threading.Lock()
 
 
+# Cache token untuk potongan TEPI payload: head = "[" + s0 + ", " dan
+# tail = s_{n-1} + "]". Keduanya hanya bergantung pada item itu sendiri, tapi
+# SEBELUMNYA dihitung ulang setiap panggilan count_messages_tokens(): pada
+# giliran normal item pertama SELALU system prompt (ribuan token) dan item
+# terakhir selalu pesan user terakhir, jadi keduanya termasuk bagian termahal
+# dari perhitungan (~6 ms/sesi terukur, dengan outlier sampai 726 ms ketika
+# prompt besar). Di-cache per-hash-konten, sama seperti item tengah.
+_MSG_EDGE_TOKENS_CACHE: dict = {}
+_MSG_EDGE_TOKENS_LOCK = threading.Lock()
+_MSG_EDGE_TOKENS_CACHE_MAX = 20_000
+
+
+def _msg_edge_tokens(serialized: str, kind: str) -> int:
+    """Token potongan tepi: head="["+s+", ", tail=s+"]", solo="["+s+"]".
+
+    Hasil selalu identik dengan tokenisasi langsung (tidak ada aproksimasi),
+    jadi nilai token tidak berubah -- hanya di-cache per hash konten item.
+    """
+    payload = (
+        "[" + serialized + ", " if kind == "head"
+        else "[" + serialized + "]" if kind == "solo"
+        else serialized + "]"
+    )
+    key = (kind, hashlib.md5(serialized.encode("utf-8")).hexdigest())
+    with _MSG_EDGE_TOKENS_LOCK:
+        cached = _MSG_EDGE_TOKENS_CACHE.get(key)
+    if cached is not None:
+        return cached
+    n = count_tokens(payload)
+    with _MSG_EDGE_TOKENS_LOCK:
+        if len(_MSG_EDGE_TOKENS_CACHE) >= _MSG_EDGE_TOKENS_CACHE_MAX:
+            _MSG_EDGE_TOKENS_CACHE.clear()
+        _MSG_EDGE_TOKENS_CACHE[key] = n
+    return n
+
+
 def _msg_item_tokens(serialized: str) -> int:
     """Token dari satu item pesan JSON dengan pemisah ", " menempel."""
     key = hashlib.md5(serialized.encode("utf-8")).hexdigest()
@@ -243,9 +279,9 @@ def _count_messages_json_tokens(messages) -> int:
         return count_tokens("[" + ", ".join(serialized) + "]")
     n = len(serialized)
     if n == 1:
-        return count_tokens("[" + serialized[0] + "]")
-    head = count_tokens("[" + serialized[0] + ", ")
-    tail = count_tokens(serialized[-1] + "]")
+        return _msg_edge_tokens(serialized[0], "solo")
+    head = _msg_edge_tokens(serialized[0], "head")
+    tail = _msg_edge_tokens(serialized[-1], "tail")
     mids = 0
     for s in serialized[1:-1]:
         mids += _msg_item_tokens(s)

@@ -538,3 +538,133 @@ def test_replace_todos_preserves_status_since_across_legacy_migration(tmp_path):
     dbmod.replace_todos(path, "/tmp/w", [{"content": "lama", "status": "pending"}])
     after = dbmod.get_todos(path, "/tmp/w")[0]["status_since"]
     assert before == after == 1000.0
+
+
+# ------------------------------------------- connection_scope (optimasi P3)
+#
+# Membuka koneksi SQLite baru tidak murah: query pertama harus memuat skema +
+# cache halaman (~1.7 ms/koneksi terukur). Satu giliran dulu membuka 5-6
+# koneksi. `connection_scope()` membagikan SATU koneksi ke semua `connect()`
+# bersarang ke path yang sama. Tes di bawah menjaga agar sifat itu tidak
+# hilang lagi (regresi performa) tanpa mengubah perilaku (commit/rollback).
+
+def _count_opens(monkeypatch, path):
+    """Hitung berapa kali `_open_conn` benar-benar dipanggil."""
+    calls = {"n": 0}
+    real = dbmod._open_conn
+
+    def counting(db_path, *a, **kw):
+        calls["n"] += 1
+        return real(db_path, *a, **kw)
+
+    monkeypatch.setattr(dbmod, "_open_conn", counting)
+    return calls
+
+
+def test_connection_scope_reuses_single_connection(monkeypatch, session_id, db_path):
+    calls = _count_opens(monkeypatch, db_path)
+    with dbmod.connection_scope(db_path):
+        for _ in range(5):
+            with dbmod.connect(db_path) as conn:
+                conn.execute("SELECT COUNT(*) FROM messages").fetchone()
+    assert calls["n"] == 1
+
+
+def test_connection_scope_is_reentrant(monkeypatch, db_path):
+    calls = _count_opens(monkeypatch, db_path)
+    with dbmod.connection_scope(db_path):
+        with dbmod.connection_scope(db_path) as inner:
+            inner.execute("SELECT 1").fetchone()
+        with dbmod.connect(db_path) as conn:
+            conn.execute("SELECT 1").fetchone()
+    assert calls["n"] == 1
+
+
+def test_connection_scope_connects_once_per_path(monkeypatch, tmp_path):
+    other = str(tmp_path / "other.db")
+    dbmod.init_db(other)
+    db_path = str(tmp_path / "main.db")
+    dbmod.init_db(db_path)
+    calls = _count_opens(monkeypatch, db_path)
+    with dbmod.connection_scope(db_path):
+        with dbmod.connect(db_path) as conn:
+            conn.execute("SELECT 1").fetchone()
+        with dbmod.connection_scope(other):
+            with dbmod.connect(other) as conn:
+                conn.execute("SELECT 1").fetchone()
+        with dbmod.connect(db_path) as conn:
+            conn.execute("SELECT 1").fetchone()
+    # satu untuk path utama, satu untuk path lain
+    assert calls["n"] == 2
+
+
+def test_connection_scope_closes_after_exit(monkeypatch, db_path):
+    """Setelah scope keluar, `connect()` kembali membuka koneksi sendiri
+    (koneksi scope tidak boleh dipakai ulang / bocor)."""
+    with dbmod.connection_scope(db_path):
+        pass
+    calls = _count_opens(monkeypatch, db_path)
+    with dbmod.connect(db_path) as conn:
+        conn.execute("SELECT 1").fetchone()
+    assert calls["n"] == 1
+
+
+def test_connection_scope_commits_writes(session_id, db_path):
+    """Penulisan di dalam scope tetap ter-commit (sama seperti connect())."""
+    with dbmod.connection_scope(db_path):
+        dbmod.add_message(db_path, session_id, "user", "pesan dalam scope")
+    rows = dbmod.get_all_messages(db_path, session_id)
+    assert any(r["content"] == "pesan dalam scope" for r in rows)
+
+
+def test_connection_scope_rolls_back_on_error(session_id, db_path):
+    """Exception yang keluar dari scope terluar -> rollback, bukan commit."""
+    with pytest.raises(RuntimeError):
+        with dbmod.connection_scope(db_path):
+            dbmod.add_message(db_path, session_id, "user", "harus dibatalkan")
+            raise RuntimeError("gagal di tengah")
+    rows = dbmod.get_all_messages(db_path, session_id)
+    assert not any(r["content"] == "harus dibatalkan" for r in rows)
+
+
+def test_connection_scope_state_cleared_after_error(db_path):
+    """Scope gagal tidak boleh menyisakan state di thread-local (tidak bocor
+    ke pemanggilan berikutnya)."""
+    with pytest.raises(RuntimeError):
+        with dbmod.connection_scope(db_path):
+            raise RuntimeError("boom")
+    assert dbmod._scope_map() == {}
+    # dan scope baru tetap bisa dibuka
+    with dbmod.connection_scope(db_path) as conn:
+        assert conn.execute("SELECT 1").fetchone()[0] == 1
+
+
+def test_connection_scope_isolated_per_thread(db_path):
+    """Koneksi sqlite tidak boleh dipakai lintas thread -- tiap thread harus
+    mendapat koneksi scope-nya sendiri (aman untuk sub-agent paralel)."""
+    import threading
+
+    seen = {}
+
+    def worker(tag):
+        with dbmod.connection_scope(db_path) as conn:
+            seen[tag] = conn
+            conn.execute("SELECT 1").fetchone()
+
+    with dbmod.connection_scope(db_path) as main_conn:
+        t = threading.Thread(target=worker, args=("t",))
+        t.start()
+        t.join()
+        assert seen["t"] is not main_conn
+
+
+def test_read_context_state_uses_single_connection(monkeypatch, session_id, db_path):
+    """build_context_messages satu giliran harus memakai SATU koneksi DB."""
+    from garwa import context_manager as cm
+
+    dbmod.add_message(db_path, session_id, "user", "halo")
+    dbmod.add_message(db_path, session_id, "assistant", "hai")
+    calls = _count_opens(monkeypatch, db_path)
+    msgs = cm.build_context_messages(db_path, session_id, "sys")
+    assert msgs[0]["role"] == "system"
+    assert calls["n"] == 1

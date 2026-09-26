@@ -811,13 +811,37 @@ def _render_notes_block(notes_data: tuple, query: str) -> str:
     return header + "\n".join(lines)
 
 
+def _read_context_state(db_path: str, session_id: str):
+    """Baca seluruh state yang dibutuhkan build_context_messages dari DB.
+
+    Dikerjakan dalam SATU koneksi (lihat `db.connection_scope`). Sebelumnya
+    setiap `connect()` di dalam DB membuka koneksi baru: satu pembangunan
+    konteks = 6 koneksi (notes: get_session + get_notes + get_last_user_message,
+    lalu get_latest_summary, get_messages_after/get_all_messages,
+    get_pinned_messages). Churn buka/tutup koneksi itu sendiri terukur
+    ~1.7 ms/koneksi (~10 ms/giliran) -- jauh lebih besar dari biaya PRAGMA
+    journal_mode=WAL (0.12 ms) yang dulu disangka penyebabnya.
+
+    Mengembalikan (notes_block, summary, rows, pinned).
+    """
+    with dbmod.connection_scope(db_path):
+        notes_block = _project_notes_section(db_path, session_id)
+        summary = dbmod.get_latest_summary(db_path, session_id)
+        if summary:
+            rows = dbmod.get_messages_after(db_path, session_id, summary["upto_message_id"])
+        else:
+            rows = dbmod.get_all_messages(db_path, session_id)
+        pinned = dbmod.get_pinned_messages(db_path, session_id)
+    return notes_block, summary, rows, pinned
+
+
 def build_context_messages(db_path: str, session_id: str, system_prompt: str) -> list:
     """Bangun ulang list `messages` (format OpenAI chat: role/content) dari DB:
     system prompt + ringkasan terakhir (kalau ada) + pesan mentah setelah itu."""
-    system_prompt = system_prompt + _project_notes_section(db_path, session_id)
+    notes_block, summary, rows, pinned = _read_context_state(db_path, session_id)
+    system_prompt = system_prompt + notes_block
     out = [{"role": "system", "content": system_prompt}]
 
-    summary = dbmod.get_latest_summary(db_path, session_id)
     if summary:
         summary_content = (
             "<ringkasan_percakapan_sebelumnya>\n"
@@ -842,15 +866,12 @@ def build_context_messages(db_path: str, session_id: str, system_prompt: str) ->
             "role": "assistant",
             "content": "Baik, saya sudah paham konteks sesi sebelumnya. Lanjutkan.",
         })
-        rows = dbmod.get_messages_after(db_path, session_id, summary["upto_message_id"])
-    else:
-        rows = dbmod.get_all_messages(db_path, session_id)
 
     # Pesan yang di-pin harus selalu dikirim utuh, bahkan yang berada di
-    # bagian riwayat yang sudah diringkas (id <= upto_message_id). Ambil
-    # semua pesan pin, lalu gabungkan dengan rows yang sudah ada, urutkan
+    # bagian riwayat yang sudah diringkas (id <= upto_message_id). `pinned`
+    # sudah dibaca bersama rows/summary dalam satu koneksi (lihat
+    # _read_context_state); di sini tinggal digabungkan dan diurutkan
     # berdasarkan id agar urutan kronologis tetap terjaga.
-    pinned = dbmod.get_pinned_messages(db_path, session_id)
     seen_ids = {r["id"] for r in rows}
     for p in pinned:
         if p["id"] not in seen_ids:
@@ -1046,27 +1067,32 @@ def maybe_summarize(db_path: str, session_id: str, url: str, model: str,
     atas (telat terpicu) karena menganggap context lebih pendek dari
     kenyataan. Dengan menghitungnya, threshold ringkas konsisten dengan
     total request sungguhan."""
-    summary = dbmod.get_latest_summary(db_path, session_id)
-    if summary:
-        rows = dbmod.get_messages_after(db_path, session_id, summary["upto_message_id"])
-        prior_summary_text = summary["summary_text"]
-    else:
-        rows = dbmod.get_all_messages(db_path, session_id)
-        prior_summary_text = None
+    # Seluruh pembacaan DB di sini (termasuk catatan proyek yang membaca
+    # session/notes/last-user-message) dibagi SATU koneksi lewat
+    # connection_scope -- lihat _read_context_state() untuk alasannya.
+    with dbmod.connection_scope(db_path):
+        summary = dbmod.get_latest_summary(db_path, session_id)
+        if summary:
+            rows = dbmod.get_messages_after(db_path, session_id, summary["upto_message_id"])
+            prior_summary_text = summary["summary_text"]
+        else:
+            rows = dbmod.get_all_messages(db_path, session_id)
+            prior_summary_text = None
 
-    rows = [r for r in rows if r["role"] in ("user", "assistant")]
+        rows = [r for r in rows if r["role"] in ("user", "assistant")]
 
-    budget = context_window_tokens - reserve_for_response - _tools_payload_tokens(tools_payload)
-    # system prompt selalu terkirim; sertakan juga catatan proyek persisten yang
-    # disuntikkan oleh build_context_messages() supaya budget konsisten.
-    total_tokens = token_utils.count_tokens(system_prompt + _project_notes_section(db_path, session_id))
+        budget = context_window_tokens - reserve_for_response - _tools_payload_tokens(tools_payload)
+        # system prompt selalu terkirim; sertakan juga catatan proyek persisten yang
+        # disuntikkan oleh build_context_messages() supaya budget konsisten.
+        notes_block = _project_notes_section(db_path, session_id)
+        # Pesan pinned yang berada di luar `rows` (mis. sebelum summary) tetap
+        # dikirim utuh oleh build_context_messages, jadi sertakan token-nya agar
+        # budget konsisten dengan request sungguhan.
+        pinned_extra = dbmod.get_pinned_messages(db_path, session_id)
+    total_tokens = token_utils.count_tokens(system_prompt + notes_block)
     total_tokens += token_utils.count_messages_tokens(
         [{"content": r["content"]} for r in rows]
     )
-    # Pesan pinned yang berada di luar `rows` (mis. sebelum summary) tetap
-    # dikirim utuh oleh build_context_messages, jadi sertakan token-nya agar
-    # budget konsisten dengan request sungguhan.
-    pinned_extra = dbmod.get_pinned_messages(db_path, session_id)
     seen_ids = {r["id"] for r in rows}
     extra = [p for p in pinned_extra if p["id"] not in seen_ids]
     if extra:

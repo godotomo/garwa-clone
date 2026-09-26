@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -140,8 +141,105 @@ DB_BUSY_TIMEOUT = 30
 DB_BUSY_RETRY_DELAY = 0.05
 
 
+# ---------------------------------------------------------------------------
+# Connection scope: berbagi SATU koneksi SQLite untuk banyak `connect()`
+# bersarang ke db_path yang sama.
+#
+# Masalah (terukur di sesi optimasi P3): membuka koneksi SQLite BUKAN sekadar
+# membuka file. Query pertama pada koneksi baru harus memuat skema + cache
+# halaman, sehingga koneksi baru terukur ~1.5-2 ms lebih mahal daripada koneksi
+# yang sudah "panas" -- dan biaya itu TIDAK hilang dengan menghapus PRAGMA
+# journal_mode=WAL (A/B: WAL pragma hanya 0.12 ms/koneksi, tapi churn
+# buka/tutup ~1.7 ms/koneksi). Satu giliran normal memanggil `connect()` 5-6x
+# (build_context_messages + maybe_summarize + helper di bawahnya), churn itu
+# sendiri terukur ~10 ms/giliran.
+#
+# Solusi: `connection_scope()` membuka satu koneksi bersama; semua `connect()`
+# di dalam blok itu memakainya tanpa membuka/menutup sendiri. Commit + close
+# hanya sekali di akhir scope terluar.
+#
+# Sifat yang dipertahankan:
+#   * Reentrant: scope bersarang (kedalaman > 0) tidak membuka koneksi baru.
+#   * Per-thread: koneksi tidak boleh dipakai lintas thread (sqlite3), jadi
+#     state scope disimpan di `threading.local()` -- sub-agent paralel
+#     (spawn_agents_parallel) masing-masing punya koneksinya sendiri.
+#   * Per-path: scope untuk db_path berbeda tidak saling berbagi koneksi.
+#   * Semantik commit: exception yang keluar dari scope terluar -> rollback;
+#     selain itu -> commit. Sama seperti `connect()` tunggal.
+#   * `connect()` di dalam scope bersifat read+write biasa (tanpa commit
+#     sendiri); karena semuanya satu koneksi, penulisan juga langsung terlihat
+#     oleh pembacaan berikutnya di scope yang sama -- konsisten.
+# ---------------------------------------------------------------------------
+
+_SCOPE_STATE = threading.local()
+
+
+def _scope_map() -> dict:
+    """Peta {path absolut: entri scope} untuk thread saat ini."""
+    store = getattr(_SCOPE_STATE, "store", None)
+    if store is None:
+        store = _SCOPE_STATE.store = {}
+    return store
+
+
+def _scope_exit(store: dict, key: str, ent: dict, ok: bool) -> None:
+    store.pop(key, None)
+    conn = ent["conn"]
+    try:
+        if ok:
+            conn.commit()
+        else:
+            conn.rollback()
+    except Exception:
+        logger.warning("connection_scope: gagal menutup transaksi", exc_info=True)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            logger.warning("connection_scope: gagal menutup koneksi", exc_info=True)
+
+
+@contextmanager
+def connection_scope(db_path: str = DEFAULT_DB_PATH):
+    """Bagikan satu koneksi untuk semua `connect()` ke `db_path` di dalam blok.
+
+    Dipakai untuk operasi baca/tulis beruntun dalam satu giliran (mis.
+    `build_context_messages()` + `maybe_summarize()`) supaya tidak membuka
+    koneksi baru 5-6x. Lihat blok komentar di atas untuk detail & sifatnya.
+    """
+    store = _scope_map()
+    key = os.path.abspath(db_path)
+    ent = store.get(key)
+    if ent is not None:
+        # Scope bersarang: cukup tambah kedalaman; commit/close di level terluar.
+        ent["depth"] += 1
+        try:
+            yield ent["conn"]
+        finally:
+            ent["depth"] -= 1
+        return
+    os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
+    conn = _open_conn(db_path)
+    ent = {"conn": conn, "depth": 1}
+    store[key] = ent
+    ok = True
+    try:
+        yield conn
+    except Exception:
+        ok = False
+        raise
+    finally:
+        _scope_exit(store, key, ent, ok)
+
+
 @contextmanager
 def connect(db_path: str = DEFAULT_DB_PATH):
+    ent = _scope_map().get(os.path.abspath(db_path))
+    if ent is not None:
+        # Di dalam connection_scope: pakai koneksi bersama; JANGAN commit/close
+        # sendiri (biar scope terluar yang menutup sekali).
+        yield ent["conn"]
+        return
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     conn = _open_conn(db_path)
     try:

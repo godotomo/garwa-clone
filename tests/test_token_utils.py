@@ -10,6 +10,8 @@ Fokus:
 - Perilaku fallback ketika tiktoken tidak tersedia.
 """
 
+import json
+
 from garwa import token_utils
 
 
@@ -72,3 +74,89 @@ def test_count_json_tokens_none_safe():
 def test_count_json_tokens_positive():
     obj = {"tools": [{"type": "function", "name": "read_file"}]}
     assert token_utils.count_json_tokens(obj) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Optimasi P3: cache token potongan tepi (_msg_edge_tokens) + jalur cepat.
+# ---------------------------------------------------------------------------
+
+def _edge_payload(serialized, kind):
+    if kind == "head":
+        return "[" + serialized + ", "
+    if kind == "solo":
+        return "[" + serialized + "]"
+    return serialized + "]"
+
+
+def test_msg_edge_tokens_matches_direct_tokenization():
+    # Cache TIDAK boleh mengubah nilai: hasilnya harus sama dengan tokenisasi
+    # langsung potongan tepi, untuk setiap kind.
+    serialized = '{"role": "user", "content": "halo dunia ini uji"}'
+    for kind in ("head", "solo", "tail"):
+        expected = token_utils.count_tokens(_edge_payload(serialized, kind))
+        token_utils._MSG_EDGE_TOKENS_CACHE.clear()
+        first = token_utils._msg_edge_tokens(serialized, kind)
+        second = token_utils._msg_edge_tokens(serialized, kind)  # dari cache
+        assert first == expected
+        assert second == expected
+
+
+def test_msg_edge_tokens_keys_do_not_collide_across_kinds():
+    # Kunci cache memuat kind, jadi konten sama dengan potongan berbeda tidak
+    # saling menimpa.
+    serialized = '{"role": "assistant", "content": "ok"}'
+    token_utils._MSG_EDGE_TOKENS_CACHE.clear()
+    head = token_utils._msg_edge_tokens(serialized, "head")
+    tail = token_utils._msg_edge_tokens(serialized, "tail")
+    assert head == token_utils.count_tokens(_edge_payload(serialized, "head"))
+    assert tail == token_utils.count_tokens(_edge_payload(serialized, "tail"))
+    assert len(token_utils._MSG_EDGE_TOKENS_CACHE) == 2
+
+
+def test_fast_path_matches_full_json_tokenization():
+    # Jalur cepat aditif (per-item cache - koreksi batas) harus identik dengan
+    # tokenisasi JSON penuh untuk payload bentuk nyata build_context_messages.
+    payloads = [
+        [{"role": "system", "content": "aturan penting"},
+         {"role": "user", "content": "halo"},
+         {"role": "assistant", "content": "hai"},
+         {"role": "user", "content": "lanjut"}],
+        [{"role": "user", "content": "solo"}],
+        [{"role": "user", "content": "x"}, {"role": "user", "content": "y"}],
+        [{"role": "system", "content": "多字节 ok 🚀"},
+         {"role": "user", "content": "def f(x):\n    return x"}],
+    ]
+    for msgs in payloads:
+        exact = token_utils.count_tokens(
+            "[" + ", ".join(json.dumps(m, ensure_ascii=False) for m in msgs) + "]"
+        )
+        assert token_utils._count_messages_json_tokens(msgs) == exact
+
+
+def test_fast_path_thread_safe_and_consistent():
+    import threading
+
+    msgs = [
+        {"role": "system", "content": "aturan"},
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b"},
+        {"role": "user", "content": "c"},
+    ]
+    expected = token_utils._count_messages_json_tokens(msgs)
+    token_utils._MSG_EDGE_TOKENS_CACHE.clear()
+    token_utils._MSG_ITEM_TOKENS_CACHE.clear()
+    results = []
+    lock = threading.Lock()
+
+    def worker():
+        for _ in range(50):
+            n = token_utils._count_messages_json_tokens(msgs)
+            with lock:
+                results.append(n)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results == [expected] * len(results)
