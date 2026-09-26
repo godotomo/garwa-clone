@@ -15,7 +15,9 @@ Strategi ringkas ala "summary + tail":
   KEEP_TAIL_MESSAGES pesan terakhir) jadi satu paragraf ringkas.
 """
 
+import functools
 import hashlib
+import heapq
 import json
 import logging
 import math
@@ -303,14 +305,35 @@ _NOTE_IMPORTANT_MARKERS = (
 _NOTE_BULLET_MARKERS = ("- ", "* ", "• ", "1. ", "2. ", "3. ", "4. ", "5. ",
                         "6. ", "7. ", "8. ", "9. ", "0. ")
 
+# Stopword khusus skor relevansi catatan (query user terakhir). Dikonstankan di
+# level modul supaya tidak dibangun ulang tiap panggilan -- sebelumnya himpunan
+# ini di-construct di dalam _note_relevance_score yang dipanggil sekali per
+# catatan per giliran (84x/giliran pada proyek besar).
+_NOTE_QUERY_STOPWORDS = frozenset({
+    "yang", "dengan", "untuk", "dari", "pada", "adalah", "agar", "dalam",
+    "tidak", "sudah", "akan", "harus", "bisa", "kalau", "maka", "jika",
+    "karena", "setelah", "sebelum", "the", "and", "for", "with", "that",
+    "this", "what", "how", "when", "where", "why", "are", "was", "not",
+    "but", "you", "your", "have", "has", "into", "about", "them", "then",
+    "they", "there", "their", "from", "than", "also", "just", "make",
+    "please", "code", "file", "fix", "add", "need",
+})
 
-def _note_tokenize(sentence: str) -> list:
-    """Lowercase + ekstrak kata bermakna (buang stopword & kata pendek)."""
+
+@functools.lru_cache(maxsize=8192)
+def _note_tokenize(sentence: str) -> tuple:
+    """Lowercase + ekstrak kata bermakna (buang stopword & kata pendek).
+
+    Di-cache: kalimat yang sama di-tokenisasi berkali-kali lintas giliran
+    (skoring per-catatan per-giliran). Mengembalikan tuple (immutable) agar
+    aman dibagikan antar pemanggil.
+    """
     words = re.findall(r"[a-z0-9_]+", sentence.lower())
-    return [w for w in words if w not in _NOTE_STOPWORDS and len(w) > 2]
+    return tuple(w for w in words if w not in _NOTE_STOPWORDS and len(w) > 2)
 
 
-def _note_sentences(value: str) -> list:
+@functools.lru_cache(maxsize=2048)
+def _note_sentences(value: str) -> tuple:
     """Pecah catatan jadi daftar (kalimat, posisi_awal) dengan heuristik.
 
     Catatan `remember` sering berupa poin terstruktur (bullet) yang tidak
@@ -342,7 +365,7 @@ def _note_sentences(value: str) -> list:
             cursor += len(raw_line) + 1 + offset
     # Gabungkan kalimat yang sangat pendek (<=2 kata) ke kalimat berikutnya?
     # Tidak perlu -- buang saja yang <=2 kata, itu biasanya heading/noise.
-    return result
+    return tuple(result)
 
 
 def _note_score_sentences(sentences: list) -> list:
@@ -373,6 +396,7 @@ def _note_score_sentences(sentences: list) -> list:
     return scored
 
 
+@functools.lru_cache(maxsize=2048)
 def _extractive_summarize_note(value: str, max_chars: int) -> str:
     """Fallback cerdas: pilih kalimat paling informatif (extractive) lalu
     susun ulang dalam urutan asli, dibatasi `max_chars`.
@@ -478,6 +502,96 @@ def _ensure_note_summaries(db_path: str, session_id: str, url: str, model: str,
             dbmod.set_note_summary(db_path, workdir, key, summary)
 
 
+@functools.lru_cache(maxsize=512)
+def _note_query_tokens(query_lower: str) -> tuple:
+    """Token bermakna dari query (sudah di-lowercase). Hasil di-cache: query
+    sama dipakai ulang untuk SEMUA catatan pada giliran yang sama, jadi
+    tokenisasi ini cukup sekali per giliran (bukan per catatan)."""
+    return tuple(
+        t for t in re.findall(r"[a-z0-9_]+", query_lower)
+        if len(t) >= 4 and t not in _NOTE_QUERY_STOPWORDS
+    )
+
+
+@functools.lru_cache(maxsize=4096)
+def _note_corpus_tokens(key_lower: str, value_lower: str) -> frozenset:
+    """Himpunan token catatan (key+value, lowercase). Di-cache karena catatan
+    yang sama di-skor berulang kali antar giliran (dan di dalam satu giliran
+    bila section dibangun beberapa kali)."""
+    return frozenset(re.findall(r"[a-z0-9_]+", f"{key_lower} {value_lower}"))
+
+
+@functools.lru_cache(maxsize=4096)
+def _note_key_tokens(key_lower: str) -> frozenset:
+    """Token khusus bagian key (untuk bonus kecocokan key). Di-cache idem."""
+    return frozenset(re.findall(r"[a-z0-9_]+", key_lower))
+
+
+@functools.lru_cache(maxsize=4096)
+def _note_corpus_text(key_lower: str, value_lower: str) -> str:
+    """Token corpus digabung dengan spasi, untuk uji cepat "apakah token query
+    muncul sebagai substring SEBUAH token corpus".
+
+    Kenapa aman (tidak ada false positive lintas-token): token hanya berisi
+    [a-z0-9_], sedangkan separator adalah spasi. Token query juga hanya
+    [a-z0-9_], jadi ia tidak mungkin melintasi batas spasi antar token corpus.
+    Dengan ini, `any(t in c for c in corpus_tokens)` bisa diganti satu operasi
+    `t in corpus_text` alih-alih loop generator panjang (bottleneck profil).
+    """
+    return " ".join(_note_corpus_tokens(key_lower, value_lower))
+
+
+@functools.lru_cache(maxsize=4096)
+def _note_key_text(key_lower: str) -> str:
+    """Versi teks bagian key (token dipisah spasi) untuk uji substring cepat."""
+    return " ".join(_note_key_tokens(key_lower))
+
+
+# Panjang maksimum token yang boleh dipecah jadi semua substring (O(len^2)).
+# Token normal (kata, identifier) jauh di bawah ini; yang melewatinya biasanya
+# hash/base64/base36 tanpa spasi, dan untuk itu enumerasi substring jadi mahal
+# -> pakai fallback loop langsung.
+_SUBTOKEN_MAX_LEN = 24
+
+
+@functools.lru_cache(maxsize=8192)
+def _subtoken_forms(token: str) -> frozenset:
+    """Semua substring `token` (termasuk token itu sendiri), sebagai frozenset.
+
+    Dipakai untuk menjawab "adakah token corpus yang menjadi substring token
+    query ini" (`c in t`) tanpa mengulang loop atas SELURUH token corpus di
+    setiap query token: cukup `not _subtoken_forms(t).isdisjoint(corpus)`.
+    `set.isdisjoint` berjalan di level C, jadi jauh lebih murah daripada
+    generator Python per query token (bottleneck pada profil: 1,8 juta
+    panggilan genexpr).
+
+    Jumlah bentuk hanya O(len^2) dan hanya dipanggil untuk token pendek
+    (<= _SUBTOKEN_MAX_LEN), tetapi hasilnya tetap di-cache karena fungsi ini
+    dipanggil berulang tiap giliran dengan query token yang sama.
+    """
+    n = len(token)
+    return frozenset(token[i:j] for i in range(n) for j in range(i + 1, n + 1))
+
+
+def _partial_token_match(token: str, corpus: frozenset, corpus_text: str) -> bool:
+    """True bila ada token corpus yang memuat `token`, ATAU token corpus yang
+    menjadi substring `token` -- bentuk partial match di `_note_relevance_score`.
+
+    Dua jalur, keduanya EKSA dan menghasilkan boolean yang sama:
+    - `token in corpus_text`: ada token corpus yang MEMUAT token (uji substring
+      di level C; aman karena separatornya spasi dan token hanya [a-z0-9_]).
+    - `not _subtoken_forms(token).isdisjoint(corpus)`: ada token corpus yang
+      MENJADI substring token, juga diuji di level C lewat himpunan.
+    Untuk token yang sangat panjang (mis. hash), enumerasi substring dibatasi
+    demi memori dan diganti loop langsung -- hasilnya tetap sama.
+    """
+    if token in corpus_text:
+        return True
+    if len(token) <= _SUBTOKEN_MAX_LEN:
+        return not _subtoken_forms(token).isdisjoint(corpus)
+    return any(c in token for c in corpus)
+
+
 def _note_relevance_score(note: dict, query: str) -> float:
     """Skor relevansi sebuah catatan terhadap query (teks user terakhir).
 
@@ -492,28 +606,29 @@ def _note_relevance_score(note: dict, query: str) -> float:
     memberi budget lebih besar ke catatan yang tampaknya relevan dengan
     pertanyaan saat ini, sambil memastikan catatan yang jelas tidak relevan
     hanya menampilkan key-nya.
+
+    Catatan performa: tokenisasi query/catatan di-cache (lihat
+    _note_query_tokens/_note_corpus_tokens/_note_key_tokens) supaya fungsi ini
+    yang dipanggil sekali per catatan per giliran tidak mengulang regex.
     """
     if not query.strip():
         return 0.0
     key = (note.get("key") or "").lower()
     value = (note.get("value") or "").lower()
-    q = query.lower()
-    import re as _re
-    stop = {
-        "yang", "dengan", "untuk", "dari", "pada", "adalah", "agar", "dalam",
-        "tidak", "sudah", "akan", "harus", "bisa", "kalau", "maka", "jika",
-        "karena", "setelah", "sebelum", "the", "and", "for", "with", "that",
-        "this", "what", "how", "when", "where", "why", "are", "was", "not",
-        "but", "you", "your", "have", "has", "into", "about", "them", "then",
-        "they", "there", "their", "from", "than", "also", "just", "make",
-        "please", "please", "code", "file", "fix", "add", "make", "need",
-    }
-    q_tokens = [t for t in _re.findall(r"[a-z0-9_]+", q) if len(t) >= 4 and t not in stop]
+    q_tokens = _note_query_tokens(query.lower())
     if not q_tokens:
         return 0.0
-    corpus_tokens = set(_re.findall(r"[a-z0-9_]+", f"{key} {value}"))
+    corpus_tokens = _note_corpus_tokens(key, value)
     if not corpus_tokens:
         return 0.0
+
+    # Teks token (dipisah spasi) sekali per catatan: uji "t adalah substring
+    # SEBUAH token corpus" jadi satu operasi `in` pada string, bukan loop
+    # generator atas korpus (bottleneck utama pada profil -- 1,8 juta panggilan
+    # genexpr per benchmark). Aman karena token hanya [a-z0-9_] dan tidak
+    # mungkin melintasi separator spasi.
+    corpus_text = _note_corpus_text(key, value)
+    key_text = _note_key_text(key)
 
     # 1) Exact token overlap (Jaccard) antara query dan corpus.
     exact_hits = sum(1 for t in q_tokens if t in corpus_tokens)
@@ -522,16 +637,22 @@ def _note_relevance_score(note: dict, query: str) -> float:
 
     # 2) Partial match: query token yang muncul sebagai prefix/substring token
     #    corpus (atau sebaliknya). Menangkap infleksi/varian nama.
+    #    `t in corpus_text`  -> ada token corpus yang MEMUAT t (t in c).
+    #    `not _subtoken_forms(t).isdisjoint(corpus_tokens)` -> ada token corpus
+    #    yang MENJADI substring t (c in t), diuji di level C lewat set.
     partial_hits = 0
     for t in q_tokens:
-        if any(t in c or c in t for c in corpus_tokens):
+        if _partial_token_match(t, corpus_tokens, corpus_text):
             partial_hits += 1
     partial = partial_hits / len(q_tokens)
 
     # 3) Key match: query token yang muncul di key (bobot ekstra).
-    key_tokens = set(_re.findall(r"[a-z0-9_]+", key))
-    key_hits = sum(1 for t in q_tokens if t in key_tokens
-                   or any(t in k or k in t for k in key_tokens))
+    key_tokens = _note_key_tokens(key)
+    key_hits = sum(
+        1
+        for t in q_tokens
+        if t in key_tokens or _partial_token_match(t, key_tokens, key_text)
+    )
     key_frac = key_hits / len(q_tokens)
 
     # Gabungan: Jaccard dominan, partial menaikkan, key memberi bonus.
@@ -582,6 +703,32 @@ def _project_notes_section(db_path: str, session_id: str) -> str:
     except Exception:
         query = ""
 
+    # Render blok ada di fungsi MURNI terpisah (di-cache) supaya pemanggilan
+    # berulang dalam satu giliran -- build_context_messages(), maybe_summarize(),
+    # dan build ulang saat retry budget -- tidak mengulang pekerjaan berat.
+    # Data catatan dinormalkan ke tuple-of-tuple (hashable) sebagai bagian kunci
+    # cache, jadi tidak ada risiko tabrakan hash: data berubah -> kunci berubah.
+    notes_data = tuple(
+        (
+            n.get("key") or "",
+            n.get("value") or "",
+            n.get("summary") or "",
+            n.get("updated_at") or 0,
+        )
+        for n in notes
+    )
+    return _render_notes_block(notes_data, query)
+
+
+@functools.lru_cache(maxsize=8)
+def _render_notes_block(notes_data: tuple, query: str) -> str:
+    """Render blok catatan proyek (murni, tanpa I/O) -- lihat
+    `_project_notes_section` untuk dokumentasi perilaku lengkapnya."""
+    notes = [
+        {"key": k, "value": v, "summary": s, "updated_at": u}
+        for (k, v, s, u) in notes_data
+    ]
+
     # Urutkan catatan: relevan dulu, lalu tetap dalam urutan updated_at DESC
     # sebagai tie-breaker (catatan terbaru lebih relevan).
     scored = []
@@ -628,9 +775,21 @@ def _project_notes_section(db_path: str, session_id: str) -> str:
         "jangan dianggap usang walau riwayat sudah diringkas):\n"
     )
     total = len(header) + sum(len(l) for l in lines)
+    # Heap baris terpanjang: menghindari `max(range(n), key=len)` yang O(n)
+    # tiap iterasi (O(n^2) total; profil lama: 604k panggilan lambda).
+    # Entri disimpan sebagai (-panjang, indeks) supaya pada panjang sama,
+    # indeks terkecil menang -- sama dengan perilaku max() lama.
+    heap = [(-len(l), i) for i, l in enumerate(lines)]
+    heapq.heapify(heap)
     while total > PROJECT_NOTES_MAX_TOTAL_CHARS and len(lines) > 1:
-        # cari indeks baris terpanjang
-        idx = max(range(len(lines)), key=lambda i: len(lines[i]))
+        # Buang entri kedaluwarsa: panjang tersimpan tidak lagi cocok dengan
+        # baris saat ini (baris pernah dipangkas di iterasi sebelumnya).
+        while heap and -heap[0][0] != len(lines[heap[0][1]]):
+            heapq.heappop(heap)
+        idx = heap[0][1] if heap else -1
+        if idx < 0:
+            break
+        heapq.heappop(heap)
         key = scored[idx][1].get("key") or ""
         value = scored[idx][1].get("value") or ""
         # Pangkas setengah dari BUDGET SAAT INI (yang menghasilkan cur_len),
@@ -645,6 +804,9 @@ def _project_notes_section(db_path: str, session_id: str) -> str:
             break  # tidak bisa menyusut lagi
         total -= cur_len - len(new_line)
         lines[idx] = new_line
+        # Masukkan kembali bentuk barunya supaya iterasi berikutnya tetap
+        # memangkat baris TERPANJANG saat ini.
+        heapq.heappush(heap, (-len(new_line), idx))
 
     return header + "\n".join(lines)
 
