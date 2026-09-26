@@ -721,7 +721,8 @@ def get_latest_summary(db_path: str, session_id: str):
 
 
 
-def replace_todos(db_path: str, workdir: str, items: list, session_id: str = None):
+def replace_todos(db_path: str, workdir: str, items: list, session_id: str = None,
+                  remove=None, preserve_finished: bool = False):
     """items: list of {"content": str, "status": str}. Full replace (mirip TodoWrite).
 
     Todo disimpan per WORKDIR (milik proyek), bukan per sesi, sehingga sesi
@@ -747,6 +748,31 @@ def replace_todos(db_path: str, workdir: str, items: list, session_id: str = Non
         menggantung". `status_since` dipertahankan dari baris lama saat
         `(content, status)` SAMA, dan di-set ke `now` saat item baru muncul
         atau statusnya berubah. Itulah dasar deteksi todo basi.
+
+    Persetujuan item SELESAI (`preserve_finished`):
+        Full replace murni berbahaya untuk daftar yang ditulis model: item
+        yang LUPA disalin ulang akan terhapus diam-diam (lihat guard-rail di
+        `tools/session_tools.py`). Kalau `preserve_finished=True`, baris lama
+        yang berstatus `done`/`cancelled` dan TIDAK disebut di `items`
+        dipertahankan otomatis (ditempatkan setelah item baru, urutan lama
+        dipertahankan). Item aktif (`pending`/`in_progress`) yang tidak
+        disebut TETAP dihapus -- itu memang cara menutup/membatalkan sisa
+        rencana -- dan penghapusan itu dilaporkan ke model oleh pemanggil.
+
+        Default `False` = perilaku full replace lama (aman untuk pemanggil
+        primitif/tes yang memang ingin mengganti seluruh isi).
+
+    `remove` (opsional):
+        Daftar `content` yang ingin DIBUANG secara eksplisit, termasuk item
+        `done`/`cancelled` yang seharusnya dipertahankan `preserve_finished`.
+        Inilah satu-satunya cara membuang item selesai saat preservasi aktif
+        (mencegah daftar menumpuk selamanya). Bisa list/tuple/set of str, atau
+        satu str tunggal.
+
+    Raises:
+        ValueError: kalau `workdir` kosong/None, ada item yang bukan dict,
+            tidak punya key "content", atau "content"-nya bukan string; atau
+            `remove` bukan str/iterable of str.
     """
     # Isolasi antar proyek bertumpu pada workdir sebagai kunci. Menulis tanpa
     # workdir = menulis baris yang tidak akan pernah terbaca lagi.
@@ -764,6 +790,26 @@ def replace_todos(db_path: str, workdir: str, items: list, session_id: str = Non
                 f"key 'content' bertipe str. Diterima: {item!r}"
             )
 
+    # Normalisasi `remove` (opsional) ke set[str] supaya pencocokan konsisten.
+    # Sebelum menulis (validasi di depan, sama seperti `items`).
+    remove_set = set()
+    if remove is not None:
+        raw_remove = [remove] if isinstance(remove, str) else remove
+        try:
+            raw_remove = list(raw_remove)
+        except TypeError:
+            raise ValueError(
+                "'remove' harus berupa str atau iterable of str (content yang dibuang). "
+                f"Diterima: {remove!r}"
+            )
+        for r in raw_remove:
+            if not isinstance(r, str):
+                raise ValueError(
+                    f"'remove' hanya menerima str, diterima {r!r} "
+                    f"(tipe {type(r).__name__})."
+                )
+            remove_set.add(r)
+
     now = time.time()
     with connect(db_path) as conn:
         # Pastikan kolom yang dibutuhkan ada SEBELUM menulis. Tanpa ini, DB
@@ -774,6 +820,7 @@ def replace_todos(db_path: str, workdir: str, items: list, session_id: str = Non
         # Snapshot baris lama SEBELUM delete untuk mempertahankan jejak waktu
         # (created_at & status_since) item yang tidak berubah.
         prev = {}
+        rows = []
         try:
             rows = conn.execute(
                 "SELECT content, status, created_at, status_since FROM todos "
@@ -785,10 +832,26 @@ def replace_todos(db_path: str, workdir: str, items: list, session_id: str = Non
         except Exception:
             prev = {}
 
+        # `preserve_finished`: item lama done/cancelled yang TIDAK disebut di
+        # `items` dan TIDAK dibuang lewat `remove` tetap dipertahankan. Ditaruh
+        # SETELAH item yang dikirim, dengan urutan lama dipertahankan.
+        write_items = []
+        seen_new = set()
+        for item in items:
+            write_items.append((item["content"], item.get("status", "pending") or "pending"))
+            seen_new.add(item["content"])
+        if preserve_finished:
+            for old_row in rows:
+                content = old_row["content"]
+                status = old_row["status"] or "pending"
+                if content in seen_new or content in remove_set:
+                    continue
+                if status in ("done", "cancelled"):
+                    seen_new.add(content)
+                    write_items.append((content, status))
+
         conn.execute("DELETE FROM todos WHERE workdir = ?", (workdir,))
-        for i, item in enumerate(items):
-            status = item.get("status", "pending") or "pending"
-            content = item["content"]
+        for i, (content, status) in enumerate(write_items):
             created_at = now
             status_since = now
             # Cocokkan dengan baris lama ber-content sama (kalau ada lebih dari

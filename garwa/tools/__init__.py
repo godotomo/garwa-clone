@@ -183,7 +183,7 @@ TOOLS = {
         "destructive": False,
         "schema": {
             "name": "todo_write",
-            "description": "Simpan/timpa plan (daftar todo) untuk sesi saat ini, mirip TodoWrite. Kirim seluruh daftar setiap kali (full replace), tiap item berupa objek {content, status}. status salah satu dari: pending, in_progress, done, cancelled.",
+            "description": "Simpan/timpa plan (daftar todo) untuk proyek ini (workdir), mirip TodoWrite. Kirim seluruh daftar setiap kali, tiap item berupa objek {content, status}. status salah satu dari: pending, in_progress, done, cancelled. Item lama berstatus done/cancelled yang tidak disebut lagi DIPERTAHANKAN otomatis; item aktif (pending/in_progress) yang tidak disebut akan dihapus. Untuk membuang item selesai secara eksplisit, sebut content-nya di argumen 'remove'.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -202,6 +202,11 @@ TOOLS = {
                             },
                             "required": ["content", "status"],
                         },
+                    },
+                    "remove": {
+                        "type": "array",
+                        "description": "opsional: daftar content (string) yang dibuang eksplisit, termasuk item done/cancelled yang seharusnya dipertahankan.",
+                        "items": {"type": "string"},
                     },
                 },
                 "required": ["todos"],

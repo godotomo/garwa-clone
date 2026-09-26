@@ -355,6 +355,33 @@ def test_todo_write_warns_when_item_dropped(tool_env):
     assert "dua" in out
 
 
+def test_todo_write_preserves_unmentioned_done(tool_env):
+    """Item selesai yang lupa disalin TIDAK lagi terhapus diam-diam.
+
+    Ini menutup mode kegagalan nyata: model menulis ulang daftar tanpa
+    menyalin item lama yang sudah `done`, dan sebelumnya item itu hilang
+    (plus memicu WARN palsu "HILANG").
+    """
+    db_path, workdir, sid = tool_env
+    st.tool_todo_write([
+        {"content": "rumah", "status": "done"},
+        {"content": "lanjut", "status": "in_progress"},
+    ])
+    out = st.tool_todo_write([{"content": "lanjut", "status": "done"}])
+    assert out.startswith("[OK]")
+    assert "HILANG" not in out
+    assert "[x] rumah" in out
+    assert [t["content"] for t in dbmod.get_todos(db_path, workdir=workdir)] == ["lanjut", "rumah"]
+
+
+def test_todo_write_remove_drops_finished_explicitly(tool_env):
+    db_path, workdir, sid = tool_env
+    st.tool_todo_write([{"content": "lama", "status": "done"}])
+    out = st.tool_todo_write([], remove=["lama"])
+    assert out.startswith("[OK]")
+    assert dbmod.get_todos(db_path, workdir=workdir) == []
+
+
 def test_todo_write_warns_on_regression(tool_env):
     db_path, workdir, sid = tool_env
     st.tool_todo_write([{"content": "satu", "status": "done"}])

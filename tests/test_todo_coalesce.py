@@ -142,3 +142,33 @@ def test_end_to_end_all_todos_persisted(tmp_path):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([os.path.abspath(__file__), "-q"]))
+
+
+def test_coalesce_merges_remove_argument():
+    """`remove` WAJIB ikut saat blok digabung.
+
+    Kalau tidak, permintaan buang eksplisit pada blok kedua/ketiga hilang
+    begitu koalesensi menyatukan semuanya menjadi satu panggilan.
+    """
+    calls = [
+        ("todo_write", {"todos": [{"content": "a", "status": "pending"}]}),
+        ("todo_write", {"todos": [{"content": "b", "status": "pending"}], "remove": "lama1"}),
+        ("todo_write", {"todos": [], "remove": ["lama2", "a"]}),
+    ]
+    merged = coalesce_todo_writes(calls)
+    assert len(merged) == 1
+    name, args = merged[0]
+    assert name == "todo_write"
+    assert {t["content"] for t in args["todos"]} == {"a", "b"}
+    assert args["remove"] == ["lama1", "lama2", "a"]
+
+
+def test_coalesce_remove_only_does_not_drop_call():
+    """Blok `todo_write` yang HANYA membuang item (todos kosong) tetap dijalankan."""
+    calls = [
+        ("todo_write", {"todos": [], "remove": ["x"]}),
+        ("todo_write", {"todos": [], "remove": ["y"]}),
+    ]
+    merged = coalesce_todo_writes(calls)
+    assert len(merged) == 1
+    assert merged[0][1]["remove"] == ["x", "y"]

@@ -365,6 +365,70 @@ def test_replace_todos_requires_workdir(db_path):
     assert dbmod.get_todos(db_path) == []
 
 
+# ---------------------------------------------------------------- preservasi item selesai
+# `preserve_finished=True`: item done/cancelled yang tidak disebut DIPERTAHANKAN
+# otomatis (mode kegagalan "lupa disalin -> terhapus diam-diam" dihilangkan).
+# Item AKTIF yang tidak disebut tetap dihapus -- itu cara menutup rencana.
+# `remove` adalah satu-satunya jalur untuk membuang item selesai secara eksplisit.
+
+def test_replace_todos_preserve_finished_keeps_unmentioned_done(db_path):
+    dbmod.replace_todos(db_path, "/proj/x", [
+        {"content": "selesai A", "status": "done"},
+        {"content": "selesai B", "status": "cancelled"},
+        {"content": "aktif", "status": "pending"},
+    ])
+    # Hanya item aktif yang dikirim ulang; dua item selesai tidak disebut.
+    dbmod.replace_todos(db_path, "/proj/x", [{"content": "aktif", "status": "done"}],
+                        preserve_finished=True)
+    todos = dbmod.get_todos(db_path, workdir="/proj/x")
+    contents = [t["content"] for t in todos]
+    assert contents == ["aktif", "selesai A", "selesai B"]
+    assert [t["status"] for t in todos] == ["done", "done", "cancelled"]
+
+
+def test_replace_todos_preserve_finished_still_drops_active(db_path):
+    dbmod.replace_todos(db_path, "/proj/x", [
+        {"content": "dibuang", "status": "in_progress"},
+        {"content": "tetap", "status": "pending"},
+    ])
+    dbmod.replace_todos(db_path, "/proj/x", [{"content": "tetap", "status": "pending"}],
+                        preserve_finished=True)
+    assert [t["content"] for t in dbmod.get_todos(db_path, workdir="/proj/x")] == ["tetap"]
+
+
+def test_replace_todos_remove_drops_finished(db_path):
+    dbmod.replace_todos(db_path, "/proj/x", [
+        {"content": "lama", "status": "done"},
+        {"content": "baru", "status": "pending"},
+    ])
+    dbmod.replace_todos(db_path, "/proj/x", [{"content": "baru", "status": "pending"}],
+                        preserve_finished=True, remove=["lama"])
+    assert [t["content"] for t in dbmod.get_todos(db_path, workdir="/proj/x")] == ["baru"]
+
+
+def test_replace_todos_remove_accepts_single_string(db_path):
+    dbmod.replace_todos(db_path, "/proj/x", [{"content": "lama", "status": "done"}])
+    dbmod.replace_todos(db_path, "/proj/x", [], preserve_finished=True, remove="lama")
+    assert dbmod.get_todos(db_path, workdir="/proj/x") == []
+
+
+def test_replace_todos_preserve_default_is_full_replace(db_path):
+    # Tanpa flag, perilaku lama (full replace) TIDAK berubah -- pemanggil
+    # primitif tetap menukar seluruh isi.
+    dbmod.replace_todos(db_path, "/proj/x", [{"content": "a", "status": "done"}])
+    dbmod.replace_todos(db_path, "/proj/x", [{"content": "b", "status": "pending"}])
+    assert [t["content"] for t in dbmod.get_todos(db_path, workdir="/proj/x")] == ["b"]
+
+
+def test_replace_todos_invalid_remove_raises_without_write(db_path):
+    dbmod.replace_todos(db_path, "/proj/x", [{"content": "a", "status": "done"}])
+    with pytest.raises(ValueError):
+        dbmod.replace_todos(db_path, "/proj/x", [{"content": "a", "status": "done"}],
+                            remove=[123])
+    # Validasi di depan -> item lama tetap utuh.
+    assert [t["content"] for t in dbmod.get_todos(db_path, workdir="/proj/x")] == ["a"]
+
+
 def test_get_pending_todos_only_active(db_path):
     dbmod.replace_todos(db_path, "/proj/x", [
         {"content": "pending", "status": "pending"},

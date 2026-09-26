@@ -36,6 +36,37 @@ def _items_of(args):
     return items if isinstance(items, list) else []
 
 
+def _remove_of(args):
+    """Ambil daftar `remove` (content yang dibuang eksplisit) dari satu blok.
+
+    Bentuk yang diterima sama seperti `tool_todo_write`: list/tuple/set of str,
+    satu str tunggal, atau string JSON berisi list. Penggabungan WAJIB ikut
+    membawa `remove` -- kalau tidak, permintaan buang eksplisit pada blok
+    kedua/ketiga hilang begitu blok digabung menjadi satu panggilan.
+    """
+    if not isinstance(args, dict):
+        return []
+    rem = args.get("remove")
+    if rem is None:
+        return []
+    if isinstance(rem, str):
+        s = rem.strip()
+        if not s:
+            return []
+        try:
+            parsed = json.loads(s)
+        except Exception:
+            parsed = None
+        rem = parsed if isinstance(parsed, list) else [s]
+    if isinstance(rem, (list, tuple, set)):
+        out = []
+        for x in rem:
+            if isinstance(x, str) and x.strip():
+                out.append(x)
+        return out
+    return []
+
+
 def coalesce_todo_writes(tool_calls, on_merge=None):
     """Gabungkan >1 blok `todo_write` dalam satu giliran menjadi satu panggilan.
 
@@ -50,6 +81,8 @@ def coalesce_todo_writes(tool_calls, on_merge=None):
 
     merged = []
     seen = {}
+    removed = []          # urutan kemunculan, dedup
+    removed_seen = set()
     for i in idxs:
         for it in _items_of(tool_calls[i][1]):
             if isinstance(it, str):
@@ -63,8 +96,12 @@ def coalesce_todo_writes(tool_calls, on_merge=None):
             else:
                 seen[key] = len(merged)
                 merged.append(entry)
+        for key in _remove_of(tool_calls[i][1]):
+            if key not in removed_seen:
+                removed_seen.add(key)
+                removed.append(key)
 
-    if not merged:
+    if not merged and not removed:
         return tool_calls
 
     if on_merge is not None:
@@ -74,10 +111,13 @@ def coalesce_todo_writes(tool_calls, on_merge=None):
             pass
 
     first = idxs[0]
+    merged_args = {"todos": merged}
+    if removed:
+        merged_args["remove"] = removed
     out = []
     for i, tc in enumerate(tool_calls):
         if i == first:
-            out.append(("todo_write", {"todos": merged}))
+            out.append(("todo_write", merged_args))
         elif i in idxs:
             continue
         else:

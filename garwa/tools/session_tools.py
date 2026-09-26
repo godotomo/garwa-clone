@@ -35,7 +35,7 @@ def _require_session() -> str:
     return ""
 
 
-def tool_todo_write(todos: list) -> str:
+def tool_todo_write(todos: list, remove=None) -> str:
     err = _require_session()
     if err:
         return err
@@ -72,6 +72,29 @@ def tool_todo_write(todos: list) -> str:
         else:
             return f"[ERROR] Item todo tidak valid: {item!r}"
 
+    # `remove`: daftar content yang dibuang EKSPLISIT (termasuk item done/
+    # cancelled yang seharusnya dipertahankan). Sama seperti `todos`, model bisa
+    # mengirimnya sebagai string JSON/representasi list -> parse dulu.
+    remove_list = None
+    if remove is not None:
+        if isinstance(remove, str):
+            s_rm = remove.strip()
+            try:
+                remove_list = json.loads(s_rm)
+            except Exception:
+                try:
+                    remove_list = ast.literal_eval(s_rm)
+                except Exception:
+                    # Bukan JSON/list -> anggap satu content tunggal.
+                    remove_list = s_rm
+        else:
+            remove_list = remove
+        if isinstance(remove_list, str):
+            remove_list = [remove_list]
+        if not isinstance(remove_list, (list, tuple, set)):
+            return "[ERROR] Argumen 'remove' harus berupa list of content (str) yang dibuang."
+        remove_list = [r for r in remove_list if isinstance(r, str)]
+
     # SEBELUMNYA: dbmod.replace_todos() (menyentuh SQLite lewat db.py) tidak
     # dibungkus try/except sama sekali. replace_todos() sendiri bisa
     # melempar ValueError (item tidak valid) atau exception SQLite mentah
@@ -91,20 +114,35 @@ def tool_todo_write(todos: list) -> str:
     except Exception:
         prev_rows = []
 
+    # `preserve_finished=True`: item lama yang sudah done/cancelled dan tidak
+    # disebut lagi dipertahankan otomatis -- mode kegagalan "item hilang karena
+    # lupa disalin" hilang. Untuk membuang item selesai, model memakai `remove`.
+    remove_set = set(remove_list or [])
     try:
         dbmod.replace_todos(state.DB_PATH, state.WORKDIR, normalized,
-                            session_id=state.SESSION_ID)
+                            session_id=state.SESSION_ID,
+                            remove=remove_list, preserve_finished=True)
     except ValueError as e:
         return f"[ERROR] Data todo tidak valid: {e}"
     except Exception as e:
         return f"[ERROR] Gagal menyimpan plan/todo ke database: {type(e).__name__}: {e}"
 
+    # Baris lengkap hasil tulisan (termasuk item selesai yang dipertahankan).
+    try:
+        saved_rows = dbmod.get_todos(state.DB_PATH, workdir=state.WORKDIR)
+    except Exception:
+        saved_rows = None
+
     lines = ["[OK] Plan diperbarui:"]
     marks = {"pending": "[ ]", "in_progress": "[~]", "done": "[x]", "cancelled": "[-]"}
-    for item in normalized:
+    for item in (saved_rows if saved_rows else normalized):
         lines.append(f"  {marks.get(item['status'], '[ ]')} {item['content']}")
 
-    # --- Deteksi item hilang & regresi -------------------------------------
+    # --- Deteksi item aktif yang hilang & regresi ---------------------------
+    # Dengan preserve_finished, item done/cancelled TIDAK lagi dihitung hilang
+    # (dipertahankan otomatis). Yang masih berharga untuk diperingatkan adalah
+    # item AKTIF (pending/in_progress) yang lenyap tanpa disebut -- itu bisa
+    # berarti rencana terpotong.
     new_status = {}
     for item in normalized:
         new_status[item["content"]] = item["status"]
@@ -113,13 +151,18 @@ def tool_todo_write(todos: list) -> str:
         content = old.get("content")
         new = new_status.get(content)
         if new is None:
+            if content in remove_set:
+                continue  # dibuang sengaja
+            if old.get("status") in ("done", "cancelled"):
+                continue  # dipertahankan otomatis oleh preserve_finished
             dropped.append(old)
         elif old.get("status") in ("done", "cancelled") and new in ("pending", "in_progress"):
             regressed.append((old, new))
     if dropped:
         lines.append("")
-        lines.append(f"[WARN] {len(dropped)} todo sebelumnya HILANG dari daftar ini "
-                     "(full replace = tidak disebutkan berarti dihapus):")
+        lines.append(f"[WARN] {len(dropped)} todo AKTIF sebelumnya HILANG dari daftar ini "
+                     "(status aktif dan tidak disebut = dihapus; item selesai "
+                     "dipertahankan otomatis):")
         for old in dropped:
             lines.append(f"  {marks.get(old.get('status'), '[ ]')} {old.get('content')}")
         lines.append("       Kalau ini tidak disengaja, kirim ulang todo_write dengan item itu disertakan.")
@@ -134,11 +177,8 @@ def tool_todo_write(todos: list) -> str:
     # berisi {content, status} tanpa `status_since`, sehingga umurnya selalu
     # dihitung 0 detik dan deteksi basi tidak akan pernah menyala. Baris hasil
     # tulisan di DB-lah yang membawa `status_since` hasil preservasi
-    # replace_todos (status sama -> waktu lama dipertahankan).
-    try:
-        saved_rows = dbmod.get_todos(state.DB_PATH, workdir=state.WORKDIR)
-    except Exception:
-        saved_rows = None
+    # replace_todos (status sama -> waktu lama dipertahankan). `saved_rows`
+    # sudah dibaca di atas (untuk menampilkan daftar hasil tulisan).
     if saved_rows:
         stale_now = todo_utils.stale_summary(saved_rows)
         if stale_now:
