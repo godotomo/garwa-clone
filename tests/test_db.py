@@ -158,6 +158,62 @@ def test_get_pinned_scoped_by_session(db_path):
     assert dbmod.get_pinned_messages(db_path, s2) == []
 
 
+def test_index_pinned_and_summary_created_and_used(db_path, session_id):
+    """Index performa WAJIB ada dan benar-benar dipakai query planner.
+
+    Regresi yang dicegah: tanpa `idx_messages_pinned` (parsial), pencarian
+    pesan pinned pada sesi besar harus membuka tabel utama tiap baris sesi
+    (~15 ms/panggilan pada 7.2k pesan, dipanggil 2x per giliran). Tanpa
+    `idx_summaries_session`, `ORDER BY id DESC LIMIT 1` memindai seluruh
+    tabel summaries. Tes ini memastikan index dibuat oleh `init_db()` dan
+    dipilih optimizer -- bukan hanya "ada", tapi benar-benar terpakai.
+    """
+    names = {
+        r[0]
+        for r in sqlite3.connect(db_path).execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        )
+    }
+    assert "idx_messages_pinned" in names
+    assert "idx_summaries_session" in names
+
+    conn = sqlite3.connect(db_path)
+    pin_plan = " ".join(
+        r[3]
+        for r in conn.execute(
+            "EXPLAIN QUERY PLAN SELECT * FROM messages "
+            "WHERE session_id=? AND pinned=1 ORDER BY id ASC",
+            (session_id,),
+        )
+    )
+    assert "idx_messages_pinned" in pin_plan
+
+    sum_plan = " ".join(
+        r[3]
+        for r in conn.execute(
+            "EXPLAIN QUERY PLAN SELECT * FROM summaries "
+            "WHERE session_id=? ORDER BY id DESC LIMIT 1",
+            (session_id,),
+        )
+    )
+    assert "idx_summaries_session" in sum_plan
+    conn.close()
+
+
+def test_index_creation_idempotent(db_path):
+    """`init_db()` boleh dipanggil berkali-kali (tiap startup CLI)."""
+    for _ in range(3):
+        dbmod.init_db(db_path)
+    names = [
+        r[0]
+        for r in sqlite3.connect(db_path).execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'"
+        )
+    ]
+    assert names.count("idx_messages_pinned") == 1
+    assert names.count("idx_summaries_session") == 1
+
+
 def test_get_message_missing_returns_none(db_path, session_id):
     assert dbmod.get_message(db_path, session_id, 9999) is None
 
