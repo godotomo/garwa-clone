@@ -206,9 +206,86 @@ def test_autopilot_injects_continue_while_todos_pending(env, monkeypatch):
 
 
 def test_autopilot_off_keeps_normal_stop(env, monkeypatch):
-    """Tanpa autopilot: STOP normal (hanya 1 panggilan model)."""
+    """Tanpa autopilot: tidak ada pesan lanjutan (hanya nudge TODO-CHECK sekali).
+
+    Nudge TODO-CHECK adalah perilaku BERBEDA dari autopilot: ia tidak
+    melanjutkan pekerjaan berulang kali, hanya menahan giliran SEKALI supaya
+    model sempat menutup status todo yang masih aktif.
+    """
     args, db_path, sid = env
     _seed_todos(db_path, args.workdir, [("Tugas belum selesai", "pending")])
+    fake = _NoToolCall()
+    monkeypatch.setattr("garwa.cli.agent_loop.call_llama_server", fake)
+
+    al.run_agent_loop(args, sid, "test system")
+
+    assert fake.calls == 2, (
+        "tanpa autopilot: 1 percobaan + 1 nudge TODO-CHECK, lalu STOP"
+    )
+    combined = "\n".join(
+        m.get("content", "") for m in dbmod.get_all_messages(db_path, sid)
+    )
+    assert "[AUTOPILOT]" not in combined
+
+
+# --------------------------------------------------------------------------- #
+# Unit: build_status_review_message (/todo-check)
+# --------------------------------------------------------------------------- #
+
+def test_status_review_message_lists_active_todos(env):
+    args, db_path, sid = env
+    _seed_todos(
+        db_path,
+        args.workdir,
+        [
+            ("Perbaiki parser JSON", "pending"),
+            ("Tulis test regresi", "in_progress"),
+            ("Update CHANGELOG", "done"),  # item selesai tidak boleh disebut
+        ],
+    )
+    msg = ap.build_status_review_message(db_path, args.workdir)
+    assert msg.startswith("<tool_result>")
+    assert msg.rstrip().endswith("</tool_result>")
+    assert "[TODO-CHECK]" in msg
+    assert "[ ] Perbaiki parser JSON" in msg
+    assert "[~] Tulis test regresi" in msg
+    assert "Update CHANGELOG" not in msg
+
+
+def test_status_review_message_never_auto_assigns_status(env):
+    """Pesan harus meminta MODEL memutuskan, bukan mengklaim status apa pun."""
+    args, db_path, sid = env
+    _seed_todos(db_path, args.workdir, [("Satu todo", "pending")])
+    msg = ap.build_status_review_message(db_path, args.workdir)
+    assert "hanya Anda yang tahu" in msg
+    assert "todo_write" in msg
+    # Klien tidak pernah menandai done sendiri.
+    assert "[x]" not in msg
+
+
+def test_status_review_message_injects_once_and_stops(env, monkeypatch):
+    """Nudge hanya SEKALI per giliran; sesudahnya giliran benar-benar ditutup."""
+    args, db_path, sid = env
+    _seed_todos(db_path, args.workdir, [("Tugas menggantung", "pending")])
+    fake = _NoToolCall()
+    monkeypatch.setattr("garwa.cli.agent_loop.call_llama_server", fake)
+
+    al.run_agent_loop(args, sid, "test system")
+
+    assert fake.calls == 2, f"harus tepat 2 percobaan (dapat {fake.calls})"
+    combined = "\n".join(
+        m.get("content", "") for m in dbmod.get_all_messages(db_path, sid)
+    )
+    assert combined.count("[TODO-CHECK]") == 1, (
+        "nudge tidak boleh disuntikkan lebih dari sekali pada satu giliran"
+    )
+
+
+def test_status_review_disabled_by_env(env, monkeypatch):
+    """TODO_STATUS_REVIEW_MAX=0 -> perilaku lama (STOP langsung)."""
+    args, db_path, sid = env
+    _seed_todos(db_path, args.workdir, [("Tugas menggantung", "pending")])
+    monkeypatch.setattr(state, "TODO_STATUS_REVIEW_MAX", 0)
     fake = _NoToolCall()
     monkeypatch.setattr("garwa.cli.agent_loop.call_llama_server", fake)
 
@@ -218,7 +295,43 @@ def test_autopilot_off_keeps_normal_stop(env, monkeypatch):
     combined = "\n".join(
         m.get("content", "") for m in dbmod.get_all_messages(db_path, sid)
     )
-    assert "[AUTOPILOT]" not in combined
+    assert "[TODO-CHECK]" not in combined
+
+
+def test_status_review_skipped_when_no_active_todos(env, monkeypatch):
+    """Tidak ada todo aktif -> tidak ada nudge, giliran berhenti normal."""
+    args, db_path, sid = env
+    _seed_todos(db_path, args.workdir, [("Sudah selesai", "done")])
+    fake = _NoToolCall()
+    monkeypatch.setattr("garwa.cli.agent_loop.call_llama_server", fake)
+
+    al.run_agent_loop(args, sid, "test system")
+
+    assert fake.calls == 1
+    combined = "\n".join(
+        m.get("content", "") for m in dbmod.get_all_messages(db_path, sid)
+    )
+    assert "[TODO-CHECK]" not in combined
+
+
+def test_status_review_does_not_stack_with_autopilot(env, monkeypatch):
+    """Autopilot aktif -> nudge TODO-CHECK TIDAK ikut menyala."""
+    args, db_path, sid = env
+    _seed_todos(db_path, args.workdir, [("Tugas belum selesai", "pending")])
+    state.set_autopilot(True, sid)
+    monkeypatch.setattr(state, "AUTOPILOT_STUCK_LIMIT", 1)
+    fake = _NoToolCall()
+    monkeypatch.setattr("garwa.cli.agent_loop.call_llama_server", fake)
+
+    al.run_agent_loop(args, sid, "test system")
+
+    combined = "\n".join(
+        m.get("content", "") for m in dbmod.get_all_messages(db_path, sid)
+    )
+    assert "[AUTOPILOT]" in combined
+    assert "[TODO-CHECK]" not in combined, (
+        "autopilot sudah menangani kasus ini; nudge tambahan hanya menabraknya"
+    )
 
 
 def test_autopilot_disables_itself_when_no_todos_left(env, monkeypatch):

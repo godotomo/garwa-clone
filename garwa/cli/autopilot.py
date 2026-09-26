@@ -168,3 +168,57 @@ def build_continue_message(db_path: str, workdir: str, note: str = "") -> str:
     )
     parts.append("</tool_result>")
     return "\n".join(parts)
+
+
+def build_status_review_message(db_path: str, workdir: str) -> str:
+    """Susun nudge SEKALI JALAN: evaluasi diri + tutup status todo.
+
+    Dipakai agent_loop tepat SEBELUM giliran ditutup, ketika model berhenti
+    tanpa memanggil tool apa pun padahal masih ada todo pending/in_progress.
+
+    Kenapa ada: klien TIDAK BISA menebak status pekerjaan -- hanya model yang
+    tahu apakah pekerjaannya sudah selesai. Tanpa nudge, satu-satunya cara
+    status ter-update adalah ingatan model sendiri di tengah giliran; kalau
+    model lupa, todo aktif akan menggantung (basi) dan diwariskan ke sesi lain,
+    padahal pekerjaannya sudah selesai.
+
+    Nudge ini BUKAN auto-done: ia hanya meminta model MENILAI dan memutuskan
+    sendiri (tandai done/cancelled, atau lanjutkan, atau jelaskan kenapa tidak
+    diubah). Klien tidak pernah mengubah status atas nama model.
+
+    Sama seperti build_continue_message, hasilnya dibungkus <tool_result> agar
+    konsisten dengan koreksi otomatis lain di agent_loop.
+    """
+    todos = get_pending_todos(db_path, workdir)
+    n = len(todos)
+    parts = [
+        "<tool_result>",
+        f"[TODO-CHECK] Anda (model) mengakhiri giliran tanpa memanggil tool "
+        f"apa pun, padahal rencana proyek ini masih menyisakan {n} item aktif:",
+    ]
+    if todos:
+        parts.append(_format_todos(todos))
+    stale = todo_utils.find_stale(todos)
+    if stale:
+        oldest = todo_utils.age_seconds(stale[0])
+        parts.append(
+            f"\n[PERINGATAN] {len(stale)} item di atas berstatus [STALE] "
+            f"(statusnya tidak berubah sejak {todo_utils.format_age(oldest)} lalu) "
+            "-- indikasi kuat pekerjaannya sudah selesai tapi statusnya belum "
+            "pernah ditutup."
+        )
+    parts.append(
+        "\nStatus pekerjaan hanya Anda yang tahu, jadi klien tidak akan "
+        "mengubahnya sendiri. SEBELUM giliran ini ditutup, evaluasi diri SEKALI "
+        "(ini satu-satunya pemeriksaan otomatis pada giliran ini):\n"
+        "  1. Item yang SUDAH benar-benar selesai -> kirim todo_write dengan "
+        "daftar LENGKAP dan tandai item itu \"done\" (atau \"cancelled\" kalau "
+        "memang dibatalkan / sudah tidak relevan).\n"
+        "  2. Masih ada yang perlu dikerjakan -> lanjutkan sekarang dengan "
+        "memanggil tool yang diperlukan.\n"
+        "  3. Kalau daftar di atas ternyata sudah tidak relevan dan memang "
+        "tidak perlu diubah, cukup tulis alasan singkatnya tanpa memanggil "
+        "tool -- giliran akan berhenti dan tidak ada pemeriksaan kedua."
+    )
+    parts.append("</tool_result>")
+    return "\n".join(parts)

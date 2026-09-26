@@ -112,6 +112,11 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
     _autopilot_sig = None
     _autopilot_stuck = 0
 
+    # /todo-check: berapa kali nudge "evaluasi status" sudah disuntikkan pada
+    # giliran ini. Dibatasi TODO_STATUS_REVIEW_MAX (default 1) supaya tidak
+    # menjadi loop: klien mengingatkan SEKALI, keputusan tetap milik model.
+    _status_review_count = 0
+
     _t_start = time.monotonic()          # awal giliran (untuk durasi total)
     _iteration_count = 0                 # jumlah iterasi loop (putaran model)
     _error_count = 0                     # jumlah tool_call yang menghasilkan error
@@ -617,7 +622,8 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
             # lanjutan supaya model melanjutkan pekerjaan. Kalau sudah tidak ada
             # todo pending (pekerjaan selesai) atau batas tercapai, autopilot
             # mematikan dirinya sendiri lalu giliran berhenti normal.
-            if state.get_autopilot(session_id):
+            _autopilot_ran = state.get_autopilot(session_id)
+            if _autopilot_ran:
                 _pending = autopilot_mod.get_pending_todos(
                     args.db_path, args.workdir
                 )
@@ -690,6 +696,49 @@ def run_agent_loop(args, session_id: str, system_content: str) -> str:
                         "dianggap selesai, autopilot dimatikan.",
                         C.DIM,
                     ))
+
+            # /todo-check: model berhenti tanpa tool_call dan autopilot TIDAK
+            # aktif (default). Kalau rencana proyek masih menyisakan todo
+            # aktif, suntikkan SEKALI nudge evaluasi diri supaya model sempat
+            # menutup status (done/cancelled) atau melanjutkan -- klien tidak
+            # pernah menebak status sendiri, jadi ini satu-satunya titik di
+            # mana klien boleh mengingatkan.
+            #
+            # Dibatasi TODO_STATUS_REVIEW_MAX (default 1) supaya tidak menjadi
+            # loop: setelah nudge, giliran berikutnya yang berhenti tanpa tool
+            # akan benar-benar ditutup. 0 = nonaktif (perilaku lama).
+            # Jangan menyala kalau autopilot baru saja MENANGANI situasi ini:
+            # kalau autopilot aktif, ia sudah menyuntik pesan lanjutan; kalau ia
+            # memutuskan berhenti (stuck / batas tercapai), itu keputusan
+            # eksplisit dan nudge tambahan hanya akan menabraknya.
+            if not _autopilot_ran and _status_review_count < state.TODO_STATUS_REVIEW_MAX:
+                _active_todos = autopilot_mod.get_pending_todos(
+                    args.db_path, args.workdir
+                )
+                if _active_todos:
+                    _status_review_count += 1
+                    print(c(
+                        f"  [TODO-CHECK] model berhenti tanpa tool_call; masih ada "
+                        f"{len(_active_todos)} todo aktif -- meminta evaluasi "
+                        f"status SEKALI sebelum menutup giliran "
+                        f"({_status_review_count}/"
+                        f"{state.TODO_STATUS_REVIEW_MAX})...",
+                        C.YELLOW,
+                    ))
+                    dbmod.add_message(
+                        args.db_path,
+                        session_id,
+                        "user",
+                        autopilot_mod.build_status_review_message(
+                            args.db_path, args.workdir
+                        ),
+                        kind="tool_result",
+                    )
+                    last_visible = (
+                        "[TODO-CHECK] Giliran ditahan sekali untuk mengevaluasi "
+                        "status todo yang masih aktif."
+                    )
+                    continue
 
             # P0: jangan berhenti senyap. Emit pesan eksplisit sebelum summary
             # agar user/model tahu giliran berhenti karena TIDAK ADA tool_call

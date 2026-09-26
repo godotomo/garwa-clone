@@ -245,6 +245,14 @@ AUTOPILOT_MAX_CONTINUES = _env_int("GARWA_AUTOPILOT_MAX", 20)
 # alih-alih menghabiskan kuota sampai AUTOPILOT_MAX_CONTINUES.
 # Override via GARWA_AUTOPILOT_STUCK.
 AUTOPILOT_STUCK_LIMIT = _env_int("GARWA_AUTOPILOT_STUCK", 2)
+
+# /todo-check: berapa kali klien boleh menyuntikkan nudge "evaluasi status"
+# pada SATU giliran, tepat sebelum giliran ditutup tanpa satu pun tool_call,
+# KALAU masih ada todo pending/in_progress. Default 1 (sekali per giliran)
+# supaya tidak menjadi loop: klien hanya mengingatkan SEKALI, keputusan
+# menutup/melanjutkan tetap milik model. 0 = nonaktif.
+# Override via GARWA_TODO_STATUS_REVIEW.
+TODO_STATUS_REVIEW_MAX = _env_int("GARWA_TODO_STATUS_REVIEW", 1)
 PASTE_PREVIEW_CHARS = 10
 IMAGE_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg",
