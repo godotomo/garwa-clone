@@ -211,9 +211,9 @@ _DEFAULT_MODEL = "deepseek-v4-flash-0731"
 # slash-command /ctx, /reserve, /summarize-threshold, /keep-tail dan
 # dipersistenkan ke ~/.config/garwa/config). Nilai awal menyamai konstanta
 # module-level lama di context_manager.py / _state.py.
-DEFAULT_CONTEXT_WINDOW = 131072
+DEFAULT_CONTEXT_WINDOW = 128000
 DEFAULT_RESERVE_FOR_RESPONSE = 2048
-DEFAULT_SUMMARIZE_THRESHOLD_RATIO = 0.2
+DEFAULT_SUMMARIZE_THRESHOLD_RATIO = 0.25
 DEFAULT_KEEP_TAIL_MESSAGES = 8
 # Batas pemanggilan tool per giliran. Dinaikkan dari 100 ke 500 supaya
 # autopilot (yang menyuntikkan pesan lanjutan) tidak cepat kena batas
